@@ -1,0 +1,64 @@
+# Environment files - NEVER commit these
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.docker
+backend/.env
+frontend/.env
+
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+credentials.json
+secrets.json
+service-account*.json
+*-credentials.json
+
+# IDE and local config
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Build outputs
+dist/
+build/
+node_modules/
+vendor/
+bin/
+*.exe
+
+# Database
+*.db
+*.sqlite
+pgdata/
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage/
+*.cover
+*.coverage
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+Thumbs.db
+*~
+.Trash-*
+
+# Custom
+docs/
+AGENT.local.md
+IMPLEMENTATION_PLAN.local.md
