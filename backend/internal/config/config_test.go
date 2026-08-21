@@ -21,6 +21,8 @@ func setupEnv(t *testing.T, envs map[string]string) {
 		"LOG_LEVEL",
 		"CORS_ALLOW_ORIGINS",
 		"COOKIE_SECURE",
+		"INTERNET_CHECK_ADDRESS",
+		"INTERNET_CHECK_TIMEOUT",
 	}
 	for _, key := range configKeys {
 		t.Setenv(key, "")
@@ -137,20 +139,28 @@ func TestLoad_DefaultValues(t *testing.T) {
 	if cfg.CookieSecure {
 		t.Error("expected development cookies to allow HTTP")
 	}
+	if cfg.InternetCheckAddress != "1.1.1.1:443" {
+		t.Errorf("unexpected InternetCheckAddress: %q", cfg.InternetCheckAddress)
+	}
+	if cfg.InternetCheckTimeout != 2*time.Second {
+		t.Errorf("unexpected InternetCheckTimeout: %v", cfg.InternetCheckTimeout)
+	}
 }
 
 func TestLoad_CustomValues(t *testing.T) {
 	// Arrange
 	setupEnv(t, map[string]string{
-		"DATABASE_URL":       "postgres://custom:pass@localhost:5432/customdb",
-		"JWT_SECRET":         "custom-secret-key-minimum-32-characters",
-		"PORT":               "3000",
-		"ENV":                "production",
-		"LOG_LEVEL":          "error",
-		"JWT_ACCESS_EXPIRY":  "30m",
-		"JWT_REFRESH_EXPIRY": "24h",
-		"CORS_ALLOW_ORIGINS": "https://iot-edge.example.com",
-		"COOKIE_SECURE":      "true",
+		"DATABASE_URL":           "postgres://custom:pass@localhost:5432/customdb",
+		"JWT_SECRET":             "custom-secret-key-minimum-32-characters",
+		"PORT":                   "3000",
+		"ENV":                    "production",
+		"LOG_LEVEL":              "error",
+		"JWT_ACCESS_EXPIRY":      "30m",
+		"JWT_REFRESH_EXPIRY":     "24h",
+		"CORS_ALLOW_ORIGINS":     "https://iot-edge.example.com",
+		"COOKIE_SECURE":          "true",
+		"INTERNET_CHECK_ADDRESS": "connectivity.example.com:8443",
+		"INTERNET_CHECK_TIMEOUT": "750ms",
 	})
 
 	// Act
@@ -181,6 +191,30 @@ func TestLoad_CustomValues(t *testing.T) {
 	}
 	if !cfg.CookieSecure {
 		t.Error("expected custom COOKIE_SECURE=true")
+	}
+	if cfg.InternetCheckAddress != "connectivity.example.com:8443" {
+		t.Errorf("unexpected InternetCheckAddress: %q", cfg.InternetCheckAddress)
+	}
+	if cfg.InternetCheckTimeout != 750*time.Millisecond {
+		t.Errorf("unexpected InternetCheckTimeout: %v", cfg.InternetCheckTimeout)
+	}
+}
+
+func TestLoad_InvalidInternetCheckTimeoutReturnsError(t *testing.T) {
+	for _, value := range []string{"eventually", "0s", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			envs := validEnv()
+			envs["INTERNET_CHECK_TIMEOUT"] = value
+			setupEnv(t, envs)
+
+			cfg, err := Load()
+			if err == nil {
+				t.Fatal("expected an error for invalid INTERNET_CHECK_TIMEOUT")
+			}
+			if cfg != nil {
+				t.Errorf("expected nil config, got %#v", cfg)
+			}
+		})
 	}
 }
 

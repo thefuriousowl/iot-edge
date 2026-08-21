@@ -22,6 +22,10 @@ vi.mock("../../../services/vgateway.service", () => ({
   updateVGateway: vi.fn(),
 }));
 
+vi.mock("../../system/components/InternetStatus", () => ({
+  default: () => <span>Internet status</span>,
+}));
+
 const mockedCreateVGateway = vi.mocked(createVGateway);
 const mockedGetVGateway = vi.mocked(getVGateway);
 const mockedTestVGatewayConnection = vi.mocked(testVGatewayConnection);

@@ -13,6 +13,7 @@ import {
 import { Link, NavLink } from "react-router-dom";
 
 import { useAuthStore } from "../../../stores/auth.store";
+import InternetStatus from "../../system/components/InternetStatus";
 
 interface VGatewayShellProps {
   breadcrumb: ReactNode;
@@ -94,9 +95,12 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
             <span>IoT Edge</span>
           </div>
           <p>{breadcrumb}</p>
-          <div className="vgateway-user">
-            <span>{username.slice(0, 1).toUpperCase()}</span>
-            <strong>{username}</strong>
+          <div className="vgateway-topbar-actions">
+            <InternetStatus />
+            <div className="vgateway-user">
+              <span>{username.slice(0, 1).toUpperCase()}</span>
+              <strong>{username}</strong>
+            </div>
           </div>
         </header>
 

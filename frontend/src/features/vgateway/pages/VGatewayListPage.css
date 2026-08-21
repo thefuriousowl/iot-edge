@@ -17,6 +17,19 @@
   color: var(--vgateway-text);
 }
 
+.vgateway-name-link {
+  color: var(--vgateway-text);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.vgateway-name-link:hover,
+.vgateway-name-link:focus-visible {
+  color: var(--vgateway-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+}
+
 .vgateway-sidebar {
   position: sticky;
   top: 0;
@@ -164,6 +177,13 @@
   align-items: center;
   gap: 0.65rem;
   font-size: 0.9rem;
+}
+
+.vgateway-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
 }
 
 .vgateway-user > span {
@@ -687,7 +707,7 @@
   }
 
   .vgateway-user {
-    margin-left: auto;
+    margin-left: 0;
   }
 
   .vgateway-user strong {

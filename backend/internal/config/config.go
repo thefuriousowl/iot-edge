@@ -11,15 +11,17 @@ import (
 )
 
 type Config struct {
-	Port             string
-	Env              string
-	DatabaseURL      string
-	JWTSecret        string
-	JWTAccessExpiry  time.Duration
-	JWTRefreshExpiry time.Duration
-	LogLevel         string
-	CORSAllowOrigins string
-	CookieSecure     bool
+	Port                 string
+	Env                  string
+	DatabaseURL          string
+	JWTSecret            string
+	JWTAccessExpiry      time.Duration
+	JWTRefreshExpiry     time.Duration
+	LogLevel             string
+	CORSAllowOrigins     string
+	CookieSecure         bool
+	InternetCheckAddress string
+	InternetCheckTimeout time.Duration
 }
 
 func Load() (*Config, error) {
@@ -50,6 +52,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("COOKIE_SECURE must be true or false: %w", err)
 	}
+	internetCheckTimeout, err := time.ParseDuration(getEnv("INTERNET_CHECK_TIMEOUT", "2s"))
+	if err != nil || internetCheckTimeout <= 0 {
+		return nil, errors.New("INTERNET_CHECK_TIMEOUT must be a positive duration")
+	}
 
 	return &Config{
 		Port:             port,
@@ -63,7 +69,9 @@ func Load() (*Config, error) {
 			"CORS_ALLOW_ORIGINS",
 			defaultCORSAllowOrigins,
 		),
-		CookieSecure: cookieSecure,
+		CookieSecure:         cookieSecure,
+		InternetCheckAddress: getEnv("INTERNET_CHECK_ADDRESS", "1.1.1.1:443"),
+		InternetCheckTimeout: internetCheckTimeout,
 	}, nil
 }
 

@@ -33,6 +33,7 @@ import {
   listVGateways,
 } from "../../../services/vgateway.service";
 import { useAuthStore } from "../../../stores/auth.store";
+import InternetStatus from "../../system/components/InternetStatus";
 import type {
   VGatewayConnectionStatus,
   VGatewayListItem,
@@ -283,9 +284,12 @@ function VGatewayListPage() {
           <p>
             Dashboard <span>/</span> <strong>vGateways</strong>
           </p>
-          <div className="vgateway-user">
-            <span>{username.slice(0, 1).toUpperCase()}</span>
-            <strong>{username}</strong>
+          <div className="vgateway-topbar-actions">
+            <InternetStatus />
+            <div className="vgateway-user">
+              <span>{username.slice(0, 1).toUpperCase()}</span>
+              <strong>{username}</strong>
+            </div>
           </div>
         </header>
 
@@ -433,7 +437,9 @@ function VGatewayListPage() {
                           <td data-label="Name">
                             <span className="vgateway-name-icon"><Cpu aria-hidden="true" size={19} /></span>
                             <span>
-                              <strong>{gateway.name}</strong>
+                              <Link className="vgateway-name-link" to={`/vgateways/${gateway.id}`}>
+                                {gateway.name}
+                              </Link>
                               {gateway.description && <small>{gateway.description}</small>}
                             </span>
                           </td>

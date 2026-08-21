@@ -12,6 +12,8 @@ import (
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
+	"github.com/thefuriousowl/iot-edge/internal/system"
+	systemhttp "github.com/thefuriousowl/iot-edge/internal/system/http"
 	"github.com/thefuriousowl/iot-edge/internal/vgateway"
 	vgatewayhttp "github.com/thefuriousowl/iot-edge/internal/vgateway/http"
 	vgatewaypostgres "github.com/thefuriousowl/iot-edge/internal/vgateway/postgres"
@@ -67,6 +69,14 @@ func main() {
 		log.Fatalf("failed to initialize vGateway service: %v", err)
 	}
 	vgatewayHandler := vgatewayhttp.NewHandler(vgatewayService)
+	connectivityChecker, err := system.NewConnectivityChecker(
+		cfg.InternetCheckAddress,
+		cfg.InternetCheckTimeout,
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize internet connectivity checker: %v", err)
+	}
+	systemHandler := systemhttp.NewHandler(connectivityChecker)
 
 	app := newApp(cfg.CORSAllowOrigins)
 
@@ -75,10 +85,9 @@ func main() {
 		authHandler,
 		authService,
 	)
-	vgatewayhttp.RegisterRoutes(
-		app.Group("/api", authhttp.RequireAuth(authService)),
-		vgatewayHandler,
-	)
+	protectedAPI := app.Group("/api", authhttp.RequireAuth(authService))
+	systemhttp.RegisterRoutes(protectedAPI, systemHandler)
+	vgatewayhttp.RegisterRoutes(protectedAPI, vgatewayHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port

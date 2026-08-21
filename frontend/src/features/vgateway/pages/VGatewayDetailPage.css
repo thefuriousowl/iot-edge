@@ -1,0 +1,311 @@
+.vgateway-detail-content {
+  width: min(100% - clamp(2rem, 6vw, 6rem), 72rem);
+  margin: 0 auto;
+  padding: clamp(2rem, 3.5vw, 3.5rem) 0 2rem;
+}
+
+.vgateway-detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--vgateway-border);
+}
+
+.vgateway-detail-hero h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 4vw, 3.15rem);
+  font-weight: 540;
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+
+.vgateway-detail-hero > div > p {
+  margin: 0.8rem 0 0;
+  color: #a9b8c5;
+}
+
+.vgateway-detail-status {
+  display: grid;
+  grid-template-columns: auto auto;
+  width: fit-content;
+  align-items: center;
+  gap: 0.35rem 0.7rem;
+  margin-top: 1rem;
+}
+
+.vgateway-detail-status > span {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 50%;
+  background: var(--vgateway-muted);
+}
+
+.vgateway-detail-status strong {
+  font-size: 0.96rem;
+  font-weight: 600;
+}
+
+.vgateway-detail-status small {
+  grid-column: 2;
+  color: var(--vgateway-muted);
+  font-size: 0.8rem;
+}
+
+.vgateway-detail-status.is-connected > span { background: var(--vgateway-success); }
+.vgateway-detail-status.is-error > span { background: var(--vgateway-danger); }
+.vgateway-detail-status.is-connecting > span { background: var(--vgateway-accent); }
+
+.vgateway-detail-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.vgateway-detail-actions button,
+.vgateway-runtime-heading button,
+.vgateway-detail-alert button,
+.vgateway-detail-state button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.42rem;
+  background: transparent;
+  color: var(--vgateway-text);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.vgateway-detail-actions button.is-primary {
+  border-color: var(--vgateway-accent);
+  background: var(--vgateway-accent);
+  color: #031017;
+}
+
+.vgateway-detail-actions button:disabled,
+.vgateway-runtime-heading button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.vgateway-detail-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(251, 113, 133, 0.42);
+  border-radius: 0.42rem;
+  background: rgba(251, 113, 133, 0.07);
+  color: #fda4af;
+  font-size: 0.84rem;
+}
+
+.vgateway-detail-alert span { flex: 1; }
+.vgateway-detail-alert button { min-height: 2.25rem; padding: 0 0.75rem; color: #fda4af; }
+
+.vgateway-runtime {
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--vgateway-border);
+}
+
+.vgateway-runtime-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vgateway-runtime-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.vgateway-runtime-heading button { min-height: 2.65rem; }
+
+.vgateway-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.vgateway-runtime-grid article {
+  min-width: 0;
+  padding: 0 1.5rem;
+  border-left: 1px solid var(--vgateway-border);
+}
+
+.vgateway-runtime-grid article:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.vgateway-runtime-grid span,
+.vgateway-runtime-grid strong {
+  display: block;
+}
+
+.vgateway-runtime-grid span {
+  color: var(--vgateway-muted);
+  font-size: 0.8rem;
+}
+
+.vgateway-runtime-grid strong {
+  margin-top: 0.45rem;
+  overflow-wrap: anywhere;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.vgateway-detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 1fr);
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.vgateway-detail-panel {
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.5rem;
+  background: rgba(11, 21, 29, 0.34);
+}
+
+.vgateway-detail-panel h2 {
+  margin: 0 0 1rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.vgateway-detail-panel dl,
+.vgateway-detail-metadata dl {
+  margin: 0;
+}
+
+.vgateway-detail-panel dl > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.75fr) minmax(0, 1.25fr);
+  gap: 1rem;
+  padding: 0.72rem 0;
+  border-top: 1px solid rgba(48, 67, 82, 0.72);
+}
+
+.vgateway-detail-panel dl > div:first-child { border-top: 0; }
+.vgateway-detail-panel dt { color: var(--vgateway-muted); }
+.vgateway-detail-panel dd { margin: 0; overflow-wrap: anywhere; }
+.vgateway-health-panel dd.is-healthy { color: var(--vgateway-success); }
+.vgateway-health-panel dd.is-unhealthy { color: var(--vgateway-danger); }
+
+.vgateway-health-panel > p {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 1rem 0 0;
+  color: #9aabba;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.vgateway-health-panel > p svg { flex: 0 0 auto; }
+
+.vgateway-devices-panel { margin-top: 1rem; }
+
+.vgateway-devices-empty {
+  display: flex;
+  min-height: 8.5rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: var(--vgateway-muted);
+  text-align: center;
+}
+
+.vgateway-devices-empty svg { color: #8ca0af; }
+.vgateway-devices-empty strong { margin-top: 0.65rem; color: var(--vgateway-text); }
+.vgateway-devices-empty p { margin: 0.3rem 0 0; font-size: 0.82rem; }
+
+.vgateway-device-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vgateway-device-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(48, 67, 82, 0.72);
+  border-radius: 0.4rem;
+}
+
+.vgateway-device-list li > svg { color: var(--vgateway-accent); }
+.vgateway-device-list strong,
+.vgateway-device-list small { display: block; }
+.vgateway-device-list small { margin-top: 0.15rem; color: var(--vgateway-muted); }
+
+.vgateway-detail-metadata {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  padding: 1rem 0 0;
+  border-top: 1px solid var(--vgateway-border);
+  color: var(--vgateway-muted);
+}
+
+.vgateway-detail-metadata > svg { flex: 0 0 auto; margin-top: 0.1rem; }
+.vgateway-detail-metadata dl { display: grid; flex: 1; grid-template-columns: 1.5fr 1fr 1fr; gap: 1rem; }
+.vgateway-detail-metadata dl > div { min-width: 0; }
+.vgateway-detail-metadata dt { font-size: 0.75rem; }
+.vgateway-detail-metadata dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; color: #aab8c4; font-size: 0.82rem; }
+
+.vgateway-detail-state {
+  display: flex;
+  min-height: 22rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.7rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.5rem;
+  color: var(--vgateway-muted);
+  text-align: center;
+}
+
+.vgateway-detail-state > svg { color: var(--vgateway-accent); }
+.vgateway-detail-state p { max-width: 32rem; margin: 0; }
+.vgateway-detail-state.is-error > svg { color: var(--vgateway-danger); }
+
+@media (max-width: 900px) {
+  .vgateway-detail-columns { grid-template-columns: 1fr; }
+  .vgateway-runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 0; }
+  .vgateway-runtime-grid article:nth-child(3) { padding-left: 0; border-left: 0; }
+}
+
+@media (max-width: 640px) {
+  .vgateway-detail-content { width: min(100% - 2rem, 40rem); padding-top: 2rem; }
+  .vgateway-detail-hero { flex-direction: column; gap: 1.5rem; }
+  .vgateway-detail-actions { width: 100%; flex-direction: column; }
+  .vgateway-detail-actions button { width: 100%; }
+  .vgateway-runtime-heading { align-items: flex-end; }
+  .vgateway-runtime-grid article { padding: 0.8rem; border: 1px solid rgba(48, 67, 82, 0.72); }
+  .vgateway-runtime-grid article:first-child,
+  .vgateway-runtime-grid article:nth-child(3) { padding-left: 0.8rem; border: 1px solid rgba(48, 67, 82, 0.72); }
+  .vgateway-runtime-grid { gap: 0.75rem; }
+  .vgateway-runtime-grid strong { font-size: 1rem; }
+  .vgateway-detail-panel { padding: 1.15rem; }
+  .vgateway-detail-panel dl > div { grid-template-columns: minmax(6rem, 0.75fr) minmax(0, 1.25fr); }
+  .vgateway-detail-panel dd { text-align: right; }
+  .vgateway-device-list { grid-template-columns: 1fr; }
+  .vgateway-detail-metadata dl { grid-template-columns: 1fr; }
+  .vgateway-detail-alert { align-items: flex-start; flex-wrap: wrap; }
+}

@@ -25,6 +25,10 @@ vi.mock("../../../services/vgateway.service", () => ({
   listVGateways: vi.fn(),
 }));
 
+vi.mock("../../system/components/InternetStatus", () => ({
+  default: () => <span>Internet status</span>,
+}));
+
 const mockedConnectVGateway = vi.mocked(connectVGateway);
 const mockedDeleteVGateway = vi.mocked(deleteVGateway);
 const mockedDisconnectVGateway = vi.mocked(disconnectVGateway);
@@ -108,6 +112,10 @@ describe("VGatewayListPage", () => {
     expect(await screen.findByText("Main PLC Gateway")).toBeInTheDocument();
     expect(screen.getByText("Boiler Room")).toBeInTheDocument();
     expect(screen.getByText("Factory floor")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Main PLC Gateway" })).toHaveAttribute(
+      "href",
+      `/vgateways/${gateways[0].id}`,
+    );
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(screen.getAllByText("Connected")).toHaveLength(2);
     expect(screen.getByText("Error")).toBeInTheDocument();

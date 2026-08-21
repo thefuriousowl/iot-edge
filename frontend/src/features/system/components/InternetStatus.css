@@ -1,0 +1,63 @@
+.internet-status {
+  display: flex;
+  min-width: 6.5rem;
+  align-items: center;
+  gap: 0.55rem;
+  padding-right: 1rem;
+  border-right: 1px solid rgba(48, 67, 82, 0.72);
+  color: var(--vgateway-muted);
+}
+
+.internet-status > svg {
+  flex: 0 0 auto;
+}
+
+.internet-status span,
+.internet-status small,
+.internet-status strong {
+  display: block;
+}
+
+.internet-status small {
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.internet-status strong {
+  margin-top: 0.2rem;
+  color: #a9b8c5;
+  font-size: 0.78rem;
+  font-weight: 560;
+  line-height: 1;
+}
+
+.internet-status.is-online > svg,
+.internet-status.is-online strong {
+  color: var(--vgateway-success);
+}
+
+.internet-status.is-offline > svg,
+.internet-status.is-offline strong {
+  color: var(--vgateway-danger);
+}
+
+.internet-status.is-checking > svg {
+  color: var(--vgateway-accent);
+}
+
+@media (max-width: 640px) {
+  .internet-status {
+    min-width: 0;
+    gap: 0.4rem;
+    padding-right: 0.65rem;
+  }
+
+  .internet-status small {
+    display: none;
+  }
+
+  .internet-status strong {
+    margin-top: 0;
+    font-size: 0.72rem;
+  }
+}

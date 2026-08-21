@@ -10,6 +10,7 @@ import ProtectedRoute from "./components/common/ProtectedRoute";
 import LoginPage from "./features/auth/pages/LoginPage";
 import SetupPage from "./features/auth/pages/SetupPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
+import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
 
@@ -57,6 +58,14 @@ function App() {
           element={
             <ProtectedRoute>
               <VGatewayFormPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/vgateways/:id"
+          element={
+            <ProtectedRoute>
+              <VGatewayDetailPage />
             </ProtectedRoute>
           }
         />
