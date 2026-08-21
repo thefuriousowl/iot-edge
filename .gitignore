@@ -62,3 +62,4 @@ Thumbs.db
 docs/
 AGENT.local.md
 IMPLEMENTATION_PLAN.local.md
+.pnpm-store

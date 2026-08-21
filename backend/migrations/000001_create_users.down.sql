@@ -1,0 +1,7 @@
+BEGIN;
+
+DROP TABLE IF EXISTS revoked_tokens;
+DROP TABLE IF EXISTS password_history;
+DROP TABLE IF EXISTS users;
+
+COMMIT;
