@@ -310,6 +310,83 @@ func TestCreateVGatewaysMigration_Integration(t *testing.T) {
 	}
 }
 
+func TestCreateDevicesDatasourcesMigration_Integration(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run the PostgreSQL migration test")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("opening PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("closing PostgreSQL connection: %v", err)
+		}
+	})
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("getting dedicated PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing dedicated PostgreSQL connection: %v", err)
+		}
+	})
+	schemaName := "device_migration_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := conn.ExecContext(ctx, "CREATE SCHEMA "+schemaName); err != nil {
+		t.Fatalf("creating isolated schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE"); err != nil {
+			t.Errorf("dropping isolated schema: %v", err)
+		}
+	})
+	if _, err := conn.ExecContext(ctx, "SET search_path TO "+schemaName+", public"); err != nil {
+		t.Fatalf("setting search path: %v", err)
+	}
+	applyMigrationFile(t, ctx, conn, "000002_create_vgateways.up.sql")
+	applyMigrationFile(t, ctx, conn, "000003_create_devices_datasources.up.sql")
+	for _, relation := range []string{"devices", "datasources", "idx_devices_vgateway", "idx_devices_type", "idx_datasources_device", "idx_datasources_type"} {
+		if !relationExists(t, ctx, conn, schemaName, relation) {
+			t.Errorf("relation %q was not created", relation)
+		}
+	}
+	var gatewayID, deviceID, datasourceID string
+	if err := conn.QueryRowContext(ctx, `INSERT INTO vgateways (name,type,config) VALUES ('PLC','modbus_tcp','{}') RETURNING id`).Scan(&gatewayID); err != nil {
+		t.Fatalf("inserting gateway: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO devices (vgateway_id,name,type,config) VALUES ($1,'Meter','modbus_device','{"unit_id":1}') RETURNING id`, gatewayID).Scan(&deviceID); err != nil {
+		t.Fatalf("inserting device: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO datasources (device_id,name,type,config) VALUES ($1,'Registers','modbus_read','{"function_code":3}') RETURNING id`, deviceID).Scan(&datasourceID); err != nil {
+		t.Fatalf("inserting datasource: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO devices (vgateway_id,name,type,config) VALUES ($1,'Meter','future_device','{}')`, gatewayID); err == nil {
+		t.Error("duplicate device name succeeded")
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO datasources (device_id,name,type,config) VALUES ($1,'Invalid','future_source','[]')`, deviceID); err == nil {
+		t.Error("non-object datasource config succeeded")
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM devices WHERE id = $1`, deviceID); err != nil {
+		t.Fatalf("deleting device: %v", err)
+	}
+	var count int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM datasources WHERE id = $1`, datasourceID).Scan(&count); err != nil {
+		t.Fatalf("counting datasource: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("datasources after cascade = %d", count)
+	}
+	applyMigrationFile(t, ctx, conn, "000003_create_devices_datasources.down.sql")
+	for _, table := range []string{"datasources", "devices"} {
+		if relationExists(t, ctx, conn, schemaName, table) {
+			t.Errorf("table %q remains after down", table)
+		}
+	}
+}
+
 func applyMigrationFile(t *testing.T, ctx context.Context, conn *sql.Conn, filename string) {
 	t.Helper()
 

@@ -29,6 +29,12 @@ type serviceStub struct {
 	status         func(context.Context, uuid.UUID) (*vgateway.VGatewayStatusResult, error)
 }
 
+type deviceCounterStub func(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error)
+
+func (stub deviceCounterStub) CountByVGatewayIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]int64, error) {
+	return stub(ctx, ids)
+}
+
 func (stub *serviceStub) Create(ctx context.Context, input vgateway.CreateVGatewayInput) (*vgateway.VGateway, error) {
 	return stub.create(ctx, input)
 }
@@ -135,6 +141,56 @@ func TestList_ReturnsFilteredPaginatedItemsWithoutConfig(t *testing.T) {
 	if body.Pagination.Page != 2 || body.Pagination.PerPage != 10 || body.Pagination.Total != 11 || body.Pagination.TotalPages != 2 {
 		t.Errorf("pagination = %#v, want page 2 of 2 with total 11", body.Pagination)
 	}
+}
+
+func TestList_ReturnsDeviceCountsForVisibleGateways(t *testing.T) {
+	firstID := uuid.New()
+	secondID := uuid.New()
+	stub := &serviceStub{list: func(context.Context, vgateway.VGatewayListInput) (*vgateway.VGatewayListResult, error) {
+		return &vgateway.VGatewayListResult{
+			Data: []vgateway.VGatewayView{
+				{VGateway: vgateway.VGateway{ID: firstID, Name: "First"}},
+				{VGateway: vgateway.VGateway{ID: secondID, Name: "Second"}},
+			},
+			Page: 1, PerPage: 20, Total: 2, TotalPages: 1,
+		}, nil
+	}}
+	counter := deviceCounterStub(func(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]int64, error) {
+		if len(ids) != 2 || ids[0] != firstID || ids[1] != secondID {
+			t.Errorf("gateway ids = %v, want [%s %s]", ids, firstID, secondID)
+		}
+		return map[uuid.UUID]int64{firstID: 3, secondID: 1}, nil
+	})
+
+	response := performRequest(t, testApp(stub, WithDeviceCounter(counter)), http.MethodGet, "/api/vgateways", "")
+	defer response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+	}
+	var body struct {
+		Data []struct {
+			ID          uuid.UUID `json:"id"`
+			DeviceCount int64     `json:"device_count"`
+		} `json:"data"`
+	}
+	decodeResponse(t, response, &body)
+	if len(body.Data) != 2 || body.Data[0].ID != firstID || body.Data[0].DeviceCount != 3 || body.Data[1].ID != secondID || body.Data[1].DeviceCount != 1 {
+		t.Errorf("data = %#v", body.Data)
+	}
+}
+
+func TestList_MapsDeviceCounterFailure(t *testing.T) {
+	id := uuid.New()
+	stub := &serviceStub{list: func(context.Context, vgateway.VGatewayListInput) (*vgateway.VGatewayListResult, error) {
+		return &vgateway.VGatewayListResult{Data: []vgateway.VGatewayView{{VGateway: vgateway.VGateway{ID: id}}}, Page: 1, PerPage: 20, Total: 1, TotalPages: 1}, nil
+	}}
+	counter := deviceCounterStub(func(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error) {
+		return nil, errors.New("database unavailable")
+	})
+
+	response := performRequest(t, testApp(stub, WithDeviceCounter(counter)), http.MethodGet, "/api/vgateways", "")
+	defer response.Body.Close()
+	assertAPIError(t, response, fiber.StatusInternalServerError, "INTERNAL_ERROR")
 }
 
 func TestList_RejectsInvalidQueryParameters(t *testing.T) {
@@ -403,9 +459,9 @@ func TestServiceErrorMappings(t *testing.T) {
 	}
 }
 
-func testApp(service Service) *fiber.App {
+func testApp(service Service, options ...HandlerOption) *fiber.App {
 	app := fiber.New()
-	RegisterRoutes(app.Group("/api"), NewHandler(service))
+	RegisterRoutes(app.Group("/api"), NewHandler(service, options...))
 	return app
 }
 

@@ -26,6 +26,10 @@ vi.mock("../../system/components/InternetStatus", () => ({
   default: () => <span>Internet status</span>,
 }));
 
+vi.mock("../../device/components/DeviceWorkspace", () => ({
+  default: () => <div>No devices configured</div>,
+}));
+
 const mockedConnectVGateway = vi.mocked(connectVGateway);
 const mockedDisconnectVGateway = vi.mocked(disconnectVGateway);
 const mockedGetVGateway = vi.mocked(getVGateway);
@@ -215,7 +219,7 @@ describe("VGatewayDetailPage", () => {
     expect(screen.getByText("This gateway is disabled.")).toBeInTheDocument();
   });
 
-  it("renders configured device summaries and navigates to edit", async () => {
+  it("renders healthy status with the device workspace and navigates to edit", async () => {
     mockedGetVGateway.mockResolvedValue({
       ...gateway,
       devices: [
@@ -230,8 +234,7 @@ describe("VGatewayDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("Boiler PLC")).toBeInTheDocument();
-    expect(screen.getByText("Unit ID 7")).toBeInTheDocument();
+    expect(await screen.findByText("No devices configured")).toBeInTheDocument();
     expect(screen.getAllByText("Healthy")).toHaveLength(2);
     expect(screen.getByText("8.25 ms")).toBeInTheDocument();
 

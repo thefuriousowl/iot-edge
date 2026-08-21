@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS datasources;
+DROP TABLE IF EXISTS devices;
+
+COMMIT;

@@ -31,6 +31,17 @@ type Service interface {
 
 type Handler struct {
 	service Service
+	devices DeviceCounter
+}
+
+type DeviceCounter interface {
+	CountByVGatewayIDs(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error)
+}
+
+type HandlerOption func(*Handler)
+
+func WithDeviceCounter(counter DeviceCounter) HandlerOption {
+	return func(handler *Handler) { handler.devices = counter }
 }
 
 type createRequest struct {
@@ -61,14 +72,18 @@ type gatewayListItem struct {
 	Description  *string                           `json:"description"`
 	Enabled      bool                              `json:"enabled"`
 	Status       vgateway.VGatewayConnectionStatus `json:"status"`
-	DeviceCount  int                               `json:"device_count"`
+	DeviceCount  int64                             `json:"device_count"`
 	LastActivity *time.Time                        `json:"last_activity"`
 	CreatedAt    time.Time                         `json:"created_at"`
 	UpdatedAt    time.Time                         `json:"updated_at"`
 }
 
-func NewHandler(service Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service Service, options ...HandlerOption) *Handler {
+	handler := &Handler{service: service}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 func (h *Handler) List(c *fiber.Ctx) error {
@@ -81,6 +96,17 @@ func (h *Handler) List(c *fiber.Ctx) error {
 	if err != nil {
 		return handleServiceError(c, err)
 	}
+	deviceCounts := map[uuid.UUID]int64{}
+	if h.devices != nil && len(result.Data) > 0 {
+		gatewayIDs := make([]uuid.UUID, 0, len(result.Data))
+		for _, gateway := range result.Data {
+			gatewayIDs = append(gatewayIDs, gateway.ID)
+		}
+		deviceCounts, err = h.devices.CountByVGatewayIDs(c.UserContext(), gatewayIDs)
+		if err != nil {
+			return apiError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		}
+	}
 
 	items := make([]gatewayListItem, 0, len(result.Data))
 	for _, gateway := range result.Data {
@@ -91,6 +117,7 @@ func (h *Handler) List(c *fiber.Ctx) error {
 			Description: gateway.Description,
 			Enabled:     gateway.Enabled,
 			Status:      gateway.Status,
+			DeviceCount: deviceCounts[gateway.ID],
 			CreatedAt:   gateway.CreatedAt,
 			UpdatedAt:   gateway.UpdatedAt,
 		})

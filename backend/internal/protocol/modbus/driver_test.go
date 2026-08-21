@@ -331,7 +331,7 @@ var _ protocol.GatewayClient = (*gatewayOnlyClient)(nil)
 func newTestModbusTCPDriver(
 	t *testing.T,
 	factory ModbusClientFactory,
-) protocol.GatewayDriver {
+) protocol.Driver {
 	t.Helper()
 	if factory == nil {
 		factory = func(ModbusTCPConfig) (ModbusClient, error) {

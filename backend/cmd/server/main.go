@@ -11,6 +11,9 @@ import (
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
+	"github.com/thefuriousowl/iot-edge/internal/device"
+	devicehttp "github.com/thefuriousowl/iot-edge/internal/device/http"
+	devicepostgres "github.com/thefuriousowl/iot-edge/internal/device/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
 	"github.com/thefuriousowl/iot-edge/internal/system"
 	systemhttp "github.com/thefuriousowl/iot-edge/internal/system/http"
@@ -59,16 +62,29 @@ func main() {
 		authService,
 		authhttp.WithSecureCookies(cfg.CookieSecure),
 	)
+	modbusDriver := modbus.NewDefaultModbusTCPDriver()
 	vgatewayService, err := vgateway.NewVGatewayService(
 		vgatewaypostgres.NewVGatewayRepository(db),
 		vgateway.GatewayDriverRegistry{
-			vgateway.VGatewayTypeModbusTCP: modbus.NewDefaultModbusTCPDriver(),
+			vgateway.VGatewayTypeModbusTCP: modbusDriver,
 		},
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize vGateway service: %v", err)
 	}
-	vgatewayHandler := vgatewayhttp.NewHandler(vgatewayService)
+	deviceRepository := devicepostgres.NewRepository(db)
+	vgatewayHandler := vgatewayhttp.NewHandler(
+		vgatewayService,
+		vgatewayhttp.WithDeviceCounter(deviceRepository),
+	)
+	deviceService, err := device.NewService(
+		deviceRepository,
+		modbusDriver,
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize device service: %v", err)
+	}
+	deviceHandler := devicehttp.NewHandler(deviceService)
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
 		cfg.InternetCheckTimeout,
@@ -88,6 +104,7 @@ func main() {
 	protectedAPI := app.Group("/api", authhttp.RequireAuth(authService))
 	systemhttp.RegisterRoutes(protectedAPI, systemHandler)
 	vgatewayhttp.RegisterRoutes(protectedAPI, vgatewayHandler)
+	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port

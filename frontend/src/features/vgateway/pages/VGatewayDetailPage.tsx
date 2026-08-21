@@ -3,7 +3,6 @@ import axios from "axios";
 import {
   AlertTriangle,
   CircleHelp,
-  Cpu,
   Info,
   LoaderCircle,
   Pencil,
@@ -26,6 +25,7 @@ import type {
   VGatewayStatusResponse,
 } from "../../../types/vgateway";
 import VGatewayShell from "../components/VGatewayShell";
+import DeviceWorkspace from "../../device/components/DeviceWorkspace";
 import "./VGatewayListPage.css";
 import "./VGatewayDetailPage.css";
 
@@ -339,25 +339,7 @@ function VGatewayDetailPage() {
               </section>
             </div>
 
-            <section className="vgateway-detail-panel vgateway-devices-panel">
-              <h2>Devices</h2>
-              {gateway.devices.length === 0 ? (
-                <div className="vgateway-devices-empty">
-                  <Cpu aria-hidden="true" />
-                  <strong>No devices configured</strong>
-                  <p>Devices connected through this gateway will appear here.</p>
-                </div>
-              ) : (
-                <ul className="vgateway-device-list">
-                  {gateway.devices.map((device) => (
-                    <li key={device.id}>
-                      <Cpu aria-hidden="true" size={19} />
-                      <span><strong>{device.name}</strong><small>Unit ID {device.unit_id}</small></span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+            <DeviceWorkspace vgatewayId={gateway.id} />
 
             <footer className="vgateway-detail-metadata">
               <Info aria-hidden="true" size={18} />

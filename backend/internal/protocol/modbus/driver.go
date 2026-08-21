@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
@@ -44,6 +45,32 @@ type ModbusTCPConnectionTestInput struct {
 	UnitID *uint8 `json:"unit_id"`
 }
 
+type ModbusDeviceConfigInput struct {
+	UnitID           *uint8 `json:"unit_id"`
+	PollIntervalMS   *int   `json:"poll_interval_ms"`
+	RequestTimeoutMS *int   `json:"request_timeout_ms"`
+}
+
+type ModbusDeviceConfig struct {
+	UnitID           uint8 `json:"unit_id"`
+	PollIntervalMS   int   `json:"poll_interval_ms"`
+	RequestTimeoutMS *int  `json:"request_timeout_ms"`
+}
+
+type ModbusDatasourceConfigInput struct {
+	FunctionCode   *FunctionCode `json:"function_code"`
+	StartAddress   *uint16       `json:"start_address"`
+	Quantity       *uint16       `json:"quantity"`
+	PollIntervalMS *int          `json:"poll_interval_ms"`
+}
+
+type ModbusDatasourceConfig struct {
+	FunctionCode   FunctionCode `json:"function_code"`
+	StartAddress   uint16       `json:"start_address"`
+	Quantity       uint16       `json:"quantity"`
+	PollIntervalMS *int         `json:"poll_interval_ms"`
+}
+
 type ModbusClientFactory func(
 	config ModbusTCPConfig,
 ) (ModbusClient, error)
@@ -54,7 +81,7 @@ type modbusTCPDriver struct {
 
 func NewModbusTCPDriver(
 	clients ModbusClientFactory,
-) (protocol.GatewayDriver, error) {
+) (protocol.Driver, error) {
 	if clients == nil {
 		return nil, protocol.ErrGatewayClientFactoryRequired
 	}
@@ -62,8 +89,208 @@ func NewModbusTCPDriver(
 	return &modbusTCPDriver{clients: clients}, nil
 }
 
-func NewDefaultModbusTCPDriver() protocol.GatewayDriver {
+func NewDefaultModbusTCPDriver() protocol.Driver {
 	return &modbusTCPDriver{clients: NewModbusTCPClient}
+}
+
+func (d *modbusTCPDriver) GatewayType() string { return "modbus_tcp" }
+
+func (d *modbusTCPDriver) DeviceType() string { return "modbus_device" }
+
+func (d *modbusTCPDriver) DatasourceTypes() []string {
+	return []string{"modbus_read"}
+}
+
+func (d *modbusTCPDriver) NormalizeDeviceConfig(raw json.RawMessage) (json.RawMessage, error) {
+	var input ModbusDeviceConfigInput
+	if err := decodeStrictJSON(raw, &input); err != nil {
+		return nil, fmt.Errorf("%w: decode Modbus device config: %v", protocol.ErrInvalidDeviceConfig, err)
+	}
+	if input.UnitID == nil {
+		return nil, fmt.Errorf("%w: unit_id is required", protocol.ErrInvalidDeviceConfig)
+	}
+	config := ModbusDeviceConfig{
+		UnitID:           *input.UnitID,
+		PollIntervalMS:   valueOrDefault(input.PollIntervalMS, 1000),
+		RequestTimeoutMS: input.RequestTimeoutMS,
+	}
+	if config.PollIntervalMS < 100 || config.PollIntervalMS > 86400000 {
+		return nil, fmt.Errorf("%w: poll_interval_ms must be between 100 and 86400000", protocol.ErrInvalidDeviceConfig)
+	}
+	if config.RequestTimeoutMS != nil && (*config.RequestTimeoutMS < 100 || *config.RequestTimeoutMS > 60000) {
+		return nil, fmt.Errorf("%w: request_timeout_ms must be between 100 and 60000", protocol.ErrInvalidDeviceConfig)
+	}
+	return marshalCanonical(config, protocol.ErrInvalidDeviceConfig)
+}
+
+func (d *modbusTCPDriver) NormalizeDatasourceConfig(datasourceType string, raw json.RawMessage) (json.RawMessage, error) {
+	if datasourceType != "modbus_read" {
+		return nil, fmt.Errorf("%w: unsupported datasource type %q", protocol.ErrInvalidDatasourceConfig, datasourceType)
+	}
+	var input ModbusDatasourceConfigInput
+	if err := decodeStrictJSON(raw, &input); err != nil {
+		return nil, fmt.Errorf("%w: decode Modbus datasource config: %v", protocol.ErrInvalidDatasourceConfig, err)
+	}
+	if input.FunctionCode == nil || input.StartAddress == nil || input.Quantity == nil {
+		return nil, fmt.Errorf("%w: function_code, start_address, and quantity are required", protocol.ErrInvalidDatasourceConfig)
+	}
+	config := ModbusDatasourceConfig{
+		FunctionCode:   *input.FunctionCode,
+		StartAddress:   *input.StartAddress,
+		Quantity:       *input.Quantity,
+		PollIntervalMS: input.PollIntervalMS,
+	}
+	if err := validateReadRequest(ReadRequest{FunctionCode: config.FunctionCode, Address: config.StartAddress, Quantity: config.Quantity}); err != nil {
+		return nil, fmt.Errorf("%w: %v", protocol.ErrInvalidDatasourceConfig, err)
+	}
+	if config.PollIntervalMS != nil && (*config.PollIntervalMS < 100 || *config.PollIntervalMS > 86400000) {
+		return nil, fmt.Errorf("%w: poll_interval_ms must be between 100 and 86400000", protocol.ErrInvalidDatasourceConfig)
+	}
+	return marshalCanonical(config, protocol.ErrInvalidDatasourceConfig)
+}
+
+func (d *modbusTCPDriver) Preview(ctx context.Context, request protocol.DatasourceReadRequest) (protocol.DatasourceSample, error) {
+	client, readRequest, err := d.prepareDatasourceRead(request)
+	if err != nil {
+		return protocol.DatasourceSample{}, err
+	}
+	var sample protocol.DatasourceSample
+	err = executeExclusive(ctx, request.ExecuteExclusive, func(exclusiveCtx context.Context) error {
+		if err := client.Connect(exclusiveCtx); err != nil {
+			return err
+		}
+		defer client.Disconnect()
+		var readErr error
+		sample, readErr = readModbusSample(exclusiveCtx, client, readRequest)
+		return readErr
+	})
+	return sample, err
+}
+
+func (d *modbusTCPDriver) Monitor(ctx context.Context, request protocol.DatasourceReadRequest, interval time.Duration, emit protocol.SampleEmitter) error {
+	client, readRequest, err := d.prepareDatasourceRead(request)
+	if err != nil {
+		return err
+	}
+	defer client.Disconnect()
+
+	read := func() {
+		var sample protocol.DatasourceSample
+		err := executeExclusive(ctx, request.ExecuteExclusive, func(exclusiveCtx context.Context) error {
+			if !client.IsConnected() {
+				if err := client.Connect(exclusiveCtx); err != nil {
+					return err
+				}
+			}
+			var readErr error
+			sample, readErr = readModbusSample(exclusiveCtx, client, readRequest)
+			if readErr != nil {
+				_ = client.Disconnect()
+			}
+			return readErr
+		})
+		if err != nil {
+			emit(protocol.DatasourceSample{ObservedAt: time.Now().UTC(), Quality: "bad", Error: "Read failed"})
+			return
+		}
+		emit(sample)
+	}
+
+	read()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			read()
+		}
+	}
+}
+
+func executeExclusive(ctx context.Context, execute protocol.ExclusiveExecutor, operation func(context.Context) error) error {
+	if execute == nil {
+		return operation(ctx)
+	}
+	return execute(ctx, operation)
+}
+
+func (d *modbusTCPDriver) prepareDatasourceRead(request protocol.DatasourceReadRequest) (ModbusClient, ReadRequest, error) {
+	var gateway ModbusTCPConfig
+	var device ModbusDeviceConfig
+	var datasource ModbusDatasourceConfig
+	if err := json.Unmarshal(request.GatewayConfig, &gateway); err != nil {
+		return nil, ReadRequest{}, fmt.Errorf("decode stored Modbus gateway config: %w", err)
+	}
+	if err := json.Unmarshal(request.DeviceConfig, &device); err != nil {
+		return nil, ReadRequest{}, fmt.Errorf("decode stored Modbus device config: %w", err)
+	}
+	if err := json.Unmarshal(request.DatasourceConfig, &datasource); err != nil {
+		return nil, ReadRequest{}, fmt.Errorf("decode stored Modbus datasource config: %w", err)
+	}
+	if device.RequestTimeoutMS != nil {
+		gateway.Timeout = *device.RequestTimeoutMS
+	}
+	client, err := d.clients(gateway)
+	if err != nil {
+		return nil, ReadRequest{}, err
+	}
+	return client, ReadRequest{UnitID: device.UnitID, FunctionCode: datasource.FunctionCode, Address: datasource.StartAddress, Quantity: datasource.Quantity}, nil
+}
+
+func readModbusSample(ctx context.Context, client ModbusClient, request ReadRequest) (protocol.DatasourceSample, error) {
+	started := time.Now()
+	raw, err := client.Read(ctx, request)
+	if err != nil {
+		return protocol.DatasourceSample{}, err
+	}
+	data, err := formatModbusData(request, raw)
+	if err != nil {
+		return protocol.DatasourceSample{}, err
+	}
+	return protocol.DatasourceSample{ObservedAt: time.Now().UTC(), Latency: time.Since(started), Quality: "good", Raw: raw, Data: data}, nil
+}
+
+func formatModbusData(request ReadRequest, raw []byte) (json.RawMessage, error) {
+	if request.FunctionCode == FunctionReadCoils || request.FunctionCode == FunctionReadDiscreteInputs {
+		requiredBytes := (int(request.Quantity) + 7) / 8
+		if len(raw) < requiredBytes {
+			return nil, errors.New("short Modbus bit response")
+		}
+		bits := make([]map[string]any, 0, request.Quantity)
+		for offset := uint16(0); offset < request.Quantity; offset++ {
+			bits = append(bits, map[string]any{"address": uint32(request.Address) + uint32(offset), "value": raw[offset/8]&(1<<(offset%8)) != 0})
+		}
+		return json.Marshal(map[string]any{"bits": bits})
+	}
+	registers := make([]map[string]any, 0, request.Quantity)
+	for offset := uint16(0); offset < request.Quantity; offset++ {
+		index := int(offset) * 2
+		if index+1 >= len(raw) {
+			return nil, errors.New("short Modbus register response")
+		}
+		value := uint16(raw[index])<<8 | uint16(raw[index+1])
+		registers = append(registers, map[string]any{"address": uint32(request.Address) + uint32(offset), "value": value, "hex": fmt.Sprintf("%04X", value)})
+	}
+	return json.Marshal(map[string]any{"registers": registers})
+}
+
+func decodeStrictJSON(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	return ensureJSONDocumentEnded(decoder)
+}
+
+func marshalCanonical(value any, sentinel error) (json.RawMessage, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode canonical config: %v", sentinel, err)
+	}
+	return encoded, nil
 }
 
 func (d *modbusTCPDriver) NormalizeConfig(
@@ -264,4 +491,4 @@ func valueOrDefault[T any](value *T, defaultValue T) T {
 	return *value
 }
 
-var _ protocol.GatewayDriver = (*modbusTCPDriver)(nil)
+var _ protocol.Driver = (*modbusTCPDriver)(nil)

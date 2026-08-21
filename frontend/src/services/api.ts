@@ -30,6 +30,10 @@ export function clearAccessToken(): void {
   accessToken = null;
 }
 
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "/api",
   headers: {
