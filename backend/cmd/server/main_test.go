@@ -18,11 +18,9 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"github.com/thefuriousowl/iot-edge/internal/api/handlers"
-	"github.com/thefuriousowl/iot-edge/internal/api/routes"
-	"github.com/thefuriousowl/iot-edge/internal/config"
-	"github.com/thefuriousowl/iot-edge/internal/repository"
-	"github.com/thefuriousowl/iot-edge/internal/service"
+	"github.com/thefuriousowl/iot-edge/internal/auth"
+	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
+	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 )
 
 func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
@@ -118,8 +116,8 @@ func TestCORS_DoesNotAllowUnconfiguredOrigin(t *testing.T) {
 
 func TestInitialSetup_Integration(t *testing.T) {
 	db := newInitialSetupTestDatabase(t)
-	users := repository.NewUserRepository(db)
-	auth, err := service.NewAuthService(users, &config.Config{
+	users := authpostgres.NewUserRepository(db)
+	authService, err := auth.NewAuthService(users, &auth.ServiceConfig{
 		JWTSecret:        strings.Repeat("s", 32),
 		JWTAccessExpiry:  15 * time.Minute,
 		JWTRefreshExpiry: 7 * 24 * time.Hour,
@@ -129,10 +127,10 @@ func TestInitialSetup_Integration(t *testing.T) {
 	}
 
 	app := newApp("http://localhost:5173")
-	routes.RegisterAuthRoutes(
+	authhttp.RegisterAuthRoutes(
 		app.Group("/api"),
-		handlers.NewAuthHandler(auth),
-		auth,
+		authhttp.NewAuthHandler(authService),
+		authService,
 	)
 
 	setupBody := `{
@@ -176,7 +174,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByUsername() after setup: %v", err)
 	}
-	if !auth.VerifyPassword("SecureP@ss123", storedUser.PasswordHash) {
+	if !authService.VerifyPassword("SecureP@ss123", storedUser.PasswordHash) {
 		t.Error("stored password hash does not verify setup password")
 	}
 
@@ -209,7 +207,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 	if loginBody.ExpiresIn < 899 || loginBody.ExpiresIn > 900 {
 		t.Errorf("login expires_in = %d, want approximately 900", loginBody.ExpiresIn)
 	}
-	accessClaims, err := auth.ParseToken(loginBody.AccessToken, service.TokenTypeAccess)
+	accessClaims, err := authService.ParseToken(loginBody.AccessToken, auth.TokenTypeAccess)
 	if err != nil {
 		t.Fatalf("parsing login access token: %v", err)
 	}
@@ -257,7 +255,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 	if refreshToken == "" {
 		t.Fatal("login response does not contain refresh_token cookie")
 	}
-	refreshClaims, err := auth.ParseToken(refreshToken, service.TokenTypeRefresh)
+	refreshClaims, err := authService.ParseToken(refreshToken, auth.TokenTypeRefresh)
 	if err != nil {
 		t.Fatalf("parsing login refresh token: %v", err)
 	}
@@ -291,7 +289,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 	if refreshBody.ExpiresIn < 899 || refreshBody.ExpiresIn > 900 {
 		t.Errorf("refresh expires_in = %d, want approximately 900", refreshBody.ExpiresIn)
 	}
-	refreshedClaims, err := auth.ParseToken(refreshBody.AccessToken, service.TokenTypeAccess)
+	refreshedClaims, err := authService.ParseToken(refreshBody.AccessToken, auth.TokenTypeAccess)
 	if err != nil {
 		t.Fatalf("parsing refreshed access token: %v", err)
 	}

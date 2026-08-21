@@ -7,11 +7,10 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 
-	"github.com/thefuriousowl/iot-edge/internal/api/handlers"
-	"github.com/thefuriousowl/iot-edge/internal/api/routes"
+	"github.com/thefuriousowl/iot-edge/internal/auth"
+	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
+	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
-	"github.com/thefuriousowl/iot-edge/internal/repository"
-	"github.com/thefuriousowl/iot-edge/internal/service"
 )
 
 func main() {
@@ -37,22 +36,27 @@ func main() {
 		}
 	}()
 
-	userRepo := repository.NewUserRepository(db)
-	authService, err := service.NewAuthService(
-		userRepo, cfg,
+	userRepo := authpostgres.NewUserRepository(db)
+	authService, err := auth.NewAuthService(
+		userRepo,
+		&auth.ServiceConfig{
+			JWTSecret:        cfg.JWTSecret,
+			JWTAccessExpiry:  cfg.JWTAccessExpiry,
+			JWTRefreshExpiry: cfg.JWTRefreshExpiry,
+		},
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize auth service: %v", err)
 	}
 
-	authHandler := handlers.NewAuthHandler(
+	authHandler := authhttp.NewAuthHandler(
 		authService,
-		handlers.WithSecureCookies(cfg.CookieSecure),
+		authhttp.WithSecureCookies(cfg.CookieSecure),
 	)
 
 	app := newApp(cfg.CORSAllowOrigins)
 
-	routes.RegisterAuthRoutes(
+	authhttp.RegisterAuthRoutes(
 		app.Group("/api"),
 		authHandler,
 		authService,

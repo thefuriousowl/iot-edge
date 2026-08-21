@@ -1,0 +1,172 @@
+package vgateway
+
+import (
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/thefuriousowl/iot-edge/internal/protocol"
+)
+
+var (
+	ErrVGatewayRepositoryRequired = errors.New(
+		"vGateway repository is required",
+	)
+	ErrVGatewayDriversRequired = errors.New(
+		"vGateway drivers are required",
+	)
+	ErrVGatewayDriverRequired = errors.New(
+		"vGateway driver is required",
+	)
+	ErrInvalidVGatewayConfig = errors.New(
+		"invalid vGateway config",
+	)
+	ErrInvalidVGatewayTestInput = errors.New(
+		"invalid vGateway connection test input",
+	)
+	ErrInvalidVGatewayName     = errors.New("invalid vGateway name")
+	ErrUnsupportedVGatewayType = errors.New("unsupported vGateway type")
+	ErrVGatewayDisabled        = errors.New("vGateway is disabled")
+	ErrVGatewayNameExists      = errors.New("duplicated vGateway name")
+	ErrVGatewayNotFound        = errors.New("vGateway not found")
+)
+
+const (
+	DefaultVGatewayPage    = 1
+	DefaultVGatewayPerPage = 20
+	MaxVGatewayPerPage     = 100
+)
+
+type GatewayDriverRegistry map[VGatewayType]protocol.GatewayDriver
+
+type VGatewayView struct {
+	VGateway
+	Status VGatewayConnectionStatus `json:"status"`
+}
+
+type VGatewayListInput struct {
+	Type    *VGatewayType
+	Enabled *bool
+	Page    int
+	PerPage int
+}
+
+type VGatewayListResult struct {
+	Data       []VGatewayView
+	Page       int
+	PerPage    int
+	Total      int64
+	TotalPages int
+}
+
+type CreateVGatewayInput struct {
+	Name        string
+	Type        VGatewayType
+	Description *string
+	Enabled     *bool
+	Config      VGatewayConfig
+}
+
+type OptionalDescription struct {
+	Set   bool
+	Value *string
+}
+
+type UpdateVGatewayInput struct {
+	Name        *string
+	Description OptionalDescription
+	Enabled     *bool
+	Config      *VGatewayConfig
+}
+
+type VGatewayConnectionTestResult struct {
+	Success bool
+	Latency time.Duration
+	Error   error
+}
+
+type vGatewayService struct {
+	gateways VGatewayRepository
+	drivers  GatewayDriverRegistry
+
+	mu       sync.RWMutex
+	runtimes map[uuid.UUID]*vGatewayRuntime
+	now      func() time.Time
+}
+
+type VGatewayHealthStatus string
+
+const (
+	VGatewayHealthHealthy   VGatewayHealthStatus = "healthy"
+	VGatewayHealthUnhealthy VGatewayHealthStatus = "unhealthy"
+	VGatewayHealthUnknown   VGatewayHealthStatus = "unknown"
+)
+
+type VGatewayStatusStatistics struct {
+	RequestCount  int64    `json:"request_count"`
+	ErrorCount    int64    `json:"error_count"`
+	BytesReceived int64    `json:"bytes_received"`
+	AvgLatencyMS  *float64 `json:"avg_latency_ms"`
+}
+
+type VGatewayHealth struct {
+	Status    VGatewayHealthStatus `json:"status"`
+	LastCheck *time.Time           `json:"last_check"`
+	LatencyMS *float64             `json:"latency_ms"`
+}
+
+type VGatewayStatusResult struct {
+	ID           uuid.UUID                `json:"id"`
+	Status       VGatewayConnectionStatus `json:"status"`
+	ConnectedAt  *time.Time               `json:"connected_at"`
+	LastActivity *time.Time               `json:"last_activity"`
+	Statistics   VGatewayStatusStatistics `json:"statistics"`
+	Health       VGatewayHealth           `json:"health"`
+}
+
+func NewVGatewayService(
+	gateways VGatewayRepository,
+	drivers GatewayDriverRegistry,
+) (*vGatewayService, error) {
+	if gateways == nil {
+		return nil, ErrVGatewayRepositoryRequired
+	}
+	if len(drivers) == 0 {
+		return nil, ErrVGatewayDriversRequired
+	}
+
+	ownedDrivers := make(GatewayDriverRegistry, len(drivers))
+	for gatewayType, driver := range drivers {
+		if gatewayType == "" || driver == nil {
+			return nil, fmt.Errorf(
+				"%w: %q",
+				ErrVGatewayDriverRequired,
+				gatewayType,
+			)
+		}
+		ownedDrivers[gatewayType] = driver
+	}
+
+	return &vGatewayService{
+		gateways: gateways,
+		drivers:  ownedDrivers,
+		runtimes: make(map[uuid.UUID]*vGatewayRuntime),
+		now:      time.Now,
+	}, nil
+}
+
+func (s *vGatewayService) driverFor(
+	gatewayType VGatewayType,
+) (protocol.GatewayDriver, error) {
+	driver, ok := s.drivers[gatewayType]
+	if !ok {
+		return nil, fmt.Errorf(
+			"%w: %q",
+			ErrUnsupportedVGatewayType,
+			gatewayType,
+		)
+	}
+	return driver, nil
+}
