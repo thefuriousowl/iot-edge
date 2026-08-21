@@ -11,6 +11,10 @@ import (
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
+	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
+	"github.com/thefuriousowl/iot-edge/internal/vgateway"
+	vgatewayhttp "github.com/thefuriousowl/iot-edge/internal/vgateway/http"
+	vgatewaypostgres "github.com/thefuriousowl/iot-edge/internal/vgateway/postgres"
 )
 
 func main() {
@@ -53,6 +57,16 @@ func main() {
 		authService,
 		authhttp.WithSecureCookies(cfg.CookieSecure),
 	)
+	vgatewayService, err := vgateway.NewVGatewayService(
+		vgatewaypostgres.NewVGatewayRepository(db),
+		vgateway.GatewayDriverRegistry{
+			vgateway.VGatewayTypeModbusTCP: modbus.NewDefaultModbusTCPDriver(),
+		},
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize vGateway service: %v", err)
+	}
+	vgatewayHandler := vgatewayhttp.NewHandler(vgatewayService)
 
 	app := newApp(cfg.CORSAllowOrigins)
 
@@ -60,6 +74,10 @@ func main() {
 		app.Group("/api"),
 		authHandler,
 		authService,
+	)
+	vgatewayhttp.RegisterRoutes(
+		app.Group("/api", authhttp.RequireAuth(authService)),
+		vgatewayHandler,
 	)
 
 	// Start HTTP server

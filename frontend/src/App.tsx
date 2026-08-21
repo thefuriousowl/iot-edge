@@ -10,6 +10,7 @@ import ProtectedRoute from "./components/common/ProtectedRoute";
 import LoginPage from "./features/auth/pages/LoginPage";
 import SetupPage from "./features/auth/pages/SetupPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
+import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
 
 function App() {
   return (
@@ -39,6 +40,14 @@ function App() {
           element={
             <ProtectedRoute>
               <SystemHealthPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/vgateways"
+          element={
+            <ProtectedRoute>
+              <VGatewayListPage />
             </ProtectedRoute>
           }
         />
