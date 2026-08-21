@@ -1,21 +1,48 @@
 import {
   BrowserRouter,
-  Navigate,
   Route,
   Routes,
 } from "react-router-dom";
 
+import AuthInitializer from "./components/common/AuthInitializer";
+import AuthRoute from "./components/common/AuthRoute";
+import ProtectedRoute from "./components/common/ProtectedRoute";
 import LoginPage from "./features/auth/pages/LoginPage";
+import SetupPage from "./features/auth/pages/SetupPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
 
 function App() {
   return (
     <BrowserRouter>
+      <AuthInitializer />
+
       <Routes>
-        <Route path="/" element={<SystemHealthPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/dashboard" element={<SystemHealthPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<AuthRoute mode="entry" />} />
+        <Route
+          path="/login"
+          element={
+            <AuthRoute mode="login">
+              <LoginPage />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/setup"
+          element={
+            <AuthRoute mode="setup">
+              <SetupPage />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <SystemHealthPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<AuthRoute mode="entry" />} />
       </Routes>
     </BrowserRouter>
   );

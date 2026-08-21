@@ -27,7 +27,7 @@ import (
 
 func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	// Arrange
-	app := newApp()
+	app := newApp("http://localhost:5173")
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 
 	// Act
@@ -66,6 +66,56 @@ func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	}
 }
 
+func TestCORS_AllowsConfiguredHostnameWithCredentials(t *testing.T) {
+	// Arrange
+	const origin = "http://iot-edge.home.arpa:5173"
+	app := newApp(origin)
+	request := httptest.NewRequest(http.MethodOptions, "/api/health", nil)
+	request.Header.Set(fiber.HeaderOrigin, origin)
+	request.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+	request.Header.Set(fiber.HeaderAccessControlRequestHeaders, fiber.HeaderAuthorization)
+
+	// Act
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("CORS preflight returned an unexpected error: %v", err)
+	}
+	defer response.Body.Close()
+
+	// Assert
+	if response.StatusCode != fiber.StatusNoContent {
+		t.Errorf("status = %d, want %d", response.StatusCode, fiber.StatusNoContent)
+	}
+	if got := response.Header.Get(fiber.HeaderAccessControlAllowOrigin); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+	if got := response.Header.Get(fiber.HeaderAccessControlAllowCredentials); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want true", got)
+	}
+	if got := response.Header.Get(fiber.HeaderAccessControlAllowHeaders); !strings.Contains(got, fiber.HeaderAuthorization) {
+		t.Errorf("Access-Control-Allow-Headers = %q, want Authorization", got)
+	}
+}
+
+func TestCORS_DoesNotAllowUnconfiguredOrigin(t *testing.T) {
+	// Arrange
+	app := newApp("http://iot-edge.home.arpa:5173")
+	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	request.Header.Set(fiber.HeaderOrigin, "http://untrusted.example:5173")
+
+	// Act
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("request returned an unexpected error: %v", err)
+	}
+	defer response.Body.Close()
+
+	// Assert
+	if got := response.Header.Get(fiber.HeaderAccessControlAllowOrigin); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
 func TestInitialSetup_Integration(t *testing.T) {
 	db := newInitialSetupTestDatabase(t)
 	users := repository.NewUserRepository(db)
@@ -78,7 +128,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		t.Fatalf("NewAuthService() error: %v", err)
 	}
 
-	app := newApp()
+	app := newApp("http://localhost:5173")
 	routes.RegisterAuthRoutes(
 		app.Group("/api"),
 		handlers.NewAuthHandler(auth),

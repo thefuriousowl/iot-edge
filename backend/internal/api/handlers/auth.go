@@ -16,15 +16,31 @@ import (
 const refreshTokenCookieName = "refresh_token"
 
 type AuthHandler struct {
-	auth     service.AuthService
-	validate *validator.Validate
+	auth         service.AuthService
+	validate     *validator.Validate
+	cookieSecure bool
 }
 
-func NewAuthHandler(auth service.AuthService) *AuthHandler {
-	return &AuthHandler{
-		auth:     auth,
-		validate: validator.New(),
+type AuthHandlerOption func(*AuthHandler)
+
+func WithSecureCookies(secure bool) AuthHandlerOption {
+	return func(handler *AuthHandler) {
+		handler.cookieSecure = secure
 	}
+}
+
+func NewAuthHandler(auth service.AuthService, options ...AuthHandlerOption) *AuthHandler {
+	handler := &AuthHandler{
+		auth:         auth,
+		validate:     validator.New(),
+		cookieSecure: true,
+	}
+
+	for _, option := range options {
+		option(handler)
+	}
+
+	return handler
 }
 
 func (h *AuthHandler) SetupStatus(c *fiber.Ctx) error {
@@ -166,7 +182,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth",
 		Expires:  tokens.RefreshExpiresAt,
-		Secure:   true,
+		Secure:   h.cookieSecure,
 		HTTPOnly: true,
 		SameSite: fiber.CookieSameSiteStrictMode,
 	})
@@ -259,7 +275,7 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 		middleware.LocalUserID,
 	).(uuid.UUID)
 	if !ok {
-		clearRefreshTokenCookie(c)
+		h.clearRefreshTokenCookie(c)
 
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -271,7 +287,7 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 
 	refreshToken := c.Cookies(refreshTokenCookieName)
 	if refreshToken == "" {
-		clearRefreshTokenCookie(c)
+		h.clearRefreshTokenCookie(c)
 
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": fiber.Map{
@@ -288,7 +304,7 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 	)
 	if err != nil {
 		if errors.Is(err, service.ErrSessionExpired) {
-			clearRefreshTokenCookie(c)
+			h.clearRefreshTokenCookie(c)
 
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": fiber.Map{
@@ -306,20 +322,20 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 		})
 	}
 
-	clearRefreshTokenCookie(c)
+	h.clearRefreshTokenCookie(c)
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Logged out successfully",
 	})
 }
-func clearRefreshTokenCookie(c *fiber.Ctx) {
+func (h *AuthHandler) clearRefreshTokenCookie(c *fiber.Ctx) {
 	c.Cookie(&fiber.Cookie{
 		Name:     refreshTokenCookieName,
 		Value:    "",
 		Path:     "/api/auth",
 		MaxAge:   -1,
 		Expires:  time.Unix(0, 0).UTC(),
-		Secure:   true,
+		Secure:   h.cookieSecure,
 		HTTPOnly: true,
 		SameSite: fiber.CookieSameSiteStrictMode,
 	})

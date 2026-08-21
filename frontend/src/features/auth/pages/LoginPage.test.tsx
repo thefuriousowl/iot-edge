@@ -12,6 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { APP_VERSION } from "../../../config/app";
 import { getMe, login } from "../../../services/auth.service";
 import { useAuthStore } from "../../../stores/auth.store";
 import LoginPage from "./LoginPage";
@@ -24,12 +25,13 @@ vi.mock("../../../services/auth.service", () => ({
 const mockedLogin = vi.mocked(login);
 const mockedGetMe = vi.mocked(getMe);
 
-function renderLoginPage() {
+function renderLoginPage(state?: unknown) {
   return render(
-    <MemoryRouter initialEntries={["/login"]}>
+    <MemoryRouter initialEntries={[{ pathname: "/login", state }]}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/dashboard" element={<p>Dashboard reached</p>} />
+        <Route path="/reports" element={<p>Reports reached</p>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -52,6 +54,7 @@ describe("LoginPage", () => {
     expect(
       screen.getByRole("heading", { name: "Welcome back" }),
     ).toBeInTheDocument();
+    expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toHaveAttribute(
       "autocomplete",
       "username",
@@ -123,6 +126,36 @@ describe("LoginPage", () => {
         username: "admin",
       },
     });
+  });
+
+  it("returns to the protected destination after login", async () => {
+    mockedLogin.mockResolvedValue({
+      access_token: "test-access-token",
+      token_type: "Bearer",
+      expires_in: 900,
+    });
+    mockedGetMe.mockResolvedValue({
+      id: "4dd34e70-cae3-4ae9-871f-e4a4a796b750",
+      username: "admin",
+      created_at: "2026-08-21T08:00:00Z",
+      last_login: "2026-08-21T09:00:00Z",
+    });
+    renderLoginPage({
+      from: {
+        pathname: "/reports",
+        search: "?range=today",
+      },
+    });
+
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "SecureP@ss123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByText("Reports reached")).toBeInTheDocument();
   });
 
   it("clears partial session state and shows an API error", async () => {

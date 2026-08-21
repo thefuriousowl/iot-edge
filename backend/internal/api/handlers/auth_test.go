@@ -481,6 +481,53 @@ func TestAuthHandlerLogin_ReturnsAccessTokenAndRefreshCookie(t *testing.T) {
 	}
 }
 
+func TestAuthHandlerLogin_AllowsHTTPRefreshCookieWhenConfigured(t *testing.T) {
+	// Arrange
+	tokens := &service.TokenPair{
+		AccessToken:      "test-access-token",
+		RefreshToken:     "test-refresh-token",
+		AccessExpiresAt:  time.Now().Add(15 * time.Minute),
+		RefreshExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}
+	handler := NewAuthHandler(
+		&fakeLoginService{tokens: tokens},
+		WithSecureCookies(false),
+	)
+	app := fiber.New()
+	app.Post("/api/auth/login", handler.Login)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/auth/login",
+		strings.NewReader(`{"username":"admin","password":"SecureP@ss123"}`),
+	)
+	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+
+	// Act
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("app.Test() error: %v", err)
+	}
+	defer response.Body.Close()
+
+	// Assert
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == refreshTokenCookieName {
+			if cookie.Secure {
+				t.Error("refresh cookie is Secure when HTTP development mode is configured")
+			}
+			if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+				t.Errorf("refresh cookie security attributes = %#v", cookie)
+			}
+			return
+		}
+	}
+
+	t.Fatal("response does not contain refresh_token cookie")
+}
+
 func TestAuthHandlerLogin_RejectsMalformedAndInvalidRequests(t *testing.T) {
 	tests := []struct {
 		name        string

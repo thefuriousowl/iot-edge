@@ -19,6 +19,8 @@ func setupEnv(t *testing.T, envs map[string]string) {
 		"JWT_ACCESS_EXPIRY",
 		"JWT_REFRESH_EXPIRY",
 		"LOG_LEVEL",
+		"CORS_ALLOW_ORIGINS",
+		"COOKIE_SECURE",
 	}
 	for _, key := range configKeys {
 		t.Setenv(key, "")
@@ -129,6 +131,12 @@ func TestLoad_DefaultValues(t *testing.T) {
 	if cfg.JWTRefreshExpiry != 168*time.Hour {
 		t.Errorf("expected default JWTRefreshExpiry 168h, got %v", cfg.JWTRefreshExpiry)
 	}
+	if cfg.CORSAllowOrigins != "http://localhost:5173,http://127.0.0.1:5173,http://iot-edge.home.arpa:5173" {
+		t.Errorf("unexpected default CORSAllowOrigins: %q", cfg.CORSAllowOrigins)
+	}
+	if cfg.CookieSecure {
+		t.Error("expected development cookies to allow HTTP")
+	}
 }
 
 func TestLoad_CustomValues(t *testing.T) {
@@ -141,6 +149,8 @@ func TestLoad_CustomValues(t *testing.T) {
 		"LOG_LEVEL":          "error",
 		"JWT_ACCESS_EXPIRY":  "30m",
 		"JWT_REFRESH_EXPIRY": "24h",
+		"CORS_ALLOW_ORIGINS": "https://iot-edge.example.com",
+		"COOKIE_SECURE":      "true",
 	})
 
 	// Act
@@ -165,6 +175,55 @@ func TestLoad_CustomValues(t *testing.T) {
 	}
 	if cfg.JWTRefreshExpiry != 24*time.Hour {
 		t.Errorf("expected JWTRefreshExpiry 24h, got %v", cfg.JWTRefreshExpiry)
+	}
+	if cfg.CORSAllowOrigins != "https://iot-edge.example.com" {
+		t.Errorf("unexpected CORSAllowOrigins: %q", cfg.CORSAllowOrigins)
+	}
+	if !cfg.CookieSecure {
+		t.Error("expected custom COOKIE_SECURE=true")
+	}
+}
+
+func TestLoad_ProductionDefaultsToSecureCookies(t *testing.T) {
+	// Arrange
+	setupEnv(t, map[string]string{
+		"DATABASE_URL": "postgres://user:pass@localhost:5432/testdb",
+		"JWT_SECRET":   "test-secret-key-minimum-32-characters",
+		"ENV":          "production",
+	})
+
+	// Act
+	cfg, err := Load()
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.CookieSecure {
+		t.Error("expected production cookies to be secure by default")
+	}
+	if cfg.CORSAllowOrigins != "https://iot-edge.home.arpa" {
+		t.Errorf("unexpected production CORSAllowOrigins: %q", cfg.CORSAllowOrigins)
+	}
+}
+
+func TestLoad_InvalidCookieSecureReturnsError(t *testing.T) {
+	// Arrange
+	setupEnv(t, map[string]string{
+		"DATABASE_URL":  "postgres://user:pass@localhost:5432/testdb",
+		"JWT_SECRET":    "test-secret-key-minimum-32-characters",
+		"COOKIE_SECURE": "sometimes",
+	})
+
+	// Act
+	cfg, err := Load()
+
+	// Assert
+	if err == nil {
+		t.Fatal("expected an error for invalid COOKIE_SECURE")
+	}
+	if cfg != nil {
+		t.Errorf("expected nil config, got %#v", cfg)
 	}
 }
 

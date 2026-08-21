@@ -45,9 +45,12 @@ func main() {
 		log.Fatalf("failed to initialize auth service: %v", err)
 	}
 
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(
+		authService,
+		handlers.WithSecureCookies(cfg.CookieSecure),
+	)
 
-	app := newApp()
+	app := newApp(cfg.CORSAllowOrigins)
 
 	routes.RegisterAuthRoutes(
 		app.Group("/api"),
@@ -64,11 +67,15 @@ func main() {
 	}
 }
 
-func newApp() *fiber.App {
+func newApp(corsAllowOrigins string) *fiber.App {
 	app := fiber.New()
 
 	app.Use(logger.New())
-	app.Use(cors.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     corsAllowOrigins,
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowCredentials: true,
+	}))
 
 	app.Get("/api/health", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{

@@ -1,9 +1,24 @@
 import { AxiosHeaders, type AxiosRequestConfig, type AxiosResponse } from "axios";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import api from "../services/api";
+import {
+  checkSetupStatus,
+  getMe,
+  refreshAccessToken,
+} from "../services/auth.service";
 import type { AuthUser } from "../types/auth";
 import { useAuthStore } from "./auth.store";
+
+vi.mock("../services/auth.service", () => ({
+  checkSetupStatus: vi.fn(),
+  getMe: vi.fn(),
+  refreshAccessToken: vi.fn(),
+}));
+
+const mockedCheckSetupStatus = vi.mocked(checkSetupStatus);
+const mockedGetMe = vi.mocked(getMe);
+const mockedRefreshAccessToken = vi.mocked(refreshAccessToken);
 
 const user: AuthUser = {
   id: "4dd34e70-cae3-4ae9-871f-e4a4a796b750",
@@ -27,6 +42,16 @@ function successfulAdapter(
 describe("auth store", () => {
   beforeEach(() => {
     useAuthStore.getState().clearSession();
+    useAuthStore.setState({ setupRequired: null });
+    mockedCheckSetupStatus.mockReset();
+    mockedCheckSetupStatus.mockResolvedValue({ setup_required: false });
+    mockedGetMe.mockReset();
+    mockedRefreshAccessToken.mockReset();
+  });
+
+  afterEach(() => {
+    useAuthStore.getState().clearSession();
+    vi.useRealTimers();
   });
 
   it("starts with an anonymous in-memory session", () => {
@@ -34,7 +59,9 @@ describe("auth store", () => {
       user: null,
       accessToken: null,
       isAuthenticated: false,
+      isInitialized: true,
       isLoading: false,
+      setupRequired: null,
     });
   });
 
@@ -101,5 +128,137 @@ describe("auth store", () => {
     });
 
     expect(response.config.headers.Authorization).toBeUndefined();
+  });
+
+  it("refreshes the access token before it expires and reschedules", async () => {
+    vi.useFakeTimers();
+    mockedRefreshAccessToken.mockResolvedValue({
+      access_token: "proactively-refreshed-token",
+      expires_in: 900,
+    });
+    useAuthStore.getState().setSession(user, "initial-access-token", 900);
+
+    await vi.advanceTimersByTimeAsync(839_999);
+    expect(mockedRefreshAccessToken).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(mockedRefreshAccessToken).toHaveBeenCalledOnce();
+    expect(useAuthStore.getState().accessToken).toBe(
+      "proactively-refreshed-token",
+    );
+  });
+
+  it("cancels proactive refresh when the session is cleared", async () => {
+    vi.useFakeTimers();
+    useAuthStore.getState().setSession(user, "initial-access-token", 900);
+
+    useAuthStore.getState().clearSession();
+    await vi.advanceTimersByTimeAsync(840_000);
+
+    expect(mockedRefreshAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("restores a session from the refresh cookie", async () => {
+    mockedRefreshAccessToken.mockResolvedValue({
+      access_token: "restored-access-token",
+      expires_in: 900,
+    });
+    mockedGetMe.mockResolvedValue(user);
+    useAuthStore.setState({
+      isInitialized: false,
+      isLoading: false,
+    });
+
+    await useAuthStore.getState().initializeSession();
+
+    expect(mockedRefreshAccessToken).toHaveBeenCalledOnce();
+    expect(mockedCheckSetupStatus).toHaveBeenCalledOnce();
+    expect(mockedGetMe).toHaveBeenCalledOnce();
+    expect(useAuthStore.getState()).toMatchObject({
+      user,
+      accessToken: "restored-access-token",
+      isAuthenticated: true,
+      isInitialized: true,
+      isLoading: false,
+    });
+  });
+
+  it("shares one initialization attempt in React Strict Mode", async () => {
+    let resolveRefresh!: (response: {
+      access_token: string;
+      expires_in: number;
+    }) => void;
+    mockedRefreshAccessToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    mockedGetMe.mockResolvedValue(user);
+    useAuthStore.setState({
+      isInitialized: false,
+      isLoading: false,
+    });
+
+    const firstInitialization = useAuthStore.getState().initializeSession();
+    const secondInitialization = useAuthStore.getState().initializeSession();
+
+    await vi.waitFor(() => {
+      expect(mockedRefreshAccessToken).toHaveBeenCalledOnce();
+    });
+    resolveRefresh({ access_token: "restored-access-token", expires_in: 900 });
+    await Promise.all([firstInitialization, secondInitialization]);
+
+    expect(mockedGetMe).toHaveBeenCalledOnce();
+  });
+
+  it("finishes anonymously when session restoration fails", async () => {
+    mockedRefreshAccessToken.mockRejectedValue(new Error("session expired"));
+    useAuthStore.setState({
+      isInitialized: false,
+      isLoading: false,
+    });
+
+    await useAuthStore.getState().initializeSession();
+
+    expect(mockedGetMe).not.toHaveBeenCalled();
+    expect(useAuthStore.getState()).toMatchObject({
+      user: null,
+      accessToken: null,
+      isAuthenticated: false,
+      isInitialized: true,
+      isLoading: false,
+    });
+  });
+
+  it("stops at initial setup without attempting session refresh", async () => {
+    mockedCheckSetupStatus.mockResolvedValue({ setup_required: true });
+    useAuthStore.setState({
+      isInitialized: false,
+      isLoading: false,
+    });
+
+    await useAuthStore.getState().initializeSession();
+
+    expect(mockedRefreshAccessToken).not.toHaveBeenCalled();
+    expect(mockedGetMe).not.toHaveBeenCalled();
+    expect(useAuthStore.getState()).toMatchObject({
+      isAuthenticated: false,
+      isInitialized: true,
+      isLoading: false,
+      setupRequired: true,
+    });
+  });
+
+  it("marks setup complete without authenticating the new account", () => {
+    useAuthStore.setState({ setupRequired: true });
+
+    useAuthStore.getState().markSetupComplete();
+
+    expect(useAuthStore.getState()).toMatchObject({
+      isAuthenticated: false,
+      setupRequired: false,
+    });
   });
 });

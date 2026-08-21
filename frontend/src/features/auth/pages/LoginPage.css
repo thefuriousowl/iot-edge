@@ -83,6 +83,14 @@
   animation: login-form-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.setup-page {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.setup-form-shell {
+  width: min(100%, 36rem);
+}
+
 .login-heading {
   margin-bottom: 3rem;
 }
@@ -105,6 +113,10 @@
 .login-form {
   display: grid;
   gap: 2rem;
+}
+
+.setup-form {
+  gap: 1.5rem;
 }
 
 .login-request-error {
@@ -259,6 +271,53 @@
   animation: login-spin 800ms linear infinite;
 }
 
+.setup-requirements {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: -0.125rem;
+}
+
+.setup-requirements h2 {
+  margin: 0;
+  color: var(--login-muted);
+  font-size: 0.925rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.setup-requirements ul {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-requirements li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  color: var(--login-muted);
+  font-size: 0.825rem;
+  line-height: 1.45;
+  transition: color 160ms ease;
+}
+
+.setup-requirements li svg {
+  flex: 0 0 auto;
+  margin-top: 0.05rem;
+  color: #526778;
+  transition: color 160ms ease;
+}
+
+.setup-requirements li.is-valid {
+  color: var(--login-text);
+}
+
+.setup-requirements li.is-valid svg {
+  color: var(--login-accent);
+}
+
 @keyframes login-form-enter {
   from {
     transform: translateY(0.75rem);
@@ -352,6 +411,10 @@
     gap: 1.5rem;
   }
 
+  .setup-form {
+    gap: 1.35rem;
+  }
+
   .login-field input {
     min-height: 3.75rem;
   }
@@ -360,6 +423,20 @@
     min-height: 3.75rem;
     margin-top: 0.25rem;
   }
+}
+
+
+.login-brand-text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.login-brand-version {
+  color: var(--login-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 @media (prefers-reduced-motion: reduce) {

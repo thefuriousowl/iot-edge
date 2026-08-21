@@ -2,14 +2,13 @@ import { useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import axios from "axios";
 import {
-  Activity,
   CircleAlert,
   Eye,
   EyeOff,
   LoaderCircle,
 } from "lucide-react";
 import { useForm } from "react-hook-form";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { z } from "zod";
 
 import desktopArtwork from "../../../assets/login-industrial-network.jpg";
@@ -17,6 +16,7 @@ import mobileArtwork from "../../../assets/login-industrial-network-mobile.jpg";
 import { getMe, login } from "../../../services/auth.service";
 import { useAuthStore } from "../../../stores/auth.store";
 import type { ApiErrorResponse } from "../../../types/auth";
+import AuthBrand from "../components/AuthBrand";
 import "./LoginPage.css";
 
 const loginSchema = z.object({
@@ -29,6 +29,24 @@ const loginSchema = z.object({
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
+
+interface LoginLocationState {
+  from?: {
+    hash?: string;
+    pathname?: string;
+    search?: string;
+  };
+}
+
+function getLoginDestination(state: unknown): string {
+  const from = (state as LoginLocationState | null)?.from;
+
+  if (!from?.pathname || from.pathname === "/login" || from.pathname === "/setup") {
+    return "/dashboard";
+  }
+
+  return `${from.pathname}${from.search ?? ""}${from.hash ?? ""}`;
+}
 
 function getLoginErrorMessage(error: unknown): string {
   if (axios.isAxiosError<ApiErrorResponse>(error)) {
@@ -43,6 +61,7 @@ function getLoginErrorMessage(error: unknown): string {
 }
 
 function LoginPage() {
+  const location = useLocation();
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -71,8 +90,12 @@ function LoginPage() {
       setAccessToken(tokenResponse.access_token);
 
       const user = await getMe();
-      setSession(user, tokenResponse.access_token);
-      navigate("/dashboard", { replace: true });
+      setSession(
+        user,
+        tokenResponse.access_token,
+        tokenResponse.expires_in,
+      );
+      navigate(getLoginDestination(location.state), { replace: true });
     } catch (error) {
       clearSession();
       setRequestError(getLoginErrorMessage(error));
@@ -94,10 +117,7 @@ function LoginPage() {
           />
         </picture>
 
-        <div className="login-brand">
-          <Activity aria-hidden="true" strokeWidth={2.25} />
-          <span>IoT Edge</span>
-        </div>
+        <AuthBrand />
       </section>
 
       <section className="login-workspace">
