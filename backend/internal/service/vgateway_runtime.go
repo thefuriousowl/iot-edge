@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"sync"
 	"time"
 
@@ -41,6 +42,24 @@ func (s *vGatewayService) runtimeForGateway(
 	return runtime
 }
 
+func gatewayClientIsNil(client protocol.GatewayClient) bool {
+	if client == nil {
+		return true
+	}
+	value := reflect.ValueOf(client)
+	switch value.Kind() {
+	case reflect.Chan,
+		reflect.Func,
+		reflect.Interface,
+		reflect.Map,
+		reflect.Pointer,
+		reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func (s *vGatewayService) reconcileRuntimeAfterUpdate(
 	id uuid.UUID,
 	enabled bool,
@@ -61,7 +80,7 @@ func (s *vGatewayService) reconcileRuntimeAfterUpdate(
 	runtime.mu.Unlock()
 
 	var disconnectErr error
-	if client != nil {
+	if !gatewayClientIsNil(client) {
 		disconnectErr = client.Disconnect()
 	}
 

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,10 @@ type ModbusTCPConfig struct {
 	RetryDelay        int    `json:"retry_delay"`
 	KeepAlive         bool   `json:"keep_alive"`
 	ReconnectInterval int    `json:"reconnect_interval"`
+}
+
+type ModbusTCPConnectionTestInput struct {
+	UnitID *uint8 `json:"unit_id"`
 }
 
 type ModbusClientFactory func(
@@ -135,6 +140,65 @@ func (d *modbusTCPDriver) NewClient(
 	}
 
 	return d.clients(config)
+}
+
+func (d *modbusTCPDriver) PrepareConnectionTest(
+	raw json.RawMessage,
+) (ConnectionProbe, error) {
+	var input ModbusTCPConnectionTestInput
+	if len(bytes.TrimSpace(raw)) != 0 {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			return nil, fmt.Errorf(
+				"%w: decode Modbus TCP test options: %v",
+				ErrInvalidGatewayTestOptions,
+				err,
+			)
+		}
+		if err := ensureJSONDocumentEnded(decoder); err != nil {
+			return nil, fmt.Errorf(
+				"%w: decode Modbus TCP test options: %v",
+				ErrInvalidGatewayTestOptions,
+				err,
+			)
+		}
+	}
+
+	return func(
+		ctx context.Context,
+		client GatewayClient,
+	) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if input.UnitID == nil {
+			return nil
+		}
+
+		modbusClient, ok := client.(ModbusClient)
+		if !ok {
+			return fmt.Errorf(
+				"%w: Modbus TCP driver received %T",
+				ErrGatewayClientType,
+				client,
+			)
+		}
+		_, err := modbusClient.Read(ctx, ReadRequest{
+			UnitID:       *input.UnitID,
+			FunctionCode: FunctionReadHoldingRegisters,
+			Address:      0,
+			Quantity:     1,
+		})
+		if err != nil {
+			return fmt.Errorf(
+				"test Modbus TCP read for unit %d: %w",
+				*input.UnitID,
+				err,
+			)
+		}
+		return nil
+	}, nil
 }
 
 func validateModbusTCPGatewayConfig(

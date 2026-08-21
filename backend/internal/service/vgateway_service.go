@@ -25,6 +25,9 @@ var (
 	ErrInvalidVGatewayConfig = errors.New(
 		"invalid vGateway config",
 	)
+	ErrInvalidVGatewayTestInput = errors.New(
+		"invalid vGateway connection test input",
+	)
 	ErrInvalidVGatewayName     = errors.New("invalid vGateway name")
 	ErrUnsupportedVGatewayType = errors.New("unsupported vGateway type")
 	ErrVGatewayDisabled        = errors.New("vGateway is disabled")
@@ -78,6 +81,12 @@ type UpdateVGatewayInput struct {
 	Description OptionalDescription
 	Enabled     *bool
 	Config      *domain.VGatewayConfig
+}
+
+type VGatewayConnectionTestResult struct {
+	Success bool
+	Latency time.Duration
+	Error   error
 }
 
 type vGatewayService struct {

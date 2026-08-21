@@ -694,6 +694,11 @@ type stubModbusClient struct {
 	connectRelease  <-chan struct{}
 	disconnectCalls int
 	disconnectErr   error
+	disconnectStart chan<- struct{}
+	disconnectWait  <-chan struct{}
+	readCalls       int
+	readRequest     protocol.ReadRequest
+	readErr         error
 }
 
 var _ protocol.ModbusClient = (*stubModbusClient)(nil)
@@ -740,10 +745,20 @@ func (c *stubModbusClient) setConnectError(err error) {
 
 func (c *stubModbusClient) Disconnect() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.disconnectCalls++
 	c.connected = false
-	return c.disconnectErr
+	disconnectErr := c.disconnectErr
+	disconnectStart := c.disconnectStart
+	disconnectWait := c.disconnectWait
+	c.mu.Unlock()
+
+	if disconnectStart != nil {
+		disconnectStart <- struct{}{}
+	}
+	if disconnectWait != nil {
+		<-disconnectWait
+	}
+	return disconnectErr
 }
 
 func (c *stubModbusClient) IsConnected() bool {
@@ -752,8 +767,21 @@ func (c *stubModbusClient) IsConnected() bool {
 	return c.connected
 }
 
-func (*stubModbusClient) Read(context.Context, protocol.ReadRequest) ([]byte, error) {
-	return nil, nil
+func (c *stubModbusClient) Read(
+	_ context.Context,
+	request protocol.ReadRequest,
+) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readCalls++
+	c.readRequest = request
+	return nil, c.readErr
+}
+
+func (c *stubModbusClient) readCallState() (int, protocol.ReadRequest) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readCalls, c.readRequest
 }
 
 func (c *stubModbusClient) disconnectCallCount() int {

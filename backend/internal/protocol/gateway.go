@@ -16,6 +16,12 @@ var (
 	ErrGatewayClientRequired = errors.New(
 		"gateway client is required",
 	)
+	ErrInvalidGatewayTestOptions = errors.New(
+		"invalid gateway test options",
+	)
+	ErrGatewayClientType = errors.New(
+		"unexpected gateway client type",
+	)
 )
 
 type GatewayClient interface {
@@ -24,10 +30,16 @@ type GatewayClient interface {
 	IsConnected() bool
 }
 
+type ConnectionProbe func(
+	ctx context.Context,
+	client GatewayClient,
+) error
+
 // GatewayDriver is the protocol-specific boundary used by VGatewayService.
 // It converts an API/persistence JSON object into a canonical validated form
 // and creates a lifecycle client without exposing protocol details upstream.
 type GatewayDriver interface {
 	NormalizeConfig(raw json.RawMessage) (json.RawMessage, error)
 	NewClient(config json.RawMessage) (GatewayClient, error)
+	PrepareConnectionTest(options json.RawMessage) (ConnectionProbe, error)
 }

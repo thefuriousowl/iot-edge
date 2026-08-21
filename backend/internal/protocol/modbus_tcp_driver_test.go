@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -199,6 +200,131 @@ func TestModbusTCPDriverNewClientDecodesTypedConfigLazily(t *testing.T) {
 		t.Fatalf("factory calls/config = (%d, %#v), want one typed call", factoryCalls, gotConfig)
 	}
 }
+
+func TestModbusTCPDriverPreparesConnectionOnlyTestWithoutUnitID(t *testing.T) {
+	t.Parallel()
+
+	driver := newTestModbusTCPDriver(t, nil)
+	tests := []struct {
+		name    string
+		options json.RawMessage
+	}{
+		{name: "omitted options", options: nil},
+		{name: "empty object", options: json.RawMessage(`{}`)},
+		{name: "null options", options: json.RawMessage(`null`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			probe, err := driver.PrepareConnectionTest(tt.options)
+			if err != nil {
+				t.Fatalf("PrepareConnectionTest() error = %v", err)
+			}
+			if probe == nil {
+				t.Fatal("PrepareConnectionTest() probe = nil")
+			}
+			if err := probe(context.Background(), &gatewayOnlyClient{}); err != nil {
+				t.Fatalf("connection-only probe error = %v", err)
+			}
+		})
+	}
+}
+
+func TestModbusTCPDriverConnectionProbeReadsHoldingRegister(t *testing.T) {
+	t.Parallel()
+
+	driver := newTestModbusTCPDriver(t, nil)
+	probe, err := driver.PrepareConnectionTest(
+		json.RawMessage(`{"unit_id":7}`),
+	)
+	if err != nil {
+		t.Fatalf("PrepareConnectionTest() error = %v", err)
+	}
+	client := &fakeModbusClient{readData: []byte{0x12, 0x34}}
+	if err := probe(context.Background(), client); err != nil {
+		t.Fatalf("probe() error = %v", err)
+	}
+	want := ReadRequest{
+		UnitID:       7,
+		FunctionCode: FunctionReadHoldingRegisters,
+		Address:      0,
+		Quantity:     1,
+	}
+	if client.lastRequest != want {
+		t.Fatalf("probe request = %#v, want %#v", client.lastRequest, want)
+	}
+}
+
+func TestModbusTCPDriverConnectionTestRejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		options string
+	}{
+		{name: "malformed", options: `{"unit_id":`},
+		{name: "unknown field", options: `{"unit_id":1,"address":0}`},
+		{name: "negative unit ID", options: `{"unit_id":-1}`},
+		{name: "unit ID above maximum", options: `{"unit_id":256}`},
+		{name: "fractional unit ID", options: `{"unit_id":1.5}`},
+		{name: "multiple documents", options: `{"unit_id":1} {}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			driver := newTestModbusTCPDriver(t, nil)
+			probe, err := driver.PrepareConnectionTest(
+				json.RawMessage(tt.options),
+			)
+			if probe != nil {
+				t.Fatalf("PrepareConnectionTest() probe = %#v, want nil", probe)
+			}
+			if !errors.Is(err, ErrInvalidGatewayTestOptions) {
+				t.Fatalf("PrepareConnectionTest() error = %v, want invalid options", err)
+			}
+		})
+	}
+}
+
+func TestModbusTCPDriverConnectionProbePreservesReadAndClientErrors(t *testing.T) {
+	t.Parallel()
+
+	driver := newTestModbusTCPDriver(t, nil)
+	probe, err := driver.PrepareConnectionTest(
+		json.RawMessage(`{"unit_id":1}`),
+	)
+	if err != nil {
+		t.Fatalf("PrepareConnectionTest() error = %v", err)
+	}
+
+	readErr := errors.New("Modbus exception")
+	if err := probe(context.Background(), &fakeModbusClient{readErr: readErr}); !errors.Is(err, readErr) {
+		t.Fatalf("probe() read error = %v, want %v", err, readErr)
+	}
+	if err := probe(context.Background(), &gatewayOnlyClient{}); !errors.Is(err, ErrGatewayClientType) {
+		t.Fatalf("probe() client error = %v, want client type error", err)
+	}
+}
+
+type gatewayOnlyClient struct {
+	connected bool
+}
+
+func (c *gatewayOnlyClient) Connect(context.Context) error {
+	c.connected = true
+	return nil
+}
+
+func (c *gatewayOnlyClient) Disconnect() error {
+	c.connected = false
+	return nil
+}
+
+func (c *gatewayOnlyClient) IsConnected() bool {
+	return c.connected
+}
+
+var _ GatewayClient = (*gatewayOnlyClient)(nil)
 
 func newTestModbusTCPDriver(
 	t *testing.T,

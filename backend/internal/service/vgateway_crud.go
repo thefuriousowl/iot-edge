@@ -224,7 +224,7 @@ func (s *vGatewayService) Delete(
 		client := runtime.client
 		runtime.mu.Unlock()
 
-		if client != nil {
+		if !gatewayClientIsNil(client) {
 			disconnectErr := client.Disconnect()
 			runtime.mu.Lock()
 			runtime.client = nil

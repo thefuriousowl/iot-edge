@@ -207,8 +207,9 @@ type stubVGatewayRepository struct {
 }
 
 type stubGatewayDriver struct {
-	normalizeConfigFunc func(json.RawMessage) (json.RawMessage, error)
-	newClientFunc       func(json.RawMessage) (protocol.GatewayClient, error)
+	normalizeConfigFunc       func(json.RawMessage) (json.RawMessage, error)
+	newClientFunc             func(json.RawMessage) (protocol.GatewayClient, error)
+	prepareConnectionTestFunc func(json.RawMessage) (protocol.ConnectionProbe, error)
 }
 
 var _ protocol.GatewayDriver = (*stubGatewayDriver)(nil)
@@ -229,6 +230,17 @@ func (d *stubGatewayDriver) NewClient(
 		return d.newClientFunc(config)
 	}
 	return nil, nil
+}
+
+func (d *stubGatewayDriver) PrepareConnectionTest(
+	options json.RawMessage,
+) (protocol.ConnectionProbe, error) {
+	if d.prepareConnectionTestFunc != nil {
+		return d.prepareConnectionTestFunc(options)
+	}
+	return func(context.Context, protocol.GatewayClient) error {
+		return nil
+	}, nil
 }
 
 var _ repository.VGatewayRepository = (*stubVGatewayRepository)(nil)
