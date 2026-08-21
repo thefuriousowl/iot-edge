@@ -45,6 +45,7 @@ logs/
 
 # Test coverage
 coverage/
+coverage.out
 *.cover
 *.coverage
 
