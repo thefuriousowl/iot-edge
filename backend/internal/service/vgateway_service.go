@@ -98,6 +98,36 @@ type vGatewayService struct {
 	now      func() time.Time
 }
 
+type VGatewayHealthStatus string
+
+const (
+	VGatewayHealthHealthy   VGatewayHealthStatus = "healthy"
+	VGatewayHealthUnhealthy VGatewayHealthStatus = "unhealthy"
+	VGatewayHealthUnknown   VGatewayHealthStatus = "unknown"
+)
+
+type VGatewayStatusStatistics struct {
+	RequestCount  int64    `json:"request_count"`
+	ErrorCount    int64    `json:"error_count"`
+	BytesReceived int64    `json:"bytes_received"`
+	AvgLatencyMS  *float64 `json:"avg_latency_ms"`
+}
+
+type VGatewayHealth struct {
+	Status    VGatewayHealthStatus `json:"status"`
+	LastCheck *time.Time           `json:"last_check"`
+	LatencyMS *float64             `json:"latency_ms"`
+}
+
+type VGatewayStatusResult struct {
+	ID           uuid.UUID                       `json:"id"`
+	Status       domain.VGatewayConnectionStatus `json:"status"`
+	ConnectedAt  *time.Time                      `json:"connected_at"`
+	LastActivity *time.Time                      `json:"last_activity"`
+	Statistics   VGatewayStatusStatistics        `json:"statistics"`
+	Health       VGatewayHealth                  `json:"health"`
+}
+
 func NewVGatewayService(
 	gateways repository.VGatewayRepository,
 	drivers GatewayDriverRegistry,
