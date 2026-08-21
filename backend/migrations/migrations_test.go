@@ -133,6 +133,183 @@ func TestCreateUsersMigration_Integration(t *testing.T) {
 	}
 }
 
+func TestCreateVGatewaysMigration_Integration(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run the PostgreSQL migration test")
+	}
+
+	ctx := context.Background()
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("opening PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("closing PostgreSQL connection: %v", err)
+		}
+	})
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("getting dedicated PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing dedicated PostgreSQL connection: %v", err)
+		}
+	})
+
+	schemaName := "vgateway_migration_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := conn.ExecContext(ctx, "CREATE SCHEMA "+schemaName); err != nil {
+		t.Fatalf("creating isolated test schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE"); err != nil {
+			t.Errorf("dropping isolated test schema: %v", err)
+		}
+	})
+
+	if _, err := conn.ExecContext(ctx, "SET search_path TO "+schemaName+", public"); err != nil {
+		t.Fatalf("setting test schema search path: %v", err)
+	}
+
+	applyMigrationFile(t, ctx, conn, "000002_create_vgateways.up.sql")
+
+	for _, relationName := range []string{
+		"vgateways",
+		"vgateway_stats",
+		"idx_vgateways_type",
+		"idx_vgateways_enabled",
+		"idx_vgateway_stats_vgateway",
+		"idx_vgateway_stats_recorded",
+	} {
+		if !relationExists(t, ctx, conn, schemaName, relationName) {
+			t.Errorf("relation %q was not created", relationName)
+		}
+	}
+
+	var (
+		gatewayID string
+		enabled   bool
+	)
+	err = conn.QueryRowContext(ctx, `
+		INSERT INTO vgateways (name, type, config)
+		VALUES ($1, $2, $3)
+		RETURNING id, enabled
+	`, "Main PLC Gateway", "modbus_tcp", `{"host":"192.168.1.100","port":502}`).Scan(
+		&gatewayID,
+		&enabled,
+	)
+	if err != nil {
+		t.Fatalf("inserting vGateway with database defaults: %v", err)
+	}
+	if !enabled {
+		t.Error("new vGateway enabled = false, want true")
+	}
+
+	invalidGateways := []struct {
+		name        string
+		gatewayName string
+		gatewayType string
+		config      string
+	}{
+		{
+			name:        "duplicate name",
+			gatewayName: "Main PLC Gateway",
+			gatewayType: "modbus_tcp",
+			config:      `{"host":"192.168.1.101","port":502}`,
+		},
+		{
+			name:        "unsupported type",
+			gatewayName: "Future Gateway",
+			gatewayType: "mqtt",
+			config:      `{"broker":"mqtt.example.com"}`,
+		},
+		{
+			name:        "non-object config",
+			gatewayName: "Invalid Config Gateway",
+			gatewayType: "modbus_tcp",
+			config:      `[]`,
+		},
+	}
+	for _, testCase := range invalidGateways {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := conn.ExecContext(ctx, `
+				INSERT INTO vgateways (name, type, config)
+				VALUES ($1, $2, $3)
+			`, testCase.gatewayName, testCase.gatewayType, testCase.config); err == nil {
+				t.Errorf("inserting invalid vGateway succeeded: %s", testCase.name)
+			}
+		})
+	}
+
+	var (
+		statsID       string
+		requestCount  int64
+		errorCount    int64
+		bytesReceived int64
+	)
+	err = conn.QueryRowContext(ctx, `
+		INSERT INTO vgateway_stats (vgateway_id)
+		VALUES ($1)
+		RETURNING id, request_count, error_count, bytes_received
+	`, gatewayID).Scan(&statsID, &requestCount, &errorCount, &bytesReceived)
+	if err != nil {
+		t.Fatalf("inserting vGateway stats with database defaults: %v", err)
+	}
+	if requestCount != 0 || errorCount != 0 || bytesReceived != 0 {
+		t.Errorf(
+			"new stats counters = (%d, %d, %d), want all zero",
+			requestCount,
+			errorCount,
+			bytesReceived,
+		)
+	}
+
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO vgateway_stats (vgateway_id, request_count)
+		VALUES ($1, -1)
+	`, gatewayID); err == nil {
+		t.Error("inserting negative request_count succeeded")
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO vgateway_stats (vgateway_id, avg_latency_ms)
+		VALUES ($1, -0.01)
+	`, gatewayID); err == nil {
+		t.Error("inserting negative avg_latency_ms succeeded")
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO vgateway_stats (vgateway_id)
+		VALUES ($1)
+	`, uuid.NewString()); err == nil {
+		t.Error("inserting stats for an unknown vGateway succeeded")
+	}
+
+	if _, err := conn.ExecContext(ctx, "DELETE FROM vgateways WHERE id = $1", gatewayID); err != nil {
+		t.Fatalf("deleting vGateway: %v", err)
+	}
+	var statsCount int
+	if err := conn.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM vgateway_stats WHERE id = $1",
+		statsID,
+	).Scan(&statsCount); err != nil {
+		t.Fatalf("counting cascaded vGateway stats: %v", err)
+	}
+	if statsCount != 0 {
+		t.Errorf("stats rows after deleting vGateway = %d, want 0", statsCount)
+	}
+
+	applyMigrationFile(t, ctx, conn, "000002_create_vgateways.down.sql")
+
+	for _, tableName := range []string{"vgateway_stats", "vgateways"} {
+		if relationExists(t, ctx, conn, schemaName, tableName) {
+			t.Errorf("table %q still exists after down migration", tableName)
+		}
+	}
+}
+
 func applyMigrationFile(t *testing.T, ctx context.Context, conn *sql.Conn, filename string) {
 	t.Helper()
 

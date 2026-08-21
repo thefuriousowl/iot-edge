@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS vgateway_stats;
+DROP TABLE IF EXISTS vgateways;
+
+COMMIT;
