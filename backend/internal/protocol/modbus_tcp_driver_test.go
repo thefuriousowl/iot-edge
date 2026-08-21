@@ -1,0 +1,249 @@
+package protocol
+
+import (
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestNewModbusTCPDriverRequiresFactory(t *testing.T) {
+	t.Parallel()
+
+	driver, err := NewModbusTCPDriver(nil)
+	if driver != nil {
+		t.Fatalf("NewModbusTCPDriver() driver = %#v, want nil", driver)
+	}
+	if !errors.Is(err, ErrGatewayClientFactoryRequired) {
+		t.Fatalf("NewModbusTCPDriver() error = %v, want factory error", err)
+	}
+}
+
+func TestModbusTCPDriverNormalizeConfigAppliesDefaults(t *testing.T) {
+	t.Parallel()
+
+	driver := newTestModbusTCPDriver(t, nil)
+	got := normalizeAndDecodeModbusConfig(t, driver, ModbusTCPConfigInput{
+		Host: "  plc.example.local  ",
+	})
+	want := ModbusTCPConfig{
+		Host:              "plc.example.local",
+		Port:              DefaultModbusTCPPort,
+		Timeout:           DefaultModbusTCPTimeout,
+		RetryCount:        DefaultModbusTCPRetryCount,
+		RetryDelay:        DefaultModbusTCPRetryDelay,
+		KeepAlive:         true,
+		ReconnectInterval: DefaultModbusTCPReconnectInterval,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NormalizeConfig() = %#v, want %#v", got, want)
+	}
+}
+
+func TestModbusTCPDriverNormalizeConfigPreservesExplicitValues(t *testing.T) {
+	t.Parallel()
+
+	port := 1502
+	timeout := 100
+	retryCount := 0
+	retryDelay := 0
+	keepAlive := false
+	reconnectInterval := 0
+	driver := newTestModbusTCPDriver(t, nil)
+	got := normalizeAndDecodeModbusConfig(t, driver, ModbusTCPConfigInput{
+		Host:              "192.0.2.25",
+		Port:              &port,
+		Timeout:           &timeout,
+		RetryCount:        &retryCount,
+		RetryDelay:        &retryDelay,
+		KeepAlive:         &keepAlive,
+		ReconnectInterval: &reconnectInterval,
+	})
+	want := ModbusTCPConfig{
+		Host:              "192.0.2.25",
+		Port:              1502,
+		Timeout:           100,
+		RetryCount:        0,
+		RetryDelay:        0,
+		KeepAlive:         false,
+		ReconnectInterval: 0,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NormalizeConfig() = %#v, want %#v", got, want)
+	}
+}
+
+func TestModbusTCPDriverNormalizeConfigAcceptsBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		port       int
+		timeout    int
+		retryCount int
+	}{
+		{name: "minimum values", port: 1, timeout: 100, retryCount: 0},
+		{name: "maximum values", port: 65535, timeout: 60000, retryCount: 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			driver := newTestModbusTCPDriver(t, nil)
+			normalizeAndDecodeModbusConfig(t, driver, ModbusTCPConfigInput{
+				Host:       "plc.example.local",
+				Port:       &tt.port,
+				Timeout:    &tt.timeout,
+				RetryCount: &tt.retryCount,
+			})
+		})
+	}
+}
+
+func TestModbusTCPDriverNormalizeConfigRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		input      ModbusTCPConfigInput
+		wantDetail string
+	}{
+		{name: "empty host", input: ModbusTCPConfigInput{}, wantDetail: "host is required"},
+		{name: "whitespace host", input: ModbusTCPConfigInput{Host: "  \t"}, wantDetail: "host is required"},
+		{name: "port below minimum", input: ModbusTCPConfigInput{Host: "plc.example.local", Port: intPointer(0)}, wantDetail: "port must be between 1 and 65535"},
+		{name: "port above maximum", input: ModbusTCPConfigInput{Host: "plc.example.local", Port: intPointer(65536)}, wantDetail: "port must be between 1 and 65535"},
+		{name: "timeout below minimum", input: ModbusTCPConfigInput{Host: "plc.example.local", Timeout: intPointer(99)}, wantDetail: "timeout must be between 100 and 60000 milliseconds"},
+		{name: "timeout above maximum", input: ModbusTCPConfigInput{Host: "plc.example.local", Timeout: intPointer(60001)}, wantDetail: "timeout must be between 100 and 60000 milliseconds"},
+		{name: "retry count below minimum", input: ModbusTCPConfigInput{Host: "plc.example.local", RetryCount: intPointer(-1)}, wantDetail: "retry count must be between 0 and 10"},
+		{name: "retry count above maximum", input: ModbusTCPConfigInput{Host: "plc.example.local", RetryCount: intPointer(11)}, wantDetail: "retry count must be between 0 and 10"},
+		{name: "negative retry delay", input: ModbusTCPConfigInput{Host: "plc.example.local", RetryDelay: intPointer(-1)}, wantDetail: "retry delay must not be negative"},
+		{name: "negative reconnect interval", input: ModbusTCPConfigInput{Host: "plc.example.local", ReconnectInterval: intPointer(-1)}, wantDetail: "reconnect interval must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			driver := newTestModbusTCPDriver(t, nil)
+			raw, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			got, err := driver.NormalizeConfig(raw)
+			if !errors.Is(err, ErrInvalidGatewayConfig) {
+				t.Fatalf("NormalizeConfig() error = %v, want config error", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("error = %q, want detail %q", err, tt.wantDetail)
+			}
+			if got != nil {
+				t.Fatalf("invalid normalized config = %s, want nil", got)
+			}
+		})
+	}
+}
+
+func TestModbusTCPDriverNormalizeConfigRejectsInvalidJSONDocuments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty document", raw: ""},
+		{name: "malformed document", raw: `{"host":`},
+		{name: "unknown field", raw: `{"host":"plc.local","tls":true}`},
+		{name: "multiple values", raw: `{"host":"plc.local"} {}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			driver := newTestModbusTCPDriver(t, nil)
+			config, err := driver.NormalizeConfig(json.RawMessage(tt.raw))
+			if config != nil {
+				t.Fatalf("NormalizeConfig() = %s, want nil", config)
+			}
+			if !errors.Is(err, ErrInvalidGatewayConfig) {
+				t.Fatalf("NormalizeConfig() error = %v, want config error", err)
+			}
+		})
+	}
+}
+
+func TestModbusTCPDriverNewClientDecodesTypedConfigLazily(t *testing.T) {
+	t.Parallel()
+
+	factoryCalls := 0
+	var gotConfig ModbusTCPConfig
+	driver := newTestModbusTCPDriver(t, func(config ModbusTCPConfig) (ModbusClient, error) {
+		factoryCalls++
+		gotConfig = config
+		return nil, nil
+	})
+	raw := mustMarshalConfig(t, ModbusTCPConfig{
+		Host:              "plc.local",
+		Port:              502,
+		Timeout:           5000,
+		RetryCount:        3,
+		RetryDelay:        1000,
+		KeepAlive:         true,
+		ReconnectInterval: 30,
+	})
+
+	client, err := driver.NewClient(raw)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if client != nil {
+		t.Fatalf("NewClient() client = %#v, want factory result nil", client)
+	}
+	if factoryCalls != 1 || gotConfig.Host != "plc.local" {
+		t.Fatalf("factory calls/config = (%d, %#v), want one typed call", factoryCalls, gotConfig)
+	}
+}
+
+func newTestModbusTCPDriver(
+	t *testing.T,
+	factory ModbusClientFactory,
+) GatewayDriver {
+	t.Helper()
+	if factory == nil {
+		factory = func(ModbusTCPConfig) (ModbusClient, error) {
+			return nil, nil
+		}
+	}
+	driver, err := NewModbusTCPDriver(factory)
+	if err != nil {
+		t.Fatalf("NewModbusTCPDriver() error = %v", err)
+	}
+	return driver
+}
+
+func normalizeAndDecodeModbusConfig(
+	t *testing.T,
+	driver GatewayDriver,
+	input ModbusTCPConfigInput,
+) ModbusTCPConfig {
+	t.Helper()
+	raw := mustMarshalConfig(t, input)
+	normalized, err := driver.NormalizeConfig(raw)
+	if err != nil {
+		t.Fatalf("NormalizeConfig() error = %v", err)
+	}
+	var config ModbusTCPConfig
+	if err := json.Unmarshal(normalized, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return config
+}
+
+func mustMarshalConfig(t *testing.T, config any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return raw
+}
+
+func intPointer(value int) *int {
+	return &value
+}

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,25 +23,19 @@ const (
 	VGatewayStatusError        VGatewayConnectionStatus = "error"
 )
 
-type ModbusTCPConfig struct {
-	Host              string `json:"host"`
-	Port              int    `json:"port"`
-	Timeout           int    `json:"timeout"`
-	RetryCount        int    `json:"retry_count"`
-	RetryDelay        int    `json:"retry_delay"`
-	KeepAlive         bool   `json:"keep_alive"`
-	ReconnectInterval int    `json:"reconnect_interval"`
-}
+// VGatewayConfig remains opaque at the domain and persistence boundaries.
+// Protocol drivers own decoding, defaulting, and validation for their type.
+type VGatewayConfig = json.RawMessage
 
 type VGateway struct {
-	ID          uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Name        string          `gorm:"size:100;not null;uniqueIndex" json:"name"`
-	Type        VGatewayType    `gorm:"type:varchar(50);not null;index" json:"type"`
-	Description *string         `gorm:"type:text" json:"description"`
-	Enabled     bool            `gorm:"not null;index" json:"enabled"`
-	Config      ModbusTCPConfig `gorm:"type:jsonb;serializer:json;not null" json:"config"`
-	CreatedAt   time.Time       `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt   time.Time       `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	ID          uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Name        string         `gorm:"size:100;not null;uniqueIndex" json:"name"`
+	Type        VGatewayType   `gorm:"type:varchar(50);not null;index" json:"type"`
+	Description *string        `gorm:"type:text" json:"description"`
+	Enabled     bool           `gorm:"not null;index" json:"enabled"`
+	Config      VGatewayConfig `gorm:"type:jsonb;serializer:json;not null" json:"config"`
+	CreatedAt   time.Time      `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt   time.Time      `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 }
 
 func (VGateway) TableName() string {

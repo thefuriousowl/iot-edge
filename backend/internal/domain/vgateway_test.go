@@ -21,23 +21,24 @@ func TestVGatewayTableNames_MatchDocumentedSchema(t *testing.T) {
 func TestVGatewayJSON_MatchesAPIContract(t *testing.T) {
 	description := "Connection to main factory PLC"
 	createdAt := time.Date(2026, time.August, 21, 8, 0, 0, 0, time.UTC)
+	rawConfig := json.RawMessage(`{
+		"host":"192.168.1.100",
+		"port":502,
+		"timeout":5000,
+		"retry_count":3,
+		"retry_delay":1000,
+		"keep_alive":true,
+		"reconnect_interval":30
+	}`)
 	gateway := VGateway{
 		ID:          uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"),
 		Name:        "Main PLC Gateway",
 		Type:        VGatewayTypeModbusTCP,
 		Description: &description,
 		Enabled:     true,
-		Config: ModbusTCPConfig{
-			Host:              "192.168.1.100",
-			Port:              502,
-			Timeout:           5_000,
-			RetryCount:        3,
-			RetryDelay:        1_000,
-			KeepAlive:         true,
-			ReconnectInterval: 30,
-		},
-		CreatedAt: createdAt,
-		UpdatedAt: createdAt,
+		Config:      rawConfig,
+		CreatedAt:   createdAt,
+		UpdatedAt:   createdAt,
 	}
 
 	encoded, err := json.Marshal(gateway)

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/thefuriousowl/iot-edge/internal/domain"
+	"github.com/thefuriousowl/iot-edge/internal/protocol"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -43,8 +45,11 @@ func TestVGatewayRepository_CRUDIntegration(t *testing.T) {
 	if found.Enabled {
 		t.Error("FindByID() enabled = true, want explicitly persisted false")
 	}
-	if !reflect.DeepEqual(found.Config, gateway.Config) {
-		t.Errorf("FindByID() config = %#v, want %#v", found.Config, gateway.Config)
+	if !reflect.DeepEqual(
+		decodeRepositoryModbusConfig(t, found.Config),
+		decodeRepositoryModbusConfig(t, gateway.Config),
+	) {
+		t.Errorf("FindByID() config = %s, want %s", found.Config, gateway.Config)
 	}
 
 	originalUpdatedAt := found.UpdatedAt
@@ -53,8 +58,10 @@ func TestVGatewayRepository_CRUDIntegration(t *testing.T) {
 	found.Description = nil
 	found.Enabled = true
 	found.Type = domain.VGatewayType("mqtt")
-	found.Config.Host = "192.168.1.101"
-	found.Config.KeepAlive = false
+	config := decodeRepositoryModbusConfig(t, found.Config)
+	config.Host = "192.168.1.101"
+	config.KeepAlive = false
+	found.Config = mustRepositoryConfig(t, config)
 	if err := repository.Update(ctx, found); err != nil {
 		t.Fatalf("Update() error: %v", err)
 	}
@@ -69,8 +76,9 @@ func TestVGatewayRepository_CRUDIntegration(t *testing.T) {
 	if updated.Type != domain.VGatewayTypeModbusTCP {
 		t.Errorf("Update() changed immutable type to %q", updated.Type)
 	}
-	if updated.Config.Host != "192.168.1.101" || updated.Config.KeepAlive {
-		t.Errorf("updated config = %#v", updated.Config)
+	updatedConfig := decodeRepositoryModbusConfig(t, updated.Config)
+	if updatedConfig.Host != "192.168.1.101" || updatedConfig.KeepAlive {
+		t.Errorf("updated config = %#v", updatedConfig)
 	}
 	if !updated.UpdatedAt.After(originalUpdatedAt) {
 		t.Errorf(
@@ -246,7 +254,7 @@ func newRepositoryTestVGateway(name string, enabled bool) *domain.VGateway {
 		Type:        domain.VGatewayTypeModbusTCP,
 		Description: &description,
 		Enabled:     enabled,
-		Config: domain.ModbusTCPConfig{
+		Config: mustRepositoryConfigValue(protocol.ModbusTCPConfig{
 			Host:              "192.168.1.100",
 			Port:              502,
 			Timeout:           5_000,
@@ -254,8 +262,42 @@ func newRepositoryTestVGateway(name string, enabled bool) *domain.VGateway {
 			RetryDelay:        1_000,
 			KeepAlive:         true,
 			ReconnectInterval: 30,
-		},
+		}),
 	}
+}
+
+func mustRepositoryConfig(
+	t *testing.T,
+	config protocol.ModbusTCPConfig,
+) domain.VGatewayConfig {
+	t.Helper()
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("json.Marshal() config error = %v", err)
+	}
+	return raw
+}
+
+func mustRepositoryConfigValue(
+	config protocol.ModbusTCPConfig,
+) domain.VGatewayConfig {
+	raw, err := json.Marshal(config)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func decodeRepositoryModbusConfig(
+	t *testing.T,
+	raw domain.VGatewayConfig,
+) protocol.ModbusTCPConfig {
+	t.Helper()
+	var config protocol.ModbusTCPConfig
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("json.Unmarshal() config error = %v", err)
+	}
+	return config
 }
 
 func newTestVGatewayRepository(t *testing.T) (VGatewayRepository, *gorm.DB) {
