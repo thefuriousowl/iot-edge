@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type {
   CreateVGatewayRequest,
+  TestVGatewayConfigRequest,
   TestVGatewayConnectionResponse,
   UpdateVGatewayRequest,
   VGateway,
@@ -67,6 +68,19 @@ describe("vGateway types", () => {
 
     expect(success.success).toBe(true);
     expect(failure.success).toBe(false);
+  });
+
+  it("models an unsaved configuration connection test", () => {
+    const request = {
+      type: "modbus_tcp",
+      config: {
+        host: "plc.local",
+        port: 502,
+      },
+      options: { unit_id: 7 },
+    } satisfies TestVGatewayConfigRequest;
+
+    expect(request.options.unit_id).toBe(7);
   });
 
   it("includes the disabled-gateway lifecycle error", () => {

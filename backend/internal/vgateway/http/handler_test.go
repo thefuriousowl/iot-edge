@@ -25,6 +25,7 @@ type serviceStub struct {
 	connect        func(context.Context, uuid.UUID) error
 	disconnect     func(context.Context, uuid.UUID) error
 	testConnection func(context.Context, uuid.UUID, json.RawMessage) (*vgateway.VGatewayConnectionTestResult, error)
+	testConfig     func(context.Context, vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error)
 	status         func(context.Context, uuid.UUID) (*vgateway.VGatewayStatusResult, error)
 }
 
@@ -58,6 +59,10 @@ func (stub *serviceStub) Disconnect(ctx context.Context, id uuid.UUID) error {
 
 func (stub *serviceStub) TestConnection(ctx context.Context, id uuid.UUID, options json.RawMessage) (*vgateway.VGatewayConnectionTestResult, error) {
 	return stub.testConnection(ctx, id, options)
+}
+
+func (stub *serviceStub) TestConnectionConfig(ctx context.Context, input vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error) {
+	return stub.testConfig(ctx, input)
 }
 
 func (stub *serviceStub) Status(ctx context.Context, id uuid.UUID) (*vgateway.VGatewayStatusResult, error) {

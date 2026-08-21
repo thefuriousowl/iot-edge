@@ -175,6 +175,46 @@ func (s *vGatewayService) TestConnection(
 	if err != nil {
 		return nil, err
 	}
+
+	return s.testConnection(
+		ctx,
+		gateway.Type,
+		driver,
+		cloneVGatewayConfig(gateway.Config),
+		options,
+	)
+}
+
+func (s *vGatewayService) TestConnectionConfig(
+	ctx context.Context,
+	input TestVGatewayConnectionInput,
+) (*VGatewayConnectionTestResult, error) {
+	driver, err := s.driverFor(input.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	config, err := normalizeVGatewayConfig(driver, input.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.testConnection(
+		ctx,
+		input.Type,
+		driver,
+		config,
+		input.Options,
+	)
+}
+
+func (s *vGatewayService) testConnection(
+	ctx context.Context,
+	gatewayType VGatewayType,
+	driver protocol.GatewayDriver,
+	config VGatewayConfig,
+	options json.RawMessage,
+) (*VGatewayConnectionTestResult, error) {
 	probe, err := driver.PrepareConnectionTest(
 		append(json.RawMessage(nil), options...),
 	)
@@ -188,14 +228,14 @@ func (s *vGatewayService) TestConnection(
 		}
 		return nil, fmt.Errorf(
 			"prepare %s vGateway connection test: %w",
-			gateway.Type,
+			gatewayType,
 			err,
 		)
 	}
 	if probe == nil {
 		return nil, fmt.Errorf(
 			"prepare %s vGateway connection test: probe is required",
-			gateway.Type,
+			gatewayType,
 		)
 	}
 	if err := ctx.Err(); err != nil {
@@ -204,12 +244,12 @@ func (s *vGatewayService) TestConnection(
 
 	startedAt := s.now()
 	client, clientErr := driver.NewClient(
-		cloneVGatewayConfig(gateway.Config),
+		cloneVGatewayConfig(config),
 	)
 	if clientErr != nil {
 		clientErr = fmt.Errorf(
 			"create temporary %s vGateway client: %w",
-			gateway.Type,
+			gatewayType,
 			clientErr,
 		)
 		return failedConnectionTestResult(
@@ -221,7 +261,7 @@ func (s *vGatewayService) TestConnection(
 	if gatewayClientIsNil(client) {
 		clientErr = fmt.Errorf(
 			"create temporary %s vGateway client: %w",
-			gateway.Type,
+			gatewayType,
 			protocol.ErrGatewayClientRequired,
 		)
 		return failedConnectionTestResult(

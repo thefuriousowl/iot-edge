@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createVGateway,
   getVGateway,
-  testVGatewayConnection,
+  testVGatewayConfig,
   updateVGateway,
 } from "../../../services/vgateway.service";
 import type { VGateway, VGatewayDetail } from "../../../types/vgateway";
@@ -18,7 +18,7 @@ import VGatewayFormPage from "./VGatewayFormPage";
 vi.mock("../../../services/vgateway.service", () => ({
   createVGateway: vi.fn(),
   getVGateway: vi.fn(),
-  testVGatewayConnection: vi.fn(),
+  testVGatewayConfig: vi.fn(),
   updateVGateway: vi.fn(),
 }));
 
@@ -28,7 +28,7 @@ vi.mock("../../system/components/InternetStatus", () => ({
 
 const mockedCreateVGateway = vi.mocked(createVGateway);
 const mockedGetVGateway = vi.mocked(getVGateway);
-const mockedTestVGatewayConnection = vi.mocked(testVGatewayConnection);
+const mockedTestVGatewayConfig = vi.mocked(testVGatewayConfig);
 const mockedUpdateVGateway = vi.mocked(updateVGateway);
 
 const gatewayID = "7b194e9f-4f74-4a19-8cb1-c4d0d8d5400f";
@@ -83,7 +83,7 @@ describe("VGatewayFormPage", () => {
   beforeEach(() => {
     mockedCreateVGateway.mockReset();
     mockedGetVGateway.mockReset();
-    mockedTestVGatewayConnection.mockReset();
+    mockedTestVGatewayConfig.mockReset();
     mockedUpdateVGateway.mockReset();
   });
 
@@ -170,9 +170,9 @@ describe("VGatewayFormPage", () => {
     expect(await screen.findByText("Gateway list destination")).toBeInTheDocument();
   });
 
-  it("tests an existing gateway with an optional unit ID", async () => {
+  it("tests current edit-form settings with an optional unit ID", async () => {
     mockedGetVGateway.mockResolvedValue(gateway);
-    mockedTestVGatewayConnection.mockResolvedValue({
+    mockedTestVGatewayConfig.mockResolvedValue({
       success: true,
       latency_ms: 12.5,
       message: "Connection successful",
@@ -187,7 +187,11 @@ describe("VGatewayFormPage", () => {
 
     expect(await screen.findByText("Connection successful")).toBeInTheDocument();
     expect(screen.getByText("12.50 ms")).toBeInTheDocument();
-    expect(mockedTestVGatewayConnection).toHaveBeenCalledWith(gatewayID, { unit_id: 7 });
+    expect(mockedTestVGatewayConfig).toHaveBeenCalledWith({
+      type: "modbus_tcp",
+      config: gateway.config,
+      options: { unit_id: 7 },
+    });
   });
 
   it("rejects an out-of-range unit ID without calling the API", async () => {
@@ -201,14 +205,46 @@ describe("VGatewayFormPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Unit ID must be between 0 and 255");
-    expect(mockedTestVGatewayConnection).not.toHaveBeenCalled();
+    expect(mockedTestVGatewayConfig).not.toHaveBeenCalled();
   });
 
-  it("keeps connection testing disabled until a gateway is saved", () => {
+  it("tests unsaved connection settings without requiring a gateway name", async () => {
+    mockedTestVGatewayConfig.mockResolvedValue({
+      success: true,
+      latency_ms: 8,
+      message: "Connection successful",
+    });
     renderForm("/vgateways/new");
 
-    expect(screen.getByText("Save the gateway before testing the connection.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Host/), {
+      target: { value: " plc.local " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+
+    expect(await screen.findByText("Connection successful")).toBeInTheDocument();
+    expect(mockedTestVGatewayConfig).toHaveBeenCalledWith({
+      type: "modbus_tcp",
+      config: {
+        host: "plc.local",
+        port: 502,
+        timeout: 5000,
+        retry_count: 3,
+        retry_delay: 1000,
+        keep_alive: true,
+        reconnect_interval: 30,
+      },
+    });
+    expect(screen.queryByText("Gateway name is required")).not.toBeInTheDocument();
+    expect(mockedCreateVGateway).not.toHaveBeenCalled();
+  });
+
+  it("validates connection settings before an unsaved test", async () => {
+    renderForm("/vgateways/new");
+
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+
+    expect(await screen.findByText("Host is required")).toBeInTheDocument();
+    expect(mockedTestVGatewayConfig).not.toHaveBeenCalled();
   });
 
   it("shows load and submit errors without navigating", async () => {

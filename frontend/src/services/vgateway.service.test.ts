@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   CreateVGatewayRequest,
+  TestVGatewayConfigRequest,
   TestVGatewayConnectionResponse,
   UpdateVGatewayRequest,
   VGateway,
@@ -20,6 +21,7 @@ import {
   getVGateway,
   getVGatewayStatus,
   listVGateways,
+  testVGatewayConfig,
   testVGatewayConnection,
   updateVGateway,
 } from "./vgateway.service";
@@ -207,6 +209,23 @@ describe("vGateway service", () => {
       `/vgateways/${gateway.id}/test`,
       { unit_id: 1 },
     );
+  });
+
+  it("tests unsaved gateway configuration", async () => {
+    const request: TestVGatewayConfigRequest = {
+      type: "modbus_tcp",
+      config: gateway.config,
+      options: { unit_id: 7 },
+    };
+    const expected: TestVGatewayConnectionResponse = {
+      success: true,
+      latency_ms: 12.5,
+      message: "Connection successful",
+    };
+    mockedPost.mockResolvedValue(responseWith(expected));
+
+    await expect(testVGatewayConfig(request)).resolves.toEqual(expected);
+    expect(mockedPost).toHaveBeenCalledWith("/vgateways/test", request);
   });
 
   it("gets live gateway status with cancellation", async () => {

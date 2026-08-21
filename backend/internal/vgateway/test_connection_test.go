@@ -84,6 +84,145 @@ func TestVGatewayServiceTestConnectionUsesTemporaryClientAndOptionalProbe(t *tes
 	}
 }
 
+func TestVGatewayServiceTestConnectionConfigNormalizesWithoutPersistence(t *testing.T) {
+	t.Parallel()
+
+	client := &stubModbusClient{}
+	factoryCalls := 0
+	repository := &stubVGatewayRepository{
+		findByIDFunc: func(context.Context, uuid.UUID) (*VGateway, error) {
+			t.Fatal("FindByID() called for unsaved connection test")
+			return nil, nil
+		},
+	}
+	service := newTestVGatewayService(
+		t,
+		repository,
+		func(config modbus.ModbusTCPConfig) (modbus.ModbusClient, error) {
+			factoryCalls++
+			want := modbus.ModbusTCPConfig{
+				Host:              "plc.local",
+				Port:              1502,
+				Timeout:           750,
+				RetryCount:        0,
+				RetryDelay:        0,
+				KeepAlive:         false,
+				ReconnectInterval: 0,
+			}
+			if config != want {
+				t.Fatalf("temporary client config = %#v, want %#v", config, want)
+			}
+			return client, nil
+		},
+	)
+	startedAt := time.Now()
+	service.now = clockSequence(t, startedAt, startedAt.Add(2*time.Millisecond))
+
+	result, err := service.TestConnectionConfig(
+		context.Background(),
+		TestVGatewayConnectionInput{
+			Type: VGatewayTypeModbusTCP,
+			Config: json.RawMessage(`{
+				"host":" plc.local ",
+				"port":1502,
+				"timeout":750,
+				"retry_count":0,
+				"retry_delay":0,
+				"keep_alive":false,
+				"reconnect_interval":0
+			}`),
+			Options: json.RawMessage(`{"unit_id":7}`),
+		},
+	)
+	if err != nil || result == nil || !result.Success {
+		t.Fatalf("TestConnectionConfig() = (%#v, %v), want success", result, err)
+	}
+	if result.Latency != 2*time.Millisecond {
+		t.Errorf("latency = %v, want 2ms", result.Latency)
+	}
+	if factoryCalls != 1 || client.connectCallCount() != 1 || client.disconnectCallCount() != 1 {
+		t.Fatalf(
+			"factory/connect/disconnect calls = (%d, %d, %d), want (1, 1, 1)",
+			factoryCalls,
+			client.connectCallCount(),
+			client.disconnectCallCount(),
+		)
+	}
+	readCalls, request := client.readCallState()
+	if readCalls != 1 || request.UnitID != 7 {
+		t.Errorf("probe state = (%d, %#v), want one read for unit 7", readCalls, request)
+	}
+	if len(service.runtimes) != 0 {
+		t.Fatalf("runtime registry length = %d, want zero", len(service.runtimes))
+	}
+}
+
+func TestVGatewayServiceTestConnectionConfigRejectsContractErrorsBeforeNetwork(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		input     TestVGatewayConnectionInput
+		wantError error
+	}{
+		{
+			name: "unsupported type",
+			input: TestVGatewayConnectionInput{
+				Type:   VGatewayType("mqtt"),
+				Config: json.RawMessage(`{"host":"broker.local"}`),
+			},
+			wantError: ErrUnsupportedVGatewayType,
+		},
+		{
+			name: "invalid config",
+			input: TestVGatewayConnectionInput{
+				Type:   VGatewayTypeModbusTCP,
+				Config: json.RawMessage(`{"port":502}`),
+			},
+			wantError: ErrInvalidVGatewayConfig,
+		},
+		{
+			name: "invalid options",
+			input: TestVGatewayConnectionInput{
+				Type:    VGatewayTypeModbusTCP,
+				Config:  json.RawMessage(`{"host":"plc.local"}`),
+				Options: json.RawMessage(`{"unit_id":256}`),
+			},
+			wantError: ErrInvalidVGatewayTestInput,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			factoryCalls := 0
+			service := newTestVGatewayService(
+				t,
+				&stubVGatewayRepository{},
+				func(modbus.ModbusTCPConfig) (modbus.ModbusClient, error) {
+					factoryCalls++
+					return &stubModbusClient{}, nil
+				},
+			)
+
+			result, err := service.TestConnectionConfig(
+				context.Background(),
+				tt.input,
+			)
+			if result != nil {
+				t.Fatalf("TestConnectionConfig() result = %#v, want nil", result)
+			}
+			if !errors.Is(err, tt.wantError) {
+				t.Fatalf("TestConnectionConfig() error = %v, want %v", err, tt.wantError)
+			}
+			if factoryCalls != 0 || len(service.runtimes) != 0 {
+				t.Fatalf("contract failure side effects = factory %d runtimes %d", factoryCalls, len(service.runtimes))
+			}
+		})
+	}
+}
+
 func TestVGatewayServiceTestConnectionAllowsDisabledGateway(t *testing.T) {
 	t.Parallel()
 

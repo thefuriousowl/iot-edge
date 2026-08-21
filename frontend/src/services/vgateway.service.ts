@@ -1,5 +1,6 @@
 import type {
   CreateVGatewayRequest,
+  TestVGatewayConfigRequest,
   TestVGatewayConnectionRequest,
   TestVGatewayConnectionResponse,
   UpdateVGatewayRequest,
@@ -84,6 +85,17 @@ export async function testVGatewayConnection(
 ): Promise<TestVGatewayConnectionResponse> {
   const response = await api.post<TestVGatewayConnectionResponse>(
     `${vGatewayPath(id)}/test`,
+    data,
+  );
+
+  return response.data;
+}
+
+export async function testVGatewayConfig(
+  data: TestVGatewayConfigRequest,
+): Promise<TestVGatewayConnectionResponse> {
+  const response = await api.post<TestVGatewayConnectionResponse>(
+    "/vgateways/test",
     data,
   );
 

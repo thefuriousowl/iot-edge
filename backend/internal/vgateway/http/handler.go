@@ -25,6 +25,7 @@ type Service interface {
 	Connect(context.Context, uuid.UUID) error
 	Disconnect(context.Context, uuid.UUID) error
 	TestConnection(context.Context, uuid.UUID, json.RawMessage) (*vgateway.VGatewayConnectionTestResult, error)
+	TestConnectionConfig(context.Context, vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error)
 	Status(context.Context, uuid.UUID) (*vgateway.VGatewayStatusResult, error)
 }
 
@@ -45,6 +46,12 @@ type updateRequest struct {
 	Description json.RawMessage `json:"description"`
 	Enabled     *bool           `json:"enabled"`
 	Config      json.RawMessage `json:"config"`
+}
+
+type testConnectionConfigRequest struct {
+	Type    vgateway.VGatewayType `json:"type"`
+	Config  json.RawMessage       `json:"config"`
+	Options json.RawMessage       `json:"options"`
 }
 
 type gatewayListItem struct {
@@ -245,6 +252,35 @@ func (h *Handler) TestConnection(c *fiber.Ctx) error {
 	if err != nil {
 		return handleServiceError(c, err)
 	}
+
+	return connectionTestResponse(c, result)
+}
+
+func (h *Handler) TestConnectionConfig(c *fiber.Ctx) error {
+	var request testConnectionConfigRequest
+	if err := decodeRequest(c.Body(), &request); err != nil {
+		return validationError(c, "Invalid request body")
+	}
+
+	result, err := h.service.TestConnectionConfig(
+		c.UserContext(),
+		vgateway.TestVGatewayConnectionInput{
+			Type:    request.Type,
+			Config:  request.Config,
+			Options: request.Options,
+		},
+	)
+	if err != nil {
+		return handleServiceError(c, err)
+	}
+
+	return connectionTestResponse(c, result)
+}
+
+func connectionTestResponse(
+	c *fiber.Ctx,
+	result *vgateway.VGatewayConnectionTestResult,
+) error {
 	if result == nil {
 		return apiError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
 	}

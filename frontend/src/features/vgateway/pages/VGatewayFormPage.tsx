@@ -15,9 +15,10 @@ import { z } from "zod";
 import {
   createVGateway,
   getVGateway,
-  testVGatewayConnection,
+  testVGatewayConfig,
   updateVGateway,
 } from "../../../services/vgateway.service";
+import type { ModbusTCPConfigInput } from "../../../types/vgateway";
 import type { TestVGatewayConnectionResponse } from "../../../types/vgateway";
 import VGatewayShell from "../components/VGatewayShell";
 import "./VGatewayListPage.css";
@@ -76,6 +77,28 @@ const defaultValues: FormValues = {
   reconnect_interval: 30,
 };
 
+const connectionFields: (keyof FormValues)[] = [
+  "host",
+  "port",
+  "timeout",
+  "retry_count",
+  "retry_delay",
+  "keep_alive",
+  "reconnect_interval",
+];
+
+function connectionConfig(values: FormValues): ModbusTCPConfigInput {
+  return {
+    host: values.host.trim(),
+    port: values.port,
+    timeout: values.timeout,
+    retry_count: values.retry_count,
+    retry_delay: values.retry_delay,
+    keep_alive: values.keep_alive,
+    reconnect_interval: values.reconnect_interval,
+  };
+}
+
 function apiErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
     const data = error.response?.data as
@@ -103,9 +126,11 @@ function VGatewayFormPage() {
   const [unitID, setUnitID] = useState("");
   const {
     formState: { errors, isSubmitting },
+    getValues,
     handleSubmit,
     register,
     reset,
+    trigger,
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues,
@@ -158,15 +183,7 @@ function VGatewayFormPage() {
       type: "modbus_tcp" as const,
       description: values.description.trim() || null,
       enabled: values.enabled,
-      config: {
-        host: values.host.trim(),
-        port: values.port,
-        timeout: values.timeout,
-        retry_count: values.retry_count,
-        retry_delay: values.retry_delay,
-        keep_alive: values.keep_alive,
-        reconnect_interval: values.reconnect_interval,
-      },
+      config: connectionConfig(values),
     };
 
     try {
@@ -182,19 +199,27 @@ function VGatewayFormPage() {
   });
 
   async function handleConnectionTest() {
-    if (!id) {
-      return;
-    }
     const parsedUnitID = unitID === "" ? undefined : Number(unitID);
     if (parsedUnitID !== undefined && (!Number.isInteger(parsedUnitID) || parsedUnitID < 0 || parsedUnitID > 255)) {
       setTestResult({ success: false, error: "Invalid unit ID", message: "Unit ID must be between 0 and 255." });
       return;
     }
 
+    if (!(await trigger(connectionFields))) {
+      setTestResult(null);
+      return;
+    }
+
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await testVGatewayConnection(id, parsedUnitID === undefined ? undefined : { unit_id: parsedUnitID });
+      const result = await testVGatewayConfig({
+        type: "modbus_tcp",
+        config: connectionConfig(getValues()),
+        ...(parsedUnitID === undefined
+          ? {}
+          : { options: { unit_id: parsedUnitID } }),
+      });
       setTestResult(result);
     } catch (error) {
       setTestResult({
@@ -320,15 +345,13 @@ function VGatewayFormPage() {
             <section className="vgateway-form-section vgateway-test-section">
               <div>
                 <h2>Connection test</h2>
-                <p>{isEdit ? "Optionally probe one Modbus unit after opening a temporary connection." : "Save the gateway before testing the connection."}</p>
+                <p>Test the current settings before saving. Optionally probe one Modbus unit.</p>
               </div>
-              {isEdit && (
-                <label className="vgateway-form-field vgateway-unit-field">
-                  <span>Unit ID (optional)</span>
-                  <input type="number" min="0" max="255" value={unitID} onChange={(event) => setUnitID(event.target.value)} />
-                </label>
-              )}
-              <button className="vgateway-test-button" type="button" disabled={!isEdit || testing} onClick={() => void handleConnectionTest()}>
+              <label className="vgateway-form-field vgateway-unit-field">
+                <span>Unit ID (optional)</span>
+                <input type="number" min="0" max="255" value={unitID} onChange={(event) => setUnitID(event.target.value)} />
+              </label>
+              <button className="vgateway-test-button" type="button" disabled={testing} onClick={() => void handleConnectionTest()}>
                 {testing ? <LoaderCircle aria-hidden="true" className="is-spinning" size={18} /> : <Radio aria-hidden="true" size={18} />}
                 {testing ? "Testing…" : "Test Connection"}
               </button>

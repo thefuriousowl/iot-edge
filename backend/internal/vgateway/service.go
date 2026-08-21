@@ -1,6 +1,7 @@
 package vgateway
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -85,6 +86,12 @@ type VGatewayConnectionTestResult struct {
 	Success bool
 	Latency time.Duration
 	Error   error
+}
+
+type TestVGatewayConnectionInput struct {
+	Type    VGatewayType
+	Config  VGatewayConfig
+	Options json.RawMessage
 }
 
 type vGatewayService struct {

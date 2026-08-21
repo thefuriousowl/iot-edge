@@ -7,6 +7,7 @@ func RegisterRoutes(router fiber.Router, handler *Handler) {
 
 	routes.Get("/", handler.List)
 	routes.Post("/", handler.Create)
+	routes.Post("/test", handler.TestConnectionConfig)
 	routes.Get("/:id", handler.Get)
 	routes.Put("/:id", handler.Update)
 	routes.Delete("/:id", handler.Delete)

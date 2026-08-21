@@ -121,6 +121,12 @@ export interface TestVGatewayConnectionRequest {
   unit_id?: number;
 }
 
+export interface TestVGatewayConfigRequest {
+  type: VGatewayType;
+  config: ModbusTCPConfigInput;
+  options?: TestVGatewayConnectionRequest;
+}
+
 export type TestVGatewayConnectionResponse =
   | {
       success: true;

@@ -270,6 +270,81 @@ func TestTestConnection_RejectsNilServiceResult(t *testing.T) {
 	assertAPIError(t, response, fiber.StatusInternalServerError, "INTERNAL_ERROR")
 }
 
+func TestTestConnectionConfig_ForwardsUnsavedSettings(t *testing.T) {
+	stub := &serviceStub{testConfig: func(_ context.Context, input vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error) {
+		if input.Type != vgateway.VGatewayTypeModbusTCP {
+			t.Errorf("type = %q, want modbus_tcp", input.Type)
+		}
+		if string(input.Config) != `{"host":"plc.local","port":1502}` {
+			t.Errorf("config = %s, want unsaved Modbus config", input.Config)
+		}
+		if string(input.Options) != `{"unit_id":7}` {
+			t.Errorf("options = %s, want unit_id 7", input.Options)
+		}
+		return &vgateway.VGatewayConnectionTestResult{
+			Success: true,
+			Latency: 1250 * time.Microsecond,
+		}, nil
+	}}
+	body := `{"type":"modbus_tcp","config":{"host":"plc.local","port":1502},"options":{"unit_id":7}}`
+
+	response := performRequest(t, testApp(stub), http.MethodPost, "/api/vgateways/test", body)
+	defer response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+	}
+	var result struct {
+		Success   bool    `json:"success"`
+		LatencyMS float64 `json:"latency_ms"`
+		Message   string  `json:"message"`
+	}
+	decodeResponse(t, response, &result)
+	if !result.Success || result.LatencyMS != 1.25 || result.Message != "Connection successful" {
+		t.Errorf("response = %#v, want successful 1.25ms test", result)
+	}
+}
+
+func TestTestConnectionConfig_RejectsInvalidRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		serviceErr error
+		wantCode   string
+	}{
+		{name: "empty", wantCode: "VALIDATION_ERROR"},
+		{name: "malformed", body: `{"type":`, wantCode: "VALIDATION_ERROR"},
+		{name: "unknown field", body: `{"type":"modbus_tcp","config":{},"extra":true}`, wantCode: "VALIDATION_ERROR"},
+		{name: "multiple documents", body: `{"type":"modbus_tcp","config":{}} {}`, wantCode: "VALIDATION_ERROR"},
+		{name: "invalid config", body: `{"type":"modbus_tcp","config":{}}`, serviceErr: vgateway.ErrInvalidVGatewayConfig, wantCode: "VGW010"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &serviceStub{testConfig: func(context.Context, vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error) {
+				return nil, tt.serviceErr
+			}}
+			response := performRequest(t, testApp(stub), http.MethodPost, "/api/vgateways/test", tt.body)
+			defer response.Body.Close()
+			assertAPIError(t, response, fiber.StatusBadRequest, tt.wantCode)
+		})
+	}
+}
+
+func TestTestConnectionConfig_RejectsNilServiceResult(t *testing.T) {
+	stub := &serviceStub{testConfig: func(context.Context, vgateway.TestVGatewayConnectionInput) (*vgateway.VGatewayConnectionTestResult, error) {
+		return nil, nil
+	}}
+	response := performRequest(
+		t,
+		testApp(stub),
+		http.MethodPost,
+		"/api/vgateways/test",
+		`{"type":"modbus_tcp","config":{"host":"plc.local"}}`,
+	)
+	defer response.Body.Close()
+	assertAPIError(t, response, fiber.StatusInternalServerError, "INTERNAL_ERROR")
+}
+
 func TestStatus_ReturnsFullRuntimeProjection(t *testing.T) {
 	id := uuid.New()
 	connectedAt := time.Date(2026, time.August, 21, 12, 0, 0, 0, time.UTC)
