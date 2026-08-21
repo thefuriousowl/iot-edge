@@ -36,9 +36,6 @@ Update the copied environment files before starting the services. Local `.env` f
 cd backend && go test ./...
 cd frontend && pnpm test && pnpm lint && pnpm build
 ```
-
-See [docs/release-v0.1](docs/release-v0.1) for the v0.1 design and API documentation.
-
 ## License
 
 [MIT](LICENSE)
