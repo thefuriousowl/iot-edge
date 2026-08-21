@@ -17,11 +17,15 @@ import (
 )
 
 type serviceStub struct {
-	create func(context.Context, vgateway.CreateVGatewayInput) (*vgateway.VGateway, error)
-	get    func(context.Context, uuid.UUID) (*vgateway.VGatewayView, error)
-	list   func(context.Context, vgateway.VGatewayListInput) (*vgateway.VGatewayListResult, error)
-	update func(context.Context, uuid.UUID, vgateway.UpdateVGatewayInput) (*vgateway.VGatewayView, error)
-	delete func(context.Context, uuid.UUID) error
+	create         func(context.Context, vgateway.CreateVGatewayInput) (*vgateway.VGateway, error)
+	get            func(context.Context, uuid.UUID) (*vgateway.VGatewayView, error)
+	list           func(context.Context, vgateway.VGatewayListInput) (*vgateway.VGatewayListResult, error)
+	update         func(context.Context, uuid.UUID, vgateway.UpdateVGatewayInput) (*vgateway.VGatewayView, error)
+	delete         func(context.Context, uuid.UUID) error
+	connect        func(context.Context, uuid.UUID) error
+	disconnect     func(context.Context, uuid.UUID) error
+	testConnection func(context.Context, uuid.UUID, json.RawMessage) (*vgateway.VGatewayConnectionTestResult, error)
+	status         func(context.Context, uuid.UUID) (*vgateway.VGatewayStatusResult, error)
 }
 
 func (stub *serviceStub) Create(ctx context.Context, input vgateway.CreateVGatewayInput) (*vgateway.VGateway, error) {
@@ -42,6 +46,22 @@ func (stub *serviceStub) Update(ctx context.Context, id uuid.UUID, input vgatewa
 
 func (stub *serviceStub) Delete(ctx context.Context, id uuid.UUID) error {
 	return stub.delete(ctx, id)
+}
+
+func (stub *serviceStub) Connect(ctx context.Context, id uuid.UUID) error {
+	return stub.connect(ctx, id)
+}
+
+func (stub *serviceStub) Disconnect(ctx context.Context, id uuid.UUID) error {
+	return stub.disconnect(ctx, id)
+}
+
+func (stub *serviceStub) TestConnection(ctx context.Context, id uuid.UUID, options json.RawMessage) (*vgateway.VGatewayConnectionTestResult, error) {
+	return stub.testConnection(ctx, id, options)
+}
+
+func (stub *serviceStub) Status(ctx context.Context, id uuid.UUID) (*vgateway.VGatewayStatusResult, error) {
+	return stub.status(ctx, id)
 }
 
 func TestList_ReturnsFilteredPaginatedItemsWithoutConfig(t *testing.T) {

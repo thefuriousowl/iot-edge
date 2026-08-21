@@ -151,7 +151,8 @@ export type VGatewayErrorCode =
   | "VGW010"
   | "VGW011"
   | "VGW012"
-  | "VGW013";
+  | "VGW013"
+  | "VGW014";
 
 export interface VGatewayErrorResponse {
   error: {

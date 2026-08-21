@@ -21,12 +21,15 @@ import {
   Search,
   Settings,
   Trash2,
+  Unplug,
   X,
 } from "lucide-react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 
 import {
+  connectVGateway,
   deleteVGateway,
+  disconnectVGateway,
   listVGateways,
 } from "../../../services/vgateway.service";
 import { useAuthStore } from "../../../stores/auth.store";
@@ -84,6 +87,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function VGatewayListPage() {
+  const navigate = useNavigate();
   const username = useAuthStore((state) => state.user?.username ?? "Admin");
   const [gateways, setGateways] = useState<VGatewayListItem[]>([]);
   const [pagination, setPagination] = useState(emptyPagination);
@@ -91,6 +95,7 @@ function VGatewayListPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deletingID, setDeletingID] = useState<string | null>(null);
+  const [connectingID, setConnectingID] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
   const [page, setPage] = useState(1);
@@ -180,6 +185,23 @@ function VGatewayListPage() {
       setActionError(getErrorMessage(error));
     } finally {
       setDeletingID(null);
+    }
+  }
+
+  async function handleConnection(gateway: VGatewayListItem) {
+    setActionError(null);
+    setConnectingID(gateway.id);
+    try {
+      if (gateway.status === "connected") {
+        await disconnectVGateway(gateway.id);
+      } else {
+        await connectVGateway(gateway.id);
+      }
+      refresh();
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setConnectingID(null);
     }
   }
 
@@ -276,8 +298,7 @@ function VGatewayListPage() {
             <button
               className="vgateway-primary-action"
               type="button"
-              disabled
-              title="Gateway creation arrives in FE-3.4"
+              onClick={() => navigate("/vgateways/new")}
             >
               <Plus aria-hidden="true" size={19} />
               Add Gateway
@@ -428,17 +449,23 @@ function VGatewayListPage() {
                           <td className="vgateway-row-actions">
                             <button
                               type="button"
-                              disabled
-                              title="Connection controls arrive in BE-3.7"
-                              aria-label={`Connect ${gateway.name}`}
+                              disabled={!gateway.enabled || gateway.status === "connecting" || connectingID === gateway.id}
+                              title={!gateway.enabled ? "Enable the gateway before connecting" : undefined}
+                              aria-label={`${gateway.status === "connected" ? "Disconnect" : "Connect"} ${gateway.name}`}
+                              onClick={() => void handleConnection(gateway)}
                             >
-                              <Play aria-hidden="true" size={18} />
+                              {connectingID === gateway.id ? (
+                                <LoaderCircle aria-hidden="true" className="is-spinning" size={18} />
+                              ) : gateway.status === "connected" ? (
+                                <Unplug aria-hidden="true" size={18} />
+                              ) : (
+                                <Play aria-hidden="true" size={18} />
+                              )}
                             </button>
                             <button
                               type="button"
-                              disabled
-                              title="Editing arrives in FE-3.4"
                               aria-label={`Edit ${gateway.name}`}
+                              onClick={() => navigate(`/vgateways/${gateway.id}/edit`)}
                             >
                               <Pencil aria-hidden="true" size={18} />
                             </button>

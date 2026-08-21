@@ -11,6 +11,7 @@ repos:
     hooks:
       - id: check-added-large-files
         args: ['--maxkb=1000']
+        exclude: \.png$
       - id: check-merge-conflict
       - id: detect-private-key
       - id: end-of-file-fixer

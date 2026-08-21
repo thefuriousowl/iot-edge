@@ -1,0 +1,375 @@
+.vgateway-form-content {
+  width: min(100% - clamp(2rem, 6vw, 6rem), 72rem);
+  margin: 0 auto;
+  padding: clamp(2rem, 3.5vw, 3.5rem) 0 2rem;
+}
+
+.vgateway-form-heading h1 {
+  margin: 0;
+  font-size: clamp(2.2rem, 4vw, 3.15rem);
+  font-weight: 540;
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+
+.vgateway-form-heading p {
+  margin: 0.9rem 0 0;
+  color: var(--vgateway-muted);
+  font-size: 1.02rem;
+}
+
+.vgateway-form {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 1.8rem;
+}
+
+.vgateway-form-section {
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.5rem;
+  background: rgba(11, 21, 29, 0.34);
+}
+
+.vgateway-form-section h2 {
+  margin: 0 0 1.15rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.vgateway-form-grid {
+  display: grid;
+  gap: 1.1rem 1.25rem;
+}
+
+.vgateway-form-grid.is-two-column {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vgateway-form-grid.is-five-column {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(10rem, 0.8fr);
+}
+
+.vgateway-form-field {
+  display: grid;
+  align-content: start;
+  gap: 0.5rem;
+  min-width: 0;
+  color: #b8c5ce;
+  font-size: 0.86rem;
+}
+
+.vgateway-form-field > span {
+  font-weight: 500;
+}
+
+.vgateway-form-field b {
+  color: var(--vgateway-accent);
+  font-weight: 500;
+}
+
+.vgateway-form-field input,
+.vgateway-form-field select,
+.vgateway-form-field textarea {
+  width: 100%;
+  min-height: 3rem;
+  box-sizing: border-box;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.42rem;
+  outline: none;
+  background: rgba(7, 16, 23, 0.74);
+  color: var(--vgateway-text);
+  padding: 0 0.9rem;
+}
+
+.vgateway-form-field textarea {
+  min-height: 5.4rem;
+  resize: vertical;
+  padding-top: 0.75rem;
+}
+
+.vgateway-form-field select:disabled {
+  color: #cdd7de;
+  opacity: 1;
+}
+
+.vgateway-form-field input:focus,
+.vgateway-form-field select:focus,
+.vgateway-form-field textarea:focus {
+  border-color: var(--vgateway-accent);
+  box-shadow: 0 0 0 1px var(--vgateway-accent);
+}
+
+.vgateway-form-field input[aria-invalid="true"] {
+  border-color: var(--vgateway-danger);
+}
+
+.vgateway-form-field > small[role="alert"] {
+  color: var(--vgateway-danger);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.vgateway-form-field.is-wide,
+.vgateway-switch-field.is-wide {
+  grid-column: 1 / -1;
+}
+
+.vgateway-switch-field {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  align-self: end;
+  min-height: 3rem;
+  cursor: pointer;
+}
+
+.vgateway-switch-field > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.vgateway-switch {
+  position: relative;
+  width: 2.65rem;
+  height: 1.45rem;
+  flex: 0 0 auto;
+  border: 1px solid #4d6272;
+  border-radius: 1rem;
+  background: #172631;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.vgateway-switch > span {
+  position: absolute;
+  top: 0.19rem;
+  left: 0.2rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  background: #a7b6c3;
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.vgateway-switch-field > input:checked + .vgateway-switch {
+  border-color: var(--vgateway-accent);
+  background: rgba(34, 199, 238, 0.24);
+}
+
+.vgateway-switch-field > input:checked + .vgateway-switch > span {
+  transform: translateX(1.18rem);
+  background: var(--vgateway-accent);
+}
+
+.vgateway-switch-field > input:focus-visible + .vgateway-switch {
+  outline: 2px solid var(--vgateway-accent);
+  outline-offset: 2px;
+}
+
+.vgateway-switch-field > span:last-child strong,
+.vgateway-switch-field > span:last-child small {
+  display: block;
+}
+
+.vgateway-switch-field > span:last-child strong {
+  font-size: 0.86rem;
+  font-weight: 520;
+}
+
+.vgateway-switch-field > span:last-child small {
+  margin-top: 0.15rem;
+  color: var(--vgateway-muted);
+  font-size: 0.76rem;
+}
+
+.vgateway-form-help {
+  margin: 0.75rem 0 0;
+  color: var(--vgateway-muted);
+  font-size: 0.78rem;
+}
+
+.vgateway-test-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.3fr) auto;
+  align-items: end;
+  gap: 1rem;
+}
+
+.vgateway-test-section h2 {
+  margin-bottom: 0.35rem;
+}
+
+.vgateway-test-section p {
+  margin: 0;
+  color: var(--vgateway-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.vgateway-test-button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1rem;
+  border: 1px solid var(--vgateway-accent);
+  border-radius: 0.42rem;
+  background: transparent;
+  color: var(--vgateway-accent);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.vgateway-test-button:disabled {
+  border-color: #3b4d5b;
+  color: #718594;
+  cursor: not-allowed;
+}
+
+.vgateway-test-result {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid;
+  border-radius: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.vgateway-test-result.is-success {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.06);
+  color: var(--vgateway-success);
+}
+
+.vgateway-test-result.is-error {
+  border-color: rgba(251, 113, 133, 0.4);
+  background: rgba(251, 113, 133, 0.06);
+  color: var(--vgateway-danger);
+}
+
+.vgateway-test-result strong,
+.vgateway-test-result small {
+  display: block;
+}
+
+.vgateway-test-result small {
+  margin-top: 0.15rem;
+  color: #a9b8c5;
+}
+
+.vgateway-form-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(251, 113, 133, 0.42);
+  border-radius: 0.42rem;
+  background: rgba(251, 113, 133, 0.07);
+  color: #fda4af;
+  font-size: 0.84rem;
+}
+
+.vgateway-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-top: 1px solid rgba(48, 67, 82, 0.72);
+  background: var(--vgateway-bg);
+}
+
+.vgateway-form-actions button,
+.vgateway-form-state button {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1.2rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.42rem;
+  background: transparent;
+  color: var(--vgateway-text);
+  cursor: pointer;
+}
+
+.vgateway-form-actions button.is-primary {
+  border-color: var(--vgateway-accent);
+  background: var(--vgateway-accent);
+  color: #031017;
+  font-weight: 650;
+}
+
+.vgateway-form-actions button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.vgateway-form-state {
+  display: flex;
+  min-height: 18rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin-top: 1.8rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.5rem;
+  color: var(--vgateway-muted);
+  text-align: center;
+}
+
+.vgateway-form-state > svg {
+  color: var(--vgateway-accent);
+}
+
+.vgateway-form-state.is-error > svg {
+  color: var(--vgateway-danger);
+}
+
+@media (max-width: 900px) {
+  .vgateway-form-grid.is-five-column {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .vgateway-form-content {
+    width: min(100% - 2rem, 40rem);
+    padding-top: 2rem;
+  }
+
+  .vgateway-form-grid.is-two-column,
+  .vgateway-form-grid.is-five-column {
+    grid-template-columns: 1fr;
+  }
+
+  .vgateway-form-section {
+    padding: 1.1rem;
+  }
+
+  .vgateway-test-section {
+    grid-template-columns: 1fr;
+  }
+
+  .vgateway-test-button {
+    width: 100%;
+  }
+
+  .vgateway-form-actions {
+    display: grid;
+    grid-template-columns: 1fr 1.25fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vgateway-switch,
+  .vgateway-switch > span {
+    transition: none;
+  }
+}

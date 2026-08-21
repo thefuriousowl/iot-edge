@@ -6,6 +6,7 @@ import type {
   UpdateVGatewayRequest,
   VGateway,
   VGatewayConnectionStatus,
+  VGatewayErrorCode,
   VGatewayListResponse,
 } from "./vgateway";
 
@@ -66,5 +67,11 @@ describe("vGateway types", () => {
 
     expect(success.success).toBe(true);
     expect(failure.success).toBe(false);
+  });
+
+  it("includes the disabled-gateway lifecycle error", () => {
+    const code: VGatewayErrorCode = "VGW014";
+
+    expect(code).toBe("VGW014");
   });
 });

@@ -7,7 +7,9 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  connectVGateway,
   deleteVGateway,
+  disconnectVGateway,
   listVGateways,
 } from "../../../services/vgateway.service";
 import type {
@@ -17,11 +19,15 @@ import type {
 import VGatewayListPage from "./VGatewayListPage";
 
 vi.mock("../../../services/vgateway.service", () => ({
+  connectVGateway: vi.fn(),
   deleteVGateway: vi.fn(),
+  disconnectVGateway: vi.fn(),
   listVGateways: vi.fn(),
 }));
 
+const mockedConnectVGateway = vi.mocked(connectVGateway);
 const mockedDeleteVGateway = vi.mocked(deleteVGateway);
+const mockedDisconnectVGateway = vi.mocked(disconnectVGateway);
 const mockedListVGateways = vi.mocked(listVGateways);
 
 const gateways: VGatewayListItem[] = [
@@ -76,6 +82,8 @@ describe("VGatewayListPage", () => {
   beforeEach(() => {
     mockedListVGateways.mockReset();
     mockedDeleteVGateway.mockReset();
+    mockedConnectVGateway.mockReset();
+    mockedDisconnectVGateway.mockReset();
   });
 
   afterEach(() => {
@@ -242,5 +250,38 @@ describe("VGatewayListPage", () => {
       "Unable to load vGateways",
     );
     expect(screen.getByText("Main PLC Gateway")).toBeInTheDocument();
+  });
+
+  it("connects a disconnected gateway and refreshes the list", async () => {
+    mockedListVGateways.mockResolvedValue(response());
+    mockedConnectVGateway.mockResolvedValue({
+      message: "Connected successfully",
+      status: "connected",
+    });
+
+    renderPage();
+    await screen.findByText("Boiler Room");
+    fireEvent.click(screen.getByRole("button", { name: "Connect Boiler Room" }));
+
+    await waitFor(() => {
+      expect(mockedConnectVGateway).toHaveBeenCalledWith(gateways[1].id);
+      expect(mockedListVGateways).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("disconnects a connected gateway", async () => {
+    mockedListVGateways.mockResolvedValue(response());
+    mockedDisconnectVGateway.mockResolvedValue({
+      message: "Disconnected successfully",
+      status: "disconnected",
+    });
+
+    renderPage();
+    await screen.findByText("Main PLC Gateway");
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Main PLC Gateway" }));
+
+    await waitFor(() => {
+      expect(mockedDisconnectVGateway).toHaveBeenCalledWith(gateways[0].id);
+    });
   });
 });
