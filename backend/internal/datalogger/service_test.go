@@ -96,6 +96,8 @@ func TestServiceRejectsInvalidLoggerContracts(t *testing.T) {
 		{name: "zero start", input: withStart(validCreate(tagID, startAt, `{}`), time.Time{})},
 		{name: "bad timezone", input: withTimezone(validCreate(tagID, startAt, `{}`), "Moon/Base")},
 		{name: "end before start", input: withEnd(validCreate(tagID, startAt, `{}`), &endBefore)},
+		{name: "storage below minimum", input: withMaxSize(validCreate(tagID, startAt, `{}`), int64Pointer(MinStorageSizeBytes-1))},
+		{name: "storage above maximum", input: withMaxSize(validCreate(tagID, startAt, `{}`), int64Pointer(MaxStorageSizeBytes+1))},
 		{name: "no tags", input: withTags(validCreate(tagID, startAt, `{}`), nil)},
 		{name: "nil tag", input: withTags(validCreate(tagID, startAt, `{}`), []uuid.UUID{uuid.Nil})},
 		{name: "duplicate tag", input: withTags(validCreate(tagID, startAt, `{}`), []uuid.UUID{tagID, tagID})},
@@ -130,6 +132,33 @@ func TestServiceRejectsInvalidLoggerContracts(t *testing.T) {
 				t.Fatalf("Create() error = %v, want %v", err, ErrInvalidInput)
 			}
 		})
+	}
+}
+
+func TestServiceHydratesStorageAndEnforcesUpdatedLimit(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	tag := repository.addTag("Power")
+	limit := int64(100 * 1024 * 1024)
+	history := &memoryHistoryRepository{storage: &StorageStats{RowCount: 12, BatchCount: 12, AverageRowBytes: 400}}
+	service, err := NewService(repository, history)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	entity, err := service.Create(context.Background(), withMaxSize(validCreate(tag.ID, time.Now(), `{}`), &limit))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if entity.MaxSizeBytes == nil || *entity.MaxSizeBytes != limit || entity.Storage == nil || entity.Storage.RowCount != 12 || history.storageTagCount != 1 || history.storageLimit == nil || *history.storageLimit != limit {
+		t.Fatalf("created storage = %#v, history = %#v", entity, history)
+	}
+	updatedLimit := int64(200 * 1024 * 1024)
+	updated, err := service.Update(context.Background(), entity.ID, UpdateInput{MaxSizeBytes: OptionalInt64{Set: true, Value: &updatedLimit}})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.MaxSizeBytes == nil || *updated.MaxSizeBytes != updatedLimit || history.validatedLimit == nil || *history.validatedLimit != updatedLimit || history.enforcedLimit == nil || *history.enforcedLimit != updatedLimit {
+		t.Errorf("updated storage = %#v, validated/enforced = %v/%v", updated, history.validatedLimit, history.enforcedLimit)
 	}
 }
 
@@ -275,11 +304,16 @@ type memoryRepository struct {
 }
 
 type memoryHistoryRepository struct {
-	input       RawValueListInput
-	result      *RawValueListResult
-	queryInput  QueryInput
-	queryResult *QueryResult
-	err         error
+	input           RawValueListInput
+	result          *RawValueListResult
+	queryInput      QueryInput
+	queryResult     *QueryResult
+	storage         *StorageStats
+	storageTagCount int
+	storageLimit    *int64
+	validatedLimit  *int64
+	enforcedLimit   *int64
+	err             error
 }
 
 func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch) error {
@@ -297,6 +331,25 @@ func (repository *memoryHistoryRepository) Query(_ context.Context, input QueryI
 		return &QueryResult{Mode: input.Mode, Bucket: input.Bucket, Aggregate: input.Aggregate, Page: input.Page, PerPage: input.PerPage}, repository.err
 	}
 	return repository.queryResult, repository.err
+}
+
+func (repository *memoryHistoryRepository) Storage(_ context.Context, _ uuid.UUID, tagCount int, maxSizeBytes *int64) (*StorageStats, error) {
+	repository.storageTagCount = tagCount
+	repository.storageLimit = maxSizeBytes
+	if repository.storage == nil {
+		return &StorageStats{AverageRowBytes: DefaultEstimatedRowBytes}, repository.err
+	}
+	return repository.storage, repository.err
+}
+
+func (repository *memoryHistoryRepository) EnforceStorageLimit(_ context.Context, _ uuid.UUID, maxSizeBytes *int64) error {
+	repository.enforcedLimit = maxSizeBytes
+	return repository.err
+}
+
+func (repository *memoryHistoryRepository) ValidateStorageLimit(_ context.Context, _ uuid.UUID, maxSizeBytes *int64) error {
+	repository.validatedLimit = maxSizeBytes
+	return repository.err
 }
 
 func newMemoryRepository() *memoryRepository {
@@ -406,12 +459,18 @@ func scheduleCreate(tagID uuid.UUID, startAt time.Time, config string) CreateInp
 	return input
 }
 
-func withName(input CreateInput, value string) CreateInput      { input.Name = value; return input }
-func withMode(input CreateInput, value Mode) CreateInput        { input.Mode = value; return input }
-func withStart(input CreateInput, value time.Time) CreateInput  { input.StartAt = value; return input }
-func withTimezone(input CreateInput, value string) CreateInput  { input.Timezone = value; return input }
-func withEnd(input CreateInput, value *time.Time) CreateInput   { input.EndAt = value; return input }
+func withName(input CreateInput, value string) CreateInput     { input.Name = value; return input }
+func withMode(input CreateInput, value Mode) CreateInput       { input.Mode = value; return input }
+func withStart(input CreateInput, value time.Time) CreateInput { input.StartAt = value; return input }
+func withTimezone(input CreateInput, value string) CreateInput { input.Timezone = value; return input }
+func withEnd(input CreateInput, value *time.Time) CreateInput  { input.EndAt = value; return input }
+func withMaxSize(input CreateInput, value *int64) CreateInput {
+	input.MaxSizeBytes = value
+	return input
+}
 func withTags(input CreateInput, value []uuid.UUID) CreateInput { input.TagIDs = value; return input }
+
+func int64Pointer(value int64) *int64 { return &value }
 
 var _ Repository = (*memoryRepository)(nil)
 var _ HistoryRepository = (*memoryHistoryRepository)(nil)

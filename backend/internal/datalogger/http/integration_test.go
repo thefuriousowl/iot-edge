@@ -132,7 +132,7 @@ func newHTTPIntegrationDatabase(t *testing.T) (*gorm.DB, []uuid.UUID) {
 		t.Fatalf("getting SQL DB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql"} {
+	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql", "../../../migrations/000008_add_data_logger_storage_limits.up.sql"} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatalf("reading migration: %v", err)

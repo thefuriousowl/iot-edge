@@ -28,27 +28,29 @@ type Service interface {
 type Handler struct{ service Service }
 
 type createRequest struct {
-	Name        string          `json:"name"`
-	Description *string         `json:"description"`
-	Enabled     *bool           `json:"enabled"`
-	Timezone    string          `json:"timezone"`
-	Mode        datalogger.Mode `json:"mode"`
-	StartAt     time.Time       `json:"start_at"`
-	EndAt       *time.Time      `json:"end_at"`
-	Config      json.RawMessage `json:"config"`
-	TagIDs      []uuid.UUID     `json:"tag_ids"`
+	Name         string          `json:"name"`
+	Description  *string         `json:"description"`
+	Enabled      *bool           `json:"enabled"`
+	Timezone     string          `json:"timezone"`
+	Mode         datalogger.Mode `json:"mode"`
+	StartAt      time.Time       `json:"start_at"`
+	EndAt        *time.Time      `json:"end_at"`
+	MaxSizeBytes *int64          `json:"max_size_bytes"`
+	Config       json.RawMessage `json:"config"`
+	TagIDs       []uuid.UUID     `json:"tag_ids"`
 }
 
 type updateRequest struct {
-	Name        *string          `json:"name"`
-	Description json.RawMessage  `json:"description"`
-	Enabled     *bool            `json:"enabled"`
-	Timezone    *string          `json:"timezone"`
-	Mode        *datalogger.Mode `json:"mode"`
-	StartAt     *time.Time       `json:"start_at"`
-	EndAt       json.RawMessage  `json:"end_at"`
-	Config      json.RawMessage  `json:"config"`
-	TagIDs      *[]uuid.UUID     `json:"tag_ids"`
+	Name         *string          `json:"name"`
+	Description  json.RawMessage  `json:"description"`
+	Enabled      *bool            `json:"enabled"`
+	Timezone     *string          `json:"timezone"`
+	Mode         *datalogger.Mode `json:"mode"`
+	StartAt      *time.Time       `json:"start_at"`
+	EndAt        json.RawMessage  `json:"end_at"`
+	MaxSizeBytes json.RawMessage  `json:"max_size_bytes"`
+	Config       json.RawMessage  `json:"config"`
+	TagIDs       *[]uuid.UUID     `json:"tag_ids"`
 }
 
 func NewHandler(service Service) *Handler { return &Handler{service: service} }
@@ -59,7 +61,7 @@ func (handler *Handler) Create(c *fiber.Ctx) error {
 		return validation(c, "Invalid request body")
 	}
 	result, err := handler.service.Create(c.UserContext(), datalogger.CreateInput{
-		Name: request.Name, Description: request.Description, Enabled: request.Enabled, Timezone: request.Timezone, Mode: request.Mode, StartAt: request.StartAt, EndAt: request.EndAt, Config: request.Config, TagIDs: request.TagIDs,
+		Name: request.Name, Description: request.Description, Enabled: request.Enabled, Timezone: request.Timezone, Mode: request.Mode, StartAt: request.StartAt, EndAt: request.EndAt, MaxSizeBytes: request.MaxSizeBytes, Config: request.Config, TagIDs: request.TagIDs,
 	})
 	if err != nil {
 		return handleError(c, err)
@@ -164,6 +166,16 @@ func (handler *Handler) Update(c *fiber.Ctx) error {
 				return validation(c, "Invalid end_at")
 			}
 			input.EndAt.Value = &endAt
+		}
+	}
+	if request.MaxSizeBytes != nil {
+		input.MaxSizeBytes.Set = true
+		if !isJSONNull(request.MaxSizeBytes) {
+			var maxSizeBytes int64
+			if err := json.Unmarshal(request.MaxSizeBytes, &maxSizeBytes); err != nil {
+				return validation(c, "Invalid max_size_bytes")
+			}
+			input.MaxSizeBytes.Value = &maxSizeBytes
 		}
 	}
 	result, err := handler.service.Update(c.UserContext(), id, input)
@@ -316,6 +328,8 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusConflict, "DLG002", "Data Logger name already exists")
 	case errors.Is(err, datalogger.ErrLoggerTagNotFound):
 		return apiError(c, fiber.StatusBadRequest, "DLG003", "Selected Tag not found")
+	case errors.Is(err, datalogger.ErrStorageLimitTooSmall):
+		return apiError(c, fiber.StatusBadRequest, "DLG004", "Data Logger storage limit cannot hold one complete synchronized batch")
 	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag), errors.Is(err, datalogger.ErrInvalidRawBatch), errors.Is(err, datalogger.ErrInvalidQuery), errors.Is(err, datalogger.ErrRawTagNotSelected):
 		return validation(c, "Invalid Data Logger configuration")
 	default:

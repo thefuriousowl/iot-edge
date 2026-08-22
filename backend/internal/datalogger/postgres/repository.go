@@ -121,8 +121,8 @@ func (repository *repository) ListEnabledLoggers(ctx context.Context) ([]datalog
 
 func (repository *repository) Update(ctx context.Context, entity *datalogger.Logger, tagIDs []uuid.UUID) error {
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&datalogger.Logger{}).Where("id = ?", entity.ID).Select("name", "description", "enabled", "timezone", "mode", "start_at", "end_at", "config", "updated_at").Updates(map[string]any{
-			"name": entity.Name, "description": entity.Description, "enabled": entity.Enabled, "timezone": entity.Timezone, "mode": entity.Mode, "start_at": entity.StartAt, "end_at": entity.EndAt, "config": entity.Config, "updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
+		result := tx.Model(&datalogger.Logger{}).Where("id = ?", entity.ID).Select("name", "description", "enabled", "timezone", "mode", "start_at", "end_at", "max_size_bytes", "config", "updated_at").Updates(map[string]any{
+			"name": entity.Name, "description": entity.Description, "enabled": entity.Enabled, "timezone": entity.Timezone, "mode": entity.Mode, "start_at": entity.StartAt, "end_at": entity.EndAt, "max_size_bytes": entity.MaxSizeBytes, "config": entity.Config, "updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
 		})
 		if result.Error != nil {
 			return result.Error
@@ -178,7 +178,7 @@ func mapError(err error) error {
 		return datalogger.ErrLoggerNameExists
 	case "data_logger_tags_tag_id_fkey":
 		return datalogger.ErrLoggerTagNotFound
-	case "data_loggers_mode_check", "data_loggers_end_check", "data_loggers_config_check", "data_loggers_mode_config_check":
+	case "data_loggers_mode_check", "data_loggers_end_check", "data_loggers_config_check", "data_loggers_mode_config_check", "data_loggers_max_size_check":
 		return datalogger.ErrInvalidLogger
 	case "data_logger_tags_pkey", "data_logger_tags_position_key", "data_logger_tags_position_check":
 		return datalogger.ErrInvalidLoggerTag

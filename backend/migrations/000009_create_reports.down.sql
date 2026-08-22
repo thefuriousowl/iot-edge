@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS report_columns;
+DROP TABLE IF EXISTS reports;
+
+COMMIT;

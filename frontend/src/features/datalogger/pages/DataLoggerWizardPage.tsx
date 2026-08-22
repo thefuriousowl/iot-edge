@@ -8,6 +8,7 @@ import {
   CircleAlert,
   Clock3,
   DatabaseZap,
+  HardDrive,
   LoaderCircle,
   Plus,
   Search,
@@ -25,6 +26,7 @@ import type { DataLogger, SaveDataLoggerRequest } from "../../../types/datalogge
 import type { Tag } from "../../../types/tag";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import { dateToLocalInput, formatInTimezone, isValidTimezone, nextDataLoggerRun, scheduleSummary, zonedDateTimeToDate } from "../utils/schedule";
+import { bytesPerMiB, defaultDataLoggerLimitMiB, defaultEstimatedRowBytes, estimateDataLoggerStorage, formatEstimatedDuration, formatStorageBytes, maxDataLoggerLimitMiB } from "../utils/storage";
 import "../../vgateway/pages/VGatewayFormPage.css";
 import "./DataLoggerListPage.css";
 import "./DataLoggerWizardPage.css";
@@ -44,6 +46,8 @@ const formSchema = z.object({
   start_local: z.string().min(1, "Start date and time are required"),
   end_enabled: z.boolean(),
   end_local: z.string(),
+  storage_limit_enabled: z.boolean(),
+  max_size_mib: z.number().int().min(1).max(maxDataLoggerLimitMiB),
   interval_seconds: z.number().int().min(1).max(maxIntervalSeconds),
   schedule_unit: z.enum(["minute", "hour", "day", "week"]),
   schedule_every: z.number().int().min(1).max(maxScheduleEvery),
@@ -83,7 +87,7 @@ function initialValues(): FormValues {
   const timezone = localTimezone();
   const start = new Date(Date.now() + 60 * 60 * 1000);
   start.setUTCSeconds(0, 0);
-  return { name: "", description: "", enabled: true, timezone, mode: "interval", start_local: dateToLocalInput(start, timezone), end_enabled: false, end_local: "", interval_seconds: 60, schedule_unit: "day", schedule_every: 1, times: [{ value: "08:00" }], weekdays: [1, 2, 3, 4, 5] };
+  return { name: "", description: "", enabled: true, timezone, mode: "interval", start_local: dateToLocalInput(start, timezone), end_enabled: false, end_local: "", storage_limit_enabled: true, max_size_mib: defaultDataLoggerLimitMiB, interval_seconds: 60, schedule_unit: "day", schedule_every: 1, times: [{ value: "08:00" }], weekdays: [1, 2, 3, 4, 5] };
 }
 
 function valuesFromLogger(logger: DataLogger): FormValues {
@@ -97,6 +101,8 @@ function valuesFromLogger(logger: DataLogger): FormValues {
     start_local: dateToLocalInput(logger.start_at, logger.timezone),
     end_enabled: Boolean(logger.end_at),
     end_local: logger.end_at ? dateToLocalInput(logger.end_at, logger.timezone) : "",
+    storage_limit_enabled: logger.max_size_bytes !== null,
+    max_size_mib: logger.max_size_bytes === null ? defaultDataLoggerLimitMiB : Math.max(1, Math.round(logger.max_size_bytes / bytesPerMiB)),
     interval_seconds: "interval_seconds" in logger.config ? logger.config.interval_seconds : 60,
     schedule_unit: schedule?.unit ?? "day",
     schedule_every: schedule?.every ?? 1,
@@ -117,7 +123,7 @@ function requestFromValues(values: FormValues, tagIDs: string[]): SaveDataLogger
         ...((values.schedule_unit === "day" || values.schedule_unit === "week") ? { times: values.times.map((time) => time.value).sort() } : {}),
         ...(values.schedule_unit === "week" ? { weekdays: [...values.weekdays].sort((first, second) => first - second) } : {}),
       };
-  return { name: values.name.trim(), description: values.description.trim() || null, enabled: values.enabled, timezone: values.timezone, mode: values.mode, start_at: start.toISOString(), end_at: end?.toISOString() ?? null, config, tag_ids: tagIDs };
+  return { name: values.name.trim(), description: values.description.trim() || null, enabled: values.enabled, timezone: values.timezone, mode: values.mode, start_at: start.toISOString(), end_at: end?.toISOString() ?? null, max_size_bytes: values.storage_limit_enabled ? values.max_size_mib * bytesPerMiB : null, config, tag_ids: tagIDs };
 }
 
 function errorMessage(error: unknown): string {
@@ -152,6 +158,7 @@ function DataLoggerWizardPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [averageRowBytes, setAverageRowBytes] = useState(defaultEstimatedRowBytes);
   const { register, control, reset, setValue, trigger, handleSubmit, formState: { errors } } = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: initialValues() });
   const times = useFieldArray({ control, name: "times" });
   const values = useWatch({ control }) as FormValues;
@@ -167,6 +174,7 @@ function DataLoggerWizardPage() {
       if (logger) {
         reset(valuesFromLogger(logger));
         setSelectedTagIDs((logger.tags ?? []).map((tag) => tag.id));
+        setAverageRowBytes(logger.storage?.average_row_bytes ?? defaultEstimatedRowBytes);
       }
       setLoadState("ready");
     }).catch((error: unknown) => {
@@ -197,6 +205,7 @@ function DataLoggerWizardPage() {
       return null;
     }
   }, [selectedTagIDs, values]);
+  const storageEstimate = useMemo(() => preview ? estimateDataLoggerStorage({ maxSizeBytes: preview.request.max_size_bytes, tagCount: selectedTagIDs.length, averageRowBytes, batchCount: 0, mode: preview.request.mode, config: preview.request.config }) : null, [averageRowBytes, preview, selectedTagIDs.length]);
 
   function toggleTag(tagID: string) {
     setTagError(null);
@@ -259,6 +268,15 @@ function DataLoggerWizardPage() {
             {scheduleUnit === "week" && <fieldset><legend>Weekdays</legend><div className="datalogger-weekdays">{weekdays.map((day, index) => { const value = index + 1; return <label key={day} className={selectedWeekdays.includes(value) ? "is-selected" : ""}><input type="checkbox" checked={selectedWeekdays.includes(value)} onChange={() => setValue("weekdays", selectedWeekdays.includes(value) ? selectedWeekdays.filter((item) => item !== value) : [...selectedWeekdays, value], { shouldValidate: true })} />{day.slice(0, 3)}</label>; })}</div>{errors.weekdays && <small className="is-error">{errors.weekdays.message}</small>}</fieldset>}
             <fieldset><legend>Wall-clock times</legend><div className="datalogger-times">{times.fields.map((field, index) => <label key={field.id}><span>Run {index + 1}</span><input type="time" aria-label={`Schedule time ${index + 1}`} {...register(`times.${index}.value`)} /><button type="button" aria-label={`Remove schedule time ${index + 1}`} disabled={times.fields.length === 1} onClick={() => times.remove(index)}><Trash2 size={15} /></button>{errors.times?.[index]?.value && <small className="is-error">{errors.times[index]?.value?.message}</small>}</label>)}<button type="button" onClick={() => times.append({ value: "12:00" })}><Plus size={16} /> Add time</button></div>{errors.times?.root && <small className="is-error">{errors.times.root.message}</small>}</fieldset>
           </div>}
+          <section className="datalogger-storage-limit" aria-labelledby="datalogger-storage-heading">
+            <div className="datalogger-panel-heading"><HardDrive /><div><h3 id="datalogger-storage-heading">Rolling storage limit</h3><p>Keep complete synchronized batches and remove the oldest batch when the estimate reaches this limit.</p></div></div>
+            <div className="datalogger-storage-controls">
+              <label className="datalogger-switch-field"><input type="checkbox" {...register("storage_limit_enabled")} /><span className="datalogger-switch"><span /></span><span><strong>Limit retained history</strong><small>Disable to keep history until it is deleted manually.</small></span></label>
+              <label><span>Maximum storage (MiB)</span><input type="number" min="1" max={maxDataLoggerLimitMiB} disabled={!values.storage_limit_enabled} aria-invalid={Boolean(errors.max_size_mib)} {...register("max_size_mib", { valueAsNumber: true })} />{errors.max_size_mib && <small className="is-error">Enter 1 MiB to 1 TiB</small>}</label>
+            </div>
+            {storageEstimate ? <div className="datalogger-storage-estimate" aria-label="Estimated storage retention"><span><strong>{storageEstimate.capacityRows.toLocaleString()}</strong> rows</span><span><strong>{storageEstimate.capacityBatches.toLocaleString()}</strong> complete batches</span><span><strong>{formatEstimatedDuration(storageEstimate.estimatedRetentionSeconds)}</strong> retained history</span></div> : <div className="datalogger-storage-unlimited">Unlimited retention · no automatic pruning</div>}
+            <small className="datalogger-storage-note">Estimate uses {formatStorageBytes(averageRowBytes)} per row and updates from actual Logger history after capture. PostgreSQL disk allocation may be higher.</small>
+          </section>
         </section>}
 
         {step === 3 && <section className="datalogger-wizard-panel"><div className="datalogger-panel-heading"><Check /><div><h2>Review and save</h2><p>Confirm the definition the runtime will reconcile automatically.</p></div></div>{preview ? <div className="datalogger-review-grid">
@@ -266,6 +284,7 @@ function DataLoggerWizardPage() {
           <article><span>Tags</span><strong>{selectedTagIDs.length}</strong><small>{availableTags.filter((tag) => selectedTagIDs.includes(tag.id)).map((tag) => tag.name).join(", ")}</small></article>
           <article><span>Cadence</span><strong>{preview.request.mode === "interval" ? "Fixed interval" : "Calendar"}</strong><small>{scheduleSummary(preview.request.mode, preview.request.config)}</small></article>
           <article><span>Next run</span><strong>{preview.next ? formatInTimezone(preview.next, preview.request.timezone) : "No future run"}</strong><small>{preview.request.timezone}</small></article>
+          <article><span>Storage</span><strong>{preview.request.max_size_bytes === null ? "Unlimited" : formatStorageBytes(preview.request.max_size_bytes)}</strong><small>{storageEstimate ? `≈ ${storageEstimate.capacityRows.toLocaleString()} rows · ${formatEstimatedDuration(storageEstimate.estimatedRetentionSeconds)}` : "No automatic pruning"}</small></article>
           <article className="is-wide"><span>Data path</span><strong>Latest Tag snapshot → raw history</strong><small>No datasource read is triggered by this engine.</small></article>
         </div> : <div className="datalogger-alert" role="alert"><CircleAlert size={18} />Schedule preview is unavailable. Go back and correct the schedule.</div>}{submitError && <div className="datalogger-alert" role="alert"><CircleAlert size={18} />{submitError}</div>}</section>}
 

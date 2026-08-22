@@ -13,8 +13,11 @@ import DataLoggerListPage from "./features/datalogger/pages/DataLoggerListPage";
 import DataLoggerDetailPage from "./features/datalogger/pages/DataLoggerDetailPage";
 import DataLoggerQueryPage from "./features/datalogger/pages/DataLoggerQueryPage";
 import DataLoggerWizardPage from "./features/datalogger/pages/DataLoggerWizardPage";
+import DashboardPage from "./features/dashboard/pages/DashboardPage";
 import DeviceListPage from "./features/device/pages/DeviceListPage";
-import SystemHealthPage from "./features/system/pages/SystemHealthPage";
+import ReportBuilderPage from "./features/report/pages/ReportBuilderPage";
+import ReportDetailPage from "./features/report/pages/ReportDetailPage";
+import ReportListPage from "./features/report/pages/ReportListPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
@@ -51,7 +54,7 @@ function App() {
           path="/dashboard"
           element={
             <ProtectedRoute>
-              <SystemHealthPage />
+              <DashboardPage />
             </ProtectedRoute>
           }
         />
@@ -140,6 +143,38 @@ function App() {
           element={
             <ProtectedRoute>
               <DataLoggerDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute>
+              <ReportListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/new"
+          element={
+            <ProtectedRoute>
+              <ReportBuilderPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/:id/edit"
+          element={
+            <ProtectedRoute>
+              <ReportBuilderPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports/:id"
+          element={
+            <ProtectedRoute>
+              <ReportDetailPage />
             </ProtectedRoute>
           }
         />

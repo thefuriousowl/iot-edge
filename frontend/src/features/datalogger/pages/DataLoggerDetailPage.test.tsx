@@ -25,8 +25,10 @@ const logger: DataLogger = {
   mode: "interval",
   start_at: "2030-08-22T01:00:00Z",
   end_at: null,
+  max_size_bytes: 100 * 1024 * 1024,
   config: { interval_seconds: 60 },
   tag_count: 2,
+  storage: { row_count: 200, batch_count: 100, estimated_size_bytes: 80_000, average_row_bytes: 400, estimated_capacity_rows: 262_144, estimated_capacity_batches: 131_072, oldest_batch_at: "2026-08-22T10:00:00Z", newest_batch_at: "2026-08-22T11:40:00Z" },
   tags: [
     { id: "tag-1", name: "Power", type: "reading", data_type: "float64", enabled: true },
     { id: "tag-2", name: "Energy", type: "calculated", data_type: "float64", enabled: true },
@@ -95,6 +97,10 @@ describe("DataLoggerDetailPage", () => {
     expect(screen.getByText("42.5")).toBeInTheDocument();
     expect(screen.getByText("dependency unavailable")).toBeInTheDocument();
     expect(screen.getAllByText("partial")).toHaveLength(2);
+    const storage = screen.getByRole("heading", { name: "Rolling storage retention" }).closest("section")!;
+    expect(within(storage).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
+    expect(within(storage).getByText("200")).toBeInTheDocument();
+    expect(within(storage).getByText("262,144")).toBeInTheDocument();
     const summary = screen.getByRole("region", { name: "Visible history summary" });
     expect(within(summary).getByText(/visible batches/)).toHaveTextContent("1");
     expect(mockedGetHistory).toHaveBeenCalledWith("logger-1", { tag_id: undefined, from: undefined, to: undefined, page: 1, per_page: 100 }, expect.any(AbortSignal));

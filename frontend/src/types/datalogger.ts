@@ -33,11 +33,24 @@ export interface DataLogger {
   mode: DataLoggerMode;
   start_at: string;
   end_at: string | null;
+  max_size_bytes: number | null;
   config: DataLoggerConfig;
   tag_count: number;
   tags?: DataLoggerTagReference[];
+  storage?: DataLoggerStorageStats;
   created_at: string;
   updated_at: string;
+}
+
+export interface DataLoggerStorageStats {
+  row_count: number;
+  batch_count: number;
+  estimated_size_bytes: number;
+  average_row_bytes: number;
+  estimated_capacity_rows: number | null;
+  estimated_capacity_batches: number | null;
+  oldest_batch_at: string | null;
+  newest_batch_at: string | null;
 }
 
 export interface DataLoggerPagination {
@@ -135,6 +148,7 @@ export interface SaveDataLoggerRequest {
   mode: DataLoggerMode;
   start_at: string;
   end_at: string | null;
+  max_size_bytes: number | null;
   config: DataLoggerConfig;
   tag_ids: string[];
 }

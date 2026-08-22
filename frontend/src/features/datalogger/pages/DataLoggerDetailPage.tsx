@@ -8,6 +8,7 @@ import {
   Clock3,
   DatabaseZap,
   Download,
+  HardDrive,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -21,6 +22,7 @@ import { getDataLogger, getDataLoggerHistory } from "../../../services/datalogge
 import type { DataLogger, DataLoggerHistoryResponse, DataLoggerRawValue } from "../../../types/datalogger";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import { dateToLocalInput, formatInTimezone, nextDataLoggerRun, scheduleSummary, zonedDateTimeToDate } from "../utils/schedule";
+import { defaultEstimatedRowBytes, estimateDataLoggerStorage, formatEstimatedDuration, formatStorageBytes } from "../utils/storage";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./DataLoggerListPage.css";
 import "./DataLoggerDetailPage.css";
@@ -125,6 +127,8 @@ function DataLoggerDetailPage() {
   const nextRun = logger ? nextDataLoggerRun(logger) : null;
   const state = logger ? definitionState(logger, nextRun) : "paused";
   const activeFilters = [tagID, from, to].filter(Boolean).length;
+  const storageEstimate = useMemo(() => logger ? estimateDataLoggerStorage({ maxSizeBytes: logger.max_size_bytes, tagCount: logger.tag_count, averageRowBytes: logger.storage?.average_row_bytes ?? defaultEstimatedRowBytes, batchCount: logger.storage?.batch_count ?? 0, mode: logger.mode, config: logger.config }) : null, [logger]);
+  const storagePercent = logger?.max_size_bytes && logger.storage ? Math.min(100, logger.storage.estimated_size_bytes / logger.max_size_bytes * 100) : 0;
 
   function updatePage(nextPage: number) {
     const next = new URLSearchParams(searchParams);
@@ -193,6 +197,17 @@ function DataLoggerDetailPage() {
           <article><Clock3 /><span>Last capture</span><strong>{history.last_batch_at ? formatInTimezone(new Date(history.last_batch_at), logger.timezone) : "No captures yet"}</strong><small>{logger.timezone}</small></article>
           <article><CalendarClock /><span>Next run</span><strong>{nextRun ? formatInTimezone(nextRun, logger.timezone) : "No future run"}</strong><small>{scheduleSummary(logger.mode, logger.config)}</small></article>
           <article><Tags /><span>Selected Tags</span><strong>{logger.tag_count}</strong><small>{history.pagination.total} matching stored values</small></article>
+        </section>
+
+        <section className="datalogger-storage-card" aria-labelledby="datalogger-storage-summary-heading">
+          <header><div><HardDrive /><div><h2 id="datalogger-storage-summary-heading">Rolling storage retention</h2><p>Quota accounting preserves complete synchronized batches. PostgreSQL disk allocation may be higher.</p></div></div><strong>{logger.max_size_bytes === null ? "Unlimited" : `${formatStorageBytes(logger.storage?.estimated_size_bytes ?? 0)} / ${formatStorageBytes(logger.max_size_bytes)}`}</strong></header>
+          {logger.max_size_bytes !== null && <div className="datalogger-storage-progress" role="progressbar" aria-label="Estimated Data Logger storage usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(storagePercent)}><span style={{ width: `${storagePercent}%` }} /></div>}
+          <div className="datalogger-storage-summary">
+            <span><small>Stored rows</small><strong>{(logger.storage?.row_count ?? 0).toLocaleString()}</strong><em>{(logger.storage?.batch_count ?? 0).toLocaleString()} complete batches</em></span>
+            <span><small>Estimated capacity</small><strong>{storageEstimate ? storageEstimate.capacityRows.toLocaleString() : "Unlimited"}</strong><em>{storageEstimate ? `${storageEstimate.capacityBatches.toLocaleString()} batches` : "No automatic pruning"}</em></span>
+            <span><small>Retained history</small><strong>{storageEstimate ? formatEstimatedDuration(storageEstimate.estimatedRetentionSeconds) : "Unlimited"}</strong><em>{storageEstimate && (logger.storage?.batch_count ?? 0) >= storageEstimate.capacityBatches ? "Oldest batches roll off automatically" : storageEstimate ? `First rollover in about ${formatEstimatedDuration(storageEstimate.estimatedSecondsUntilRollover)}` : "Subject to available database storage"}</em></span>
+            <span><small>Current window</small><strong>{logger.storage?.oldest_batch_at ? formatInTimezone(new Date(logger.storage.oldest_batch_at), logger.timezone) : "No captures yet"}</strong><em>{logger.storage?.newest_batch_at ? `through ${formatInTimezone(new Date(logger.storage.newest_batch_at), logger.timezone)}` : logger.timezone}</em></span>
+          </div>
         </section>
 
         <div className="datalogger-detail-grid">

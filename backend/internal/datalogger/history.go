@@ -14,8 +14,9 @@ const (
 )
 
 var (
-	ErrInvalidRawBatch   = errors.New("invalid Data Logger batch")
-	ErrRawTagNotSelected = errors.New("Tag is not selected by Data Logger")
+	ErrInvalidRawBatch      = errors.New("invalid Data Logger batch")
+	ErrRawTagNotSelected    = errors.New("Tag is not selected by Data Logger")
+	ErrStorageLimitTooSmall = errors.New("Data Logger storage limit cannot hold one complete batch")
 )
 
 type RawSample struct {
@@ -67,6 +68,9 @@ type HistoryRepository interface {
 	WriteBatch(context.Context, RawBatch) error
 	ListValues(context.Context, RawValueListInput) (*RawValueListResult, error)
 	Query(context.Context, QueryInput) (*QueryResult, error)
+	Storage(context.Context, uuid.UUID, int, *int64) (*StorageStats, error)
+	ValidateStorageLimit(context.Context, uuid.UUID, *int64) error
+	EnforceStorageLimit(context.Context, uuid.UUID, *int64) error
 }
 
 func validHistoryDataType(value string) bool {

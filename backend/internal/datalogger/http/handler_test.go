@@ -52,10 +52,10 @@ func TestHandlerContracts(t *testing.T) {
 		t.Errorf("list response = %#v", listed)
 	}
 
-	response = request(t, app, http.MethodPost, "/api/data-loggers/", `{"name":"Plant","description":"Main","enabled":false,"timezone":"Asia/Bangkok","mode":"interval","start_at":"2026-08-23T00:00:00Z","end_at":"2026-08-24T00:00:00Z","config":{"interval_seconds":15},"tag_ids":["`+tagA.String()+`","`+tagB.String()+`"]}`)
+	response = request(t, app, http.MethodPost, "/api/data-loggers/", `{"name":"Plant","description":"Main","enabled":false,"timezone":"Asia/Bangkok","mode":"interval","start_at":"2026-08-23T00:00:00Z","end_at":"2026-08-24T00:00:00Z","max_size_bytes":104857600,"config":{"interval_seconds":15},"tag_ids":["`+tagA.String()+`","`+tagB.String()+`"]}`)
 	assertStatus(t, response, fiber.StatusCreated)
 	closeBody(t, response)
-	if service.createInput.Name != "Plant" || service.createInput.Description == nil || *service.createInput.Description != "Main" || service.createInput.Enabled == nil || *service.createInput.Enabled || service.createInput.Timezone != "Asia/Bangkok" || service.createInput.Mode != datalogger.ModeInterval || !service.createInput.StartAt.Equal(startAt) || service.createInput.EndAt == nil || !service.createInput.EndAt.Equal(endAt) || string(service.createInput.Config) != `{"interval_seconds":15}` || len(service.createInput.TagIDs) != 2 || service.createInput.TagIDs[1] != tagB {
+	if service.createInput.Name != "Plant" || service.createInput.Description == nil || *service.createInput.Description != "Main" || service.createInput.Enabled == nil || *service.createInput.Enabled || service.createInput.Timezone != "Asia/Bangkok" || service.createInput.Mode != datalogger.ModeInterval || !service.createInput.StartAt.Equal(startAt) || service.createInput.EndAt == nil || !service.createInput.EndAt.Equal(endAt) || service.createInput.MaxSizeBytes == nil || *service.createInput.MaxSizeBytes != 104857600 || string(service.createInput.Config) != `{"interval_seconds":15}` || len(service.createInput.TagIDs) != 2 || service.createInput.TagIDs[1] != tagB {
 		t.Errorf("Create() input = %#v", service.createInput)
 	}
 
@@ -101,17 +101,17 @@ func TestHandlerContracts(t *testing.T) {
 		t.Errorf("query response = %#v", queryBody)
 	}
 
-	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
+	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"max_size_bytes":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
 	assertStatus(t, response, fiber.StatusOK)
 	closeBody(t, response)
-	if service.updatedID != loggerID || !service.updateInput.Description.Set || service.updateInput.Description.Value != nil || !service.updateInput.EndAt.Set || service.updateInput.EndAt.Value != nil || service.updateInput.Enabled == nil || *service.updateInput.Enabled || service.updateInput.TagIDs == nil || len(*service.updateInput.TagIDs) != 1 || (*service.updateInput.TagIDs)[0] != tagB {
+	if service.updatedID != loggerID || !service.updateInput.Description.Set || service.updateInput.Description.Value != nil || !service.updateInput.EndAt.Set || service.updateInput.EndAt.Value != nil || !service.updateInput.MaxSizeBytes.Set || service.updateInput.MaxSizeBytes.Value != nil || service.updateInput.Enabled == nil || *service.updateInput.Enabled || service.updateInput.TagIDs == nil || len(*service.updateInput.TagIDs) != 1 || (*service.updateInput.TagIDs)[0] != tagB {
 		t.Errorf("Update() input = %#v", service.updateInput)
 	}
 
-	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":"Updated","end_at":"2026-08-24T00:00:00Z"}`)
+	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":"Updated","end_at":"2026-08-24T00:00:00Z","max_size_bytes":209715200}`)
 	assertStatus(t, response, fiber.StatusOK)
 	closeBody(t, response)
-	if service.updateInput.Description.Value == nil || *service.updateInput.Description.Value != "Updated" || service.updateInput.EndAt.Value == nil || !service.updateInput.EndAt.Value.Equal(endAt) {
+	if service.updateInput.Description.Value == nil || *service.updateInput.Description.Value != "Updated" || service.updateInput.EndAt.Value == nil || !service.updateInput.EndAt.Value.Equal(endAt) || service.updateInput.MaxSizeBytes.Value == nil || *service.updateInput.MaxSizeBytes.Value != 209715200 {
 		t.Errorf("Update(non-null) input = %#v", service.updateInput)
 	}
 
@@ -133,6 +133,7 @@ func TestHandlerRejectsMalformedRequests(t *testing.T) {
 		{name: "multiple documents", method: http.MethodPost, path: "/api/data-loggers/", body: `{}` + "\n" + `{}`},
 		{name: "invalid description", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"description":1}`},
 		{name: "invalid end", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"end_at":"today"}`},
+		{name: "invalid max size", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"max_size_bytes":"large"}`},
 		{name: "invalid enabled", method: http.MethodGet, path: "/api/data-loggers/?enabled=yes"},
 		{name: "zero page", method: http.MethodGet, path: "/api/data-loggers/?page=0"},
 		{name: "negative per page", method: http.MethodGet, path: "/api/data-loggers/?per_page=-1"},
@@ -167,6 +168,7 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 		{name: "not found", err: datalogger.ErrLoggerNotFound, status: fiber.StatusNotFound, code: "DLG001"},
 		{name: "duplicate", err: datalogger.ErrLoggerNameExists, status: fiber.StatusConflict, code: "DLG002"},
 		{name: "tag missing", err: datalogger.ErrLoggerTagNotFound, status: fiber.StatusBadRequest, code: "DLG003"},
+		{name: "storage limit too small", err: datalogger.ErrStorageLimitTooSmall, status: fiber.StatusBadRequest, code: "DLG004"},
 		{name: "invalid input", err: datalogger.ErrInvalidInput, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid logger", err: datalogger.ErrInvalidLogger, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid tag", err: datalogger.ErrInvalidLoggerTag, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},

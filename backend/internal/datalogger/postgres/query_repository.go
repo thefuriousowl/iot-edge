@@ -42,8 +42,25 @@ func validateQueryInput(input datalogger.QueryInput) error {
 	if input.LoggerID == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.Page < 1 || input.PerPage < 1 || input.PerPage > maxHistoryPerPage || len(input.TagIDs) == 0 {
 		return datalogger.ErrInvalidQuery
 	}
-	if input.Mode != datalogger.QueryModeRaw && (input.Mode != datalogger.QueryModeAggregate || input.Bucket.Seconds() == 0 || !input.Aggregate.Valid()) {
+	if input.Mode == datalogger.QueryModeRaw {
+		return nil
+	}
+	if input.Mode != datalogger.QueryModeAggregate || input.Bucket.Seconds() == 0 {
 		return datalogger.ErrInvalidQuery
+	}
+	if len(input.Aggregates) == 0 {
+		if !input.Aggregate.Valid() {
+			return datalogger.ErrInvalidQuery
+		}
+		return nil
+	}
+	if len(input.Aggregates) != len(input.TagIDs) {
+		return datalogger.ErrInvalidQuery
+	}
+	for _, tagID := range input.TagIDs {
+		if !input.Aggregates[tagID].Valid() {
+			return datalogger.ErrInvalidQuery
+		}
 	}
 	return nil
 }
@@ -108,9 +125,20 @@ func (repository *historyRepository) queryAggregate(ctx context.Context, input d
 		return nil, err
 	}
 	rows := make([]aggregateQueryRow, 0)
+	aggregateByTag := make(map[uuid.UUID]datalogger.AggregateFunction, len(input.TagIDs))
 	if len(buckets) > 0 {
-		aggregateExpression, supportedExpression := aggregateSQL(input.Aggregate)
-		selection := queryBucketExpression + ` AS bucket_at, tag_id,
+		groups := make(map[datalogger.AggregateFunction][]uuid.UUID)
+		for _, tagID := range input.TagIDs {
+			function := input.Aggregate
+			if len(input.Aggregates) > 0 {
+				function = input.Aggregates[tagID]
+			}
+			aggregateByTag[tagID] = function
+			groups[function] = append(groups[function], tagID)
+		}
+		for function, tagIDs := range groups {
+			aggregateExpression, supportedExpression := aggregateSQL(function)
+			selection := queryBucketExpression + ` AS bucket_at, tag_id,
 			CASE WHEN COUNT(DISTINCT data_type) = 1 THEN MAX(data_type) ELSE 'mixed' END AS data_type,
 			` + aggregateExpression + ` AS aggregate_value,
 			COUNT(*) FILTER (WHERE quality = 'good') AS good_count,
@@ -118,12 +146,17 @@ func (repository *historyRepository) queryAggregate(ctx context.Context, input d
 			COUNT(*) AS total_count,
 			(ARRAY_AGG(error_message ORDER BY batch_at DESC) FILTER (WHERE quality = 'bad'))[1] AS latest_error,
 			` + supportedExpression + ` AS supported`
-		query := applyQueryFilters(repository.db.WithContext(ctx).Table("tag_values_raw"), input).
-			Where(queryBucketExpression+" IN ?", seconds, buckets).
-			Select(selection, seconds).
-			Group("bucket_at, tag_id").Order("bucket_at DESC, tag_id ASC")
-		if err := query.Scan(&rows).Error; err != nil {
-			return nil, err
+			groupInput := input
+			groupInput.TagIDs = tagIDs
+			groupRows := make([]aggregateQueryRow, 0)
+			query := applyQueryFilters(repository.db.WithContext(ctx).Table("tag_values_raw"), groupInput).
+				Where(queryBucketExpression+" IN ?", seconds, buckets).
+				Select(selection, seconds).
+				Group("bucket_at, tag_id").Order("bucket_at DESC, tag_id ASC")
+			if err := query.Scan(&groupRows).Error; err != nil {
+				return nil, err
+			}
+			rows = append(rows, groupRows...)
 		}
 	}
 	resultRows := make([]datalogger.QueryRow, 0, len(buckets))
@@ -138,7 +171,7 @@ func (repository *historyRepository) queryAggregate(ctx context.Context, input d
 		if !exists {
 			continue
 		}
-		value, err := decodeAggregateValue(row.AggregateValue, row.DataType, input.Aggregate)
+		value, err := decodeAggregateValue(row.AggregateValue, row.DataType, aggregateByTag[row.TagID])
 		if err != nil {
 			return nil, err
 		}

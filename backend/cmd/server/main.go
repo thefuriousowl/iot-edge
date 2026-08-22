@@ -23,6 +23,9 @@ import (
 	devicehttp "github.com/thefuriousowl/iot-edge/internal/device/http"
 	devicepostgres "github.com/thefuriousowl/iot-edge/internal/device/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
+	"github.com/thefuriousowl/iot-edge/internal/report"
+	reporthttp "github.com/thefuriousowl/iot-edge/internal/report/http"
+	reportpostgres "github.com/thefuriousowl/iot-edge/internal/report/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/system"
 	systemhttp "github.com/thefuriousowl/iot-edge/internal/system/http"
 	"github.com/thefuriousowl/iot-edge/internal/tag"
@@ -170,6 +173,11 @@ func main() {
 		}
 	}()
 	dataLoggerHandler := dataloggerhttp.NewHandler(dataLoggerService)
+	reportService, err := report.NewService(reportpostgres.NewRepository(db), dataLoggerRepository, dataLoggerHistory)
+	if err != nil {
+		log.Fatalf("failed to initialize Report service: %v", err)
+	}
+	reportHandler := reporthttp.NewHandler(reportService)
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
 		cfg.InternetCheckTimeout,
@@ -192,6 +200,7 @@ func main() {
 	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
 	taghttp.RegisterRoutes(protectedAPI, tagHandler)
 	dataloggerhttp.RegisterRoutes(protectedAPI, dataLoggerHandler)
+	reporthttp.RegisterRoutes(protectedAPI, reportHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port

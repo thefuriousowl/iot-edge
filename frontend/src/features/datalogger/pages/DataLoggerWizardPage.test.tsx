@@ -35,6 +35,7 @@ const existing: DataLogger = {
   mode: "schedule",
   start_at: "2026-08-24T08:00:00Z",
   end_at: null,
+  max_size_bytes: null,
   config: { unit: "week", every: 2, weekdays: [1, 5], times: ["08:00", "17:00"] },
   tag_count: 1,
   tags: [{ id: "tag-1", name: "Line voltage", type: "reading", data_type: "float64", enabled: true }],
@@ -78,6 +79,7 @@ describe("DataLoggerWizardPage", () => {
     fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "Asia/Bangkok" } });
     fireEvent.change(screen.getByLabelText("Start date & time"), { target: { value: "2026-08-22T08:00" } });
     fireEvent.change(screen.getByLabelText("Capture every (seconds)"), { target: { value: "15" } });
+    expect(screen.getByRole("region", { name: "Rolling storage limit" })).toHaveTextContent("273,066 complete batches");
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
 
     expect(await screen.findByRole("heading", { name: "Review and save" })).toBeInTheDocument();
@@ -92,6 +94,7 @@ describe("DataLoggerWizardPage", () => {
       mode: "interval",
       start_at: "2026-08-22T01:00:00.000Z",
       end_at: null,
+      max_size_bytes: 100 * 1024 * 1024,
       config: { interval_seconds: 15 },
       tag_ids: ["tag-1"],
     }));
@@ -138,6 +141,7 @@ describe("DataLoggerWizardPage", () => {
     expect(await screen.findByText("1 selected")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     expect(await screen.findByDisplayValue("2")).toBeInTheDocument();
+    expect(screen.getByText("Unlimited retention · no automatic pruning")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     await screen.findByRole("heading", { name: "Review and save" });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
@@ -146,6 +150,7 @@ describe("DataLoggerWizardPage", () => {
       name: "Updated history",
       enabled: false,
       mode: "schedule",
+      max_size_bytes: null,
       config: { unit: "week", every: 2, times: ["08:00", "17:00"], weekdays: [1, 5] },
       tag_ids: ["tag-1"],
     })));

@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	defaultHistoryPerPage = 100
-	maxHistoryPerPage     = 500
+	defaultHistoryPerPage        = 100
+	maxHistoryPerPage            = 500
+	estimatedIndexBytesPerRawRow = 192
 )
 
 type historyRepository struct{ db *gorm.DB }
@@ -48,6 +49,24 @@ type rawHistoryOverview struct {
 	LastBatchAt *time.Time `gorm:"column:last_batch_at"`
 }
 
+type loggerStoragePolicy struct {
+	MaxSizeBytes *int64 `gorm:"column:max_size_bytes"`
+}
+
+type batchStorageRow struct {
+	BatchAt            time.Time `gorm:"column:batch_at"`
+	RowCount           int64     `gorm:"column:row_count"`
+	EstimatedSizeBytes int64     `gorm:"column:estimated_size_bytes"`
+}
+
+type storageOverview struct {
+	RowCount           int64      `gorm:"column:row_count"`
+	BatchCount         int64      `gorm:"column:batch_count"`
+	EstimatedSizeBytes int64      `gorm:"column:estimated_size_bytes"`
+	OldestBatchAt      *time.Time `gorm:"column:oldest_batch_at"`
+	NewestBatchAt      *time.Time `gorm:"column:newest_batch_at"`
+}
+
 func NewHistoryRepository(db *gorm.DB) datalogger.HistoryRepository {
 	return &historyRepository{db: db}
 }
@@ -72,15 +91,100 @@ func (repository *historyRepository) WriteBatch(ctx context.Context, batch datal
 	}
 
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		policy, err := lockLoggerStoragePolicy(tx, batch.LoggerID)
+		if err != nil {
+			return err
+		}
 		if err := validateSelectedRawTags(tx, batch.LoggerID, samples); err != nil {
 			return err
 		}
 		if err := ensureRawPartition(tx, batch.BatchAt); err != nil {
 			return err
 		}
-		return insertRawBatch(tx, batch.LoggerID, batch.BatchAt, samples)
+		if err := insertRawBatch(tx, batch.LoggerID, batch.BatchAt, samples); err != nil {
+			return err
+		}
+		if err := refreshBatchStorage(tx, batch.LoggerID, batch.BatchAt); err != nil {
+			return err
+		}
+		return enforceStorageLimit(tx, batch.LoggerID, policy.MaxSizeBytes)
 	})
 	return mapHistoryError(err)
+}
+
+func (repository *historyRepository) Storage(ctx context.Context, loggerID uuid.UUID, tagCount int, maxSizeBytes *int64) (*datalogger.StorageStats, error) {
+	if loggerID == uuid.Nil || tagCount < 0 {
+		return nil, datalogger.ErrInvalidInput
+	}
+	var overview storageOverview
+	err := repository.db.WithContext(ctx).Table("data_logger_batches").
+		Select("COALESCE(SUM(row_count), 0) AS row_count, COUNT(*) AS batch_count, COALESCE(SUM(estimated_size_bytes), 0) AS estimated_size_bytes, MIN(batch_at) AS oldest_batch_at, MAX(batch_at) AS newest_batch_at").
+		Where("logger_id = ?", loggerID).
+		Scan(&overview).Error
+	if err != nil {
+		return nil, err
+	}
+	averageRowBytes := datalogger.DefaultEstimatedRowBytes
+	if overview.RowCount > 0 {
+		averageRowBytes = max(1, (overview.EstimatedSizeBytes+overview.RowCount-1)/overview.RowCount)
+	}
+	stats := &datalogger.StorageStats{
+		RowCount: overview.RowCount, BatchCount: overview.BatchCount, EstimatedSizeBytes: overview.EstimatedSizeBytes,
+		AverageRowBytes: averageRowBytes, OldestBatchAt: utcTimePointer(overview.OldestBatchAt), NewestBatchAt: utcTimePointer(overview.NewestBatchAt),
+	}
+	if maxSizeBytes != nil {
+		capacityBatches := int64(0)
+		if overview.BatchCount > 0 {
+			averageBatchBytes := max(1, (overview.EstimatedSizeBytes+overview.BatchCount-1)/overview.BatchCount)
+			capacityBatches = *maxSizeBytes / averageBatchBytes
+		} else if tagCount > 0 {
+			capacityBatches = *maxSizeBytes / (averageRowBytes * int64(tagCount))
+		}
+		capacityRows := capacityBatches * int64(tagCount)
+		stats.EstimatedCapacityRows = &capacityRows
+		stats.EstimatedCapacityBatches = &capacityBatches
+	}
+	return stats, nil
+}
+
+func (repository *historyRepository) EnforceStorageLimit(ctx context.Context, loggerID uuid.UUID, maxSizeBytes *int64) error {
+	if loggerID == uuid.Nil {
+		return datalogger.ErrInvalidInput
+	}
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		policy, err := lockLoggerStoragePolicy(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		if maxSizeBytes != nil && (policy.MaxSizeBytes == nil || *policy.MaxSizeBytes != *maxSizeBytes) {
+			return datalogger.ErrInvalidInput
+		}
+		return enforceStorageLimit(tx, loggerID, policy.MaxSizeBytes)
+	})
+	return mapHistoryError(err)
+}
+
+func (repository *historyRepository) ValidateStorageLimit(ctx context.Context, loggerID uuid.UUID, maxSizeBytes *int64) error {
+	if loggerID == uuid.Nil {
+		return datalogger.ErrInvalidInput
+	}
+	if maxSizeBytes == nil {
+		return nil
+	}
+	var newest batchStorageRow
+	result := repository.db.WithContext(ctx).Table("data_logger_batches").
+		Select("batch_at, row_count, estimated_size_bytes").
+		Where("logger_id = ?", loggerID).
+		Order("batch_at DESC").
+		Limit(1).
+		Scan(&newest)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 && newest.EstimatedSizeBytes > *maxSizeBytes {
+		return datalogger.ErrStorageLimitTooSmall
+	}
+	return nil
 }
 
 func (repository *historyRepository) ListValues(ctx context.Context, input datalogger.RawValueListInput) (*datalogger.RawValueListResult, error) {
@@ -250,6 +354,75 @@ func insertRawBatch(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time, samples 
 	return tx.Exec(statement, arguments...).Error
 }
 
+func lockLoggerStoragePolicy(tx *gorm.DB, loggerID uuid.UUID) (loggerStoragePolicy, error) {
+	var policy loggerStoragePolicy
+	result := tx.Raw("SELECT max_size_bytes FROM data_loggers WHERE id = ? FOR UPDATE", loggerID).Scan(&policy)
+	if result.Error != nil {
+		return loggerStoragePolicy{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return loggerStoragePolicy{}, datalogger.ErrLoggerNotFound
+	}
+	return policy, nil
+}
+
+func refreshBatchStorage(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time) error {
+	return tx.Exec(`
+		INSERT INTO data_logger_batches (logger_id, batch_at, row_count, estimated_size_bytes)
+		SELECT logger_id, batch_at, COUNT(*)::INTEGER, SUM(pg_column_size(raw_values) + ?)::BIGINT
+		FROM tag_values_raw AS raw_values
+		WHERE logger_id = ? AND batch_at = ?
+		GROUP BY logger_id, batch_at
+		ON CONFLICT (logger_id, batch_at) DO UPDATE SET
+			row_count = EXCLUDED.row_count,
+			estimated_size_bytes = EXCLUDED.estimated_size_bytes
+	`, estimatedIndexBytesPerRawRow, loggerID, batchAt).Error
+}
+
+func enforceStorageLimit(tx *gorm.DB, loggerID uuid.UUID, maxSizeBytes *int64) error {
+	if maxSizeBytes == nil {
+		return nil
+	}
+	batches := make([]batchStorageRow, 0)
+	if err := tx.Table("data_logger_batches").
+		Select("batch_at, row_count, estimated_size_bytes").
+		Where("logger_id = ?", loggerID).
+		Order("batch_at DESC").
+		Scan(&batches).Error; err != nil {
+		return err
+	}
+	if len(batches) == 0 {
+		return nil
+	}
+	if batches[0].EstimatedSizeBytes > *maxSizeBytes {
+		return datalogger.ErrStorageLimitTooSmall
+	}
+	retainedBytes := int64(0)
+	remove := make([]time.Time, 0)
+	for _, batch := range batches {
+		if retainedBytes+batch.EstimatedSizeBytes <= *maxSizeBytes {
+			retainedBytes += batch.EstimatedSizeBytes
+			continue
+		}
+		remove = append(remove, batch.BatchAt)
+	}
+	if len(remove) == 0 {
+		return nil
+	}
+	if err := tx.Exec("DELETE FROM tag_values_raw WHERE logger_id = ? AND batch_at IN ?", loggerID, remove).Error; err != nil {
+		return err
+	}
+	return tx.Exec("DELETE FROM data_logger_batches WHERE logger_id = ? AND batch_at IN ?", loggerID, remove).Error
+}
+
+func utcTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
+}
+
 func decodeRawValue(row rawValueRow) (datalogger.RawValue, error) {
 	value := datalogger.RawValue{
 		LoggerID: row.LoggerID, TagID: row.TagID, BatchAt: row.BatchAt.UTC(), ObservedAt: row.ObservedAt.UTC(),
@@ -325,7 +498,7 @@ func mapHistoryError(err error) error {
 		return datalogger.ErrLoggerNotFound
 	case "tag_values_raw_tag_id_fkey":
 		return datalogger.ErrRawTagNotSelected
-	case "tag_values_raw_data_type_check", "tag_values_raw_quality_check", "tag_values_raw_payload_check":
+	case "tag_values_raw_data_type_check", "tag_values_raw_quality_check", "tag_values_raw_payload_check", "data_logger_batches_row_count_check", "data_logger_batches_size_check":
 		return datalogger.ErrInvalidRawBatch
 	default:
 		return err

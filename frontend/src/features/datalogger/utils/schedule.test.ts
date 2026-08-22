@@ -13,6 +13,7 @@ function logger(overrides: Partial<DataLogger> = {}): DataLogger {
     mode: "interval",
     start_at: "2026-08-22T00:00:00Z",
     end_at: null,
+    max_size_bytes: null,
     config: { interval_seconds: 60 },
     tag_count: 1,
     created_at: "2026-08-22T00:00:00Z",

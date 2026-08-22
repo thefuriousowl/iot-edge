@@ -16,8 +16,8 @@ vi.mock("../../system/components/InternetStatus", () => ({ default: () => <span>
 const mockedDelete = vi.mocked(deleteDataLogger);
 const mockedList = vi.mocked(listDataLoggers);
 const loggers: DataLogger[] = [
-  { id: "logger-1", name: "Fast history", description: "Plant values", enabled: true, timezone: "UTC", mode: "interval", start_at: "2030-01-01T00:00:00Z", end_at: null, config: { interval_seconds: 60 }, tag_count: 3, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" },
-  { id: "logger-2", name: "Energy report", description: null, enabled: false, timezone: "Asia/Bangkok", mode: "schedule", start_at: "2030-01-01T00:00:00Z", end_at: null, config: { unit: "week", every: 1, weekdays: [1, 5], times: ["08:00"] }, tag_count: 2, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" },
+  { id: "logger-1", name: "Fast history", description: "Plant values", enabled: true, timezone: "UTC", mode: "interval", start_at: "2030-01-01T00:00:00Z", end_at: null, max_size_bytes: null, config: { interval_seconds: 60 }, tag_count: 3, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" },
+  { id: "logger-2", name: "Energy report", description: null, enabled: false, timezone: "Asia/Bangkok", mode: "schedule", start_at: "2030-01-01T00:00:00Z", end_at: null, max_size_bytes: null, config: { unit: "week", every: 1, weekdays: [1, 5], times: ["08:00"] }, tag_count: 2, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" },
 ];
 
 function response(data: DataLogger[] = loggers, pagination: DataLoggerListResponse["pagination"] = { page: 1, per_page: 20, total: data.length, total_pages: data.length ? 1 : 0 }): DataLoggerListResponse {

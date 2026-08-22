@@ -28,15 +28,16 @@ var (
 )
 
 type CreateInput struct {
-	Name        string
-	Description *string
-	Enabled     *bool
-	Timezone    string
-	Mode        Mode
-	StartAt     time.Time
-	EndAt       *time.Time
-	Config      json.RawMessage
-	TagIDs      []uuid.UUID
+	Name         string
+	Description  *string
+	Enabled      *bool
+	Timezone     string
+	Mode         Mode
+	StartAt      time.Time
+	EndAt        *time.Time
+	MaxSizeBytes *int64
+	Config       json.RawMessage
+	TagIDs       []uuid.UUID
 }
 
 type OptionalString struct {
@@ -49,16 +50,22 @@ type OptionalTime struct {
 	Value *time.Time
 }
 
+type OptionalInt64 struct {
+	Set   bool
+	Value *int64
+}
+
 type UpdateInput struct {
-	Name        *string
-	Description OptionalString
-	Enabled     *bool
-	Timezone    *string
-	Mode        *Mode
-	StartAt     *time.Time
-	EndAt       OptionalTime
-	Config      json.RawMessage
-	TagIDs      *[]uuid.UUID
+	Name         *string
+	Description  OptionalString
+	Enabled      *bool
+	Timezone     *string
+	Mode         *Mode
+	StartAt      *time.Time
+	EndAt        OptionalTime
+	MaxSizeBytes OptionalInt64
+	Config       json.RawMessage
+	TagIDs       *[]uuid.UUID
 }
 
 type Service struct {
@@ -83,14 +90,15 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (*Logger,
 		enabled = *input.Enabled
 	}
 	entity := Logger{
-		Name:        input.Name,
-		Description: input.Description,
-		Enabled:     enabled,
-		Timezone:    input.Timezone,
-		Mode:        input.Mode,
-		StartAt:     input.StartAt,
-		EndAt:       input.EndAt,
-		Config:      input.Config,
+		Name:         input.Name,
+		Description:  input.Description,
+		Enabled:      enabled,
+		Timezone:     input.Timezone,
+		Mode:         input.Mode,
+		StartAt:      input.StartAt,
+		EndAt:        input.EndAt,
+		MaxSizeBytes: input.MaxSizeBytes,
+		Config:       input.Config,
 	}
 	tagIDs, err := normalizeLogger(&entity, input.TagIDs)
 	if err != nil {
@@ -99,14 +107,26 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (*Logger,
 	if err := service.repository.Create(ctx, &entity, tagIDs); err != nil {
 		return nil, err
 	}
-	return service.repository.Find(ctx, entity.ID)
+	return service.Get(ctx, entity.ID)
 }
 
 func (service *Service) Get(ctx context.Context, id uuid.UUID) (*Logger, error) {
 	if id == uuid.Nil {
 		return nil, ErrInvalidInput
 	}
-	return service.repository.Find(ctx, id)
+	entity, err := service.repository.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if service.history == nil {
+		return entity, nil
+	}
+	storage, err := service.history.Storage(ctx, entity.ID, entity.TagCount, entity.MaxSizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	entity.Storage = storage
+	return entity, nil
 }
 
 func (service *Service) List(ctx context.Context, input ListInput) (*ListResult, error) {
@@ -230,6 +250,9 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 	if input.EndAt.Set {
 		current.EndAt = input.EndAt.Value
 	}
+	if input.MaxSizeBytes.Set {
+		current.MaxSizeBytes = input.MaxSizeBytes.Value
+	}
 	if input.Config != nil {
 		current.Config = input.Config
 	}
@@ -244,10 +267,20 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 	if err != nil {
 		return nil, err
 	}
+	if service.history != nil {
+		if err := service.history.ValidateStorageLimit(ctx, id, current.MaxSizeBytes); err != nil {
+			return nil, err
+		}
+	}
 	if err := service.repository.Update(ctx, current, tagIDs); err != nil {
 		return nil, err
 	}
-	return service.repository.Find(ctx, id)
+	if service.history != nil {
+		if err := service.history.EnforceStorageLimit(ctx, id, current.MaxSizeBytes); err != nil {
+			return nil, err
+		}
+	}
+	return service.Get(ctx, id)
 }
 
 func (service *Service) Delete(ctx context.Context, id uuid.UUID) error {
@@ -283,6 +316,9 @@ func normalizeLogger(entity *Logger, tagIDs []uuid.UUID) ([]uuid.UUID, error) {
 			return nil, fmt.Errorf("%w: end_at must be after start_at", ErrInvalidInput)
 		}
 		entity.EndAt = &endAt
+	}
+	if entity.MaxSizeBytes != nil && (*entity.MaxSizeBytes < MinStorageSizeBytes || *entity.MaxSizeBytes > MaxStorageSizeBytes) {
+		return nil, fmt.Errorf("%w: max_size_bytes is outside the supported range", ErrInvalidInput)
 	}
 	config, err := normalizeConfig(entity.Mode, entity.Config)
 	if err != nil {

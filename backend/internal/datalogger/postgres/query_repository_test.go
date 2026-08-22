@@ -118,6 +118,21 @@ func TestHistoryRepositoryQueriesWideRawAndAggregateRows_Integration(t *testing.
 			}
 		})
 	}
+
+	perColumn, err := history.Query(ctx, datalogger.QueryInput{
+		LoggerID: logger.ID, TagIDs: []uuid.UUID{boolTagID, numericTagID}, From: from, To: from.Add(5 * time.Minute),
+		Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket5Minutes,
+		Aggregates: map[uuid.UUID]datalogger.AggregateFunction{boolTagID: datalogger.AggregateCount, numericTagID: datalogger.AggregateMax}, Page: 1, PerPage: 10,
+	})
+	if err != nil {
+		t.Fatalf("Query(per-column) error = %v", err)
+	}
+	if value := perColumn.Data[0].Values[boolTagID.String()]; value.Value != float64(3) || value.Supported == nil || !*value.Supported {
+		t.Errorf("per-column bool COUNT = %#v", value)
+	}
+	if value := perColumn.Data[0].Values[numericTagID.String()]; value.Value != float64(20) || value.Supported == nil || !*value.Supported {
+		t.Errorf("per-column numeric MAX = %#v", value)
+	}
 }
 
 func TestHistoryRepositoryRejectsInvalidQueries_Integration(t *testing.T) {
@@ -129,6 +144,8 @@ func TestHistoryRepositoryRejectsInvalidQueries_Integration(t *testing.T) {
 		{LoggerID: uuid.New(), TagIDs: []uuid.UUID{uuid.New()}, From: from, To: from, Mode: datalogger.QueryModeRaw, Page: 1, PerPage: 10},
 		{LoggerID: uuid.New(), TagIDs: []uuid.UUID{uuid.New()}, From: from, To: from.Add(time.Hour), Mode: datalogger.QueryModeAggregate, Bucket: "month", Aggregate: datalogger.AggregateAvg, Page: 1, PerPage: 10},
 		{LoggerID: uuid.New(), TagIDs: []uuid.UUID{uuid.New()}, From: from, To: from.Add(time.Hour), Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket1Hour, Aggregate: "median", Page: 1, PerPage: 10},
+		{LoggerID: uuid.New(), TagIDs: []uuid.UUID{uuid.New()}, From: from, To: from.Add(time.Hour), Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket1Hour, Aggregates: map[uuid.UUID]datalogger.AggregateFunction{}, Page: 1, PerPage: 10},
+		{LoggerID: uuid.New(), TagIDs: []uuid.UUID{uuid.New()}, From: from, To: from.Add(time.Hour), Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket1Hour, Aggregates: map[uuid.UUID]datalogger.AggregateFunction{uuid.New(): datalogger.AggregateAvg}, Page: 1, PerPage: 10},
 	}
 	for _, input := range tests {
 		if _, err := history.Query(context.Background(), input); !errors.Is(err, datalogger.ErrInvalidQuery) {

@@ -28,6 +28,7 @@ const logger: DataLogger = {
   mode: "interval",
   start_at: "2026-08-22T01:00:00Z",
   end_at: null,
+  max_size_bytes: null,
   config: { interval_seconds: 60 },
   tag_count: 1,
   created_at: "2026-08-22T00:00:00Z",
@@ -42,6 +43,7 @@ const request: SaveDataLoggerRequest = {
   mode: logger.mode,
   start_at: logger.start_at,
   end_at: null,
+  max_size_bytes: null,
   config: logger.config,
   tag_ids: ["tag-1"],
 };

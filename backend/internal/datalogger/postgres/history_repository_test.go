@@ -240,6 +240,65 @@ func TestHistoryRepositoryWritesPartitionsAndQueriesTypedBatches_Integration(t *
 	}
 }
 
+func TestHistoryRepositoryEnforcesRollingLimitByCompleteBatch_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitionRepository := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	startAt := time.Date(2026, time.August, 23, 8, 0, 0, 0, time.UTC)
+	logger := datalogger.Logger{Name: "Rolling Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitionRepository.Create(ctx, &logger, tagIDs[:2]); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	write := func(batchAt time.Time, value float64) {
+		t.Helper()
+		samples := []datalogger.RawSample{
+			{TagID: tagIDs[0], ObservedAt: batchAt, DataType: "float64", Value: value, Quality: datalogger.RawQualityGood},
+			{TagID: tagIDs[1], ObservedAt: batchAt, DataType: "float64", Value: value + 1, Quality: datalogger.RawQualityGood},
+		}
+		if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: batchAt, Samples: samples}); err != nil {
+			t.Fatalf("WriteBatch(%s) error = %v", batchAt, err)
+		}
+	}
+
+	write(startAt, 10)
+	first, err := history.Storage(ctx, logger.ID, 2, nil)
+	if err != nil || first.RowCount != 2 || first.BatchCount != 1 || first.EstimatedSizeBytes <= 0 || first.AverageRowBytes <= 0 {
+		t.Fatalf("Storage(first) = %#v, %v", first, err)
+	}
+	if err := db.Exec(`ALTER TABLE data_loggers DROP CONSTRAINT data_loggers_max_size_check`).Error; err != nil {
+		t.Fatalf("dropping limit constraint for compact retention fixture: %v", err)
+	}
+	limit := first.EstimatedSizeBytes * 2
+	if err := db.Exec(`UPDATE data_loggers SET max_size_bytes=? WHERE id=?`, limit, logger.ID).Error; err != nil {
+		t.Fatalf("setting compact storage limit: %v", err)
+	}
+	write(startAt.Add(time.Minute), 20)
+	write(startAt.Add(2*time.Minute), 30)
+
+	values, err := history.ListValues(ctx, datalogger.RawValueListInput{LoggerID: logger.ID})
+	if err != nil || values.Total != 4 || len(values.Data) != 4 {
+		t.Fatalf("retained values = %#v, %v", values, err)
+	}
+	for _, value := range values.Data {
+		if value.BatchAt.Equal(startAt) {
+			t.Errorf("oldest batch was retained: %#v", value)
+		}
+	}
+	stats, err := history.Storage(ctx, logger.ID, 2, &limit)
+	if err != nil || stats.RowCount != 4 || stats.BatchCount != 2 || stats.EstimatedCapacityRows == nil || *stats.EstimatedCapacityRows != 4 || stats.OldestBatchAt == nil || !stats.OldestBatchAt.Equal(startAt.Add(time.Minute)) {
+		t.Errorf("Storage(retained) = %#v, %v", stats, err)
+	}
+
+	tooSmall := first.EstimatedSizeBytes - 1
+	if err := db.Exec(`UPDATE data_loggers SET max_size_bytes=? WHERE id=?`, tooSmall, logger.ID).Error; err != nil {
+		t.Fatalf("setting too-small limit: %v", err)
+	}
+	if err := history.EnforceStorageLimit(ctx, logger.ID, &tooSmall); !errors.Is(err, datalogger.ErrStorageLimitTooSmall) {
+		t.Errorf("EnforceStorageLimit() error = %v, want %v", err, datalogger.ErrStorageLimitTooSmall)
+	}
+}
+
 func TestHistoryRepositoryRejectsInvalidAndNonSelectedBatchesAtomically_Integration(t *testing.T) {
 	db, _ := newRepositoryDatabase(t)
 	tagIDs := insertHistoryTags(t, db)

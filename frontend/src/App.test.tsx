@@ -13,13 +13,22 @@ import {
   refreshAccessToken,
   setup,
 } from "./services/auth.service";
+import { listDataLoggers } from "./services/datalogger.service";
+import { listDeviceInventory } from "./services/device.service";
 import { getHealth } from "./services/health.service";
+import { listTags } from "./services/tag.service";
+import { listVGateways } from "./services/vgateway.service";
 import { useAuthStore } from "./stores/auth.store";
 import type { AuthUser } from "./types/auth";
 
 vi.mock("./services/health.service", () => ({
   getHealth: vi.fn(),
 }));
+
+vi.mock("./services/vgateway.service", () => ({ listVGateways: vi.fn() }));
+vi.mock("./services/device.service", () => ({ listDeviceInventory: vi.fn() }));
+vi.mock("./services/tag.service", () => ({ listTags: vi.fn() }));
+vi.mock("./services/datalogger.service", () => ({ listDataLoggers: vi.fn() }));
 
 vi.mock("./services/auth.service", () => ({
   checkSetupStatus: vi.fn(),
@@ -61,7 +70,23 @@ vi.mock("./features/datalogger/pages/DataLoggerQueryPage", () => ({
   default: () => <h1>Data Logger Query</h1>,
 }));
 
+vi.mock("./features/report/pages/ReportListPage", () => ({
+  default: () => <h1>Report Inventory</h1>,
+}));
+
+vi.mock("./features/report/pages/ReportBuilderPage", () => ({
+  default: () => <h1>Report Builder</h1>,
+}));
+
+vi.mock("./features/report/pages/ReportDetailPage", () => ({
+  default: () => <h1>Report Detail</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
+const mockedListVGateways = vi.mocked(listVGateways);
+const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
+const mockedListTags = vi.mocked(listTags);
+const mockedListDataLoggers = vi.mocked(listDataLoggers);
 const mockedCheckSetupStatus = vi.mocked(checkSetupStatus);
 const mockedGetMe = vi.mocked(getMe);
 const mockedLogin = vi.mocked(login);
@@ -91,6 +116,14 @@ describe("App", () => {
     mockedCheckSetupStatus.mockResolvedValue({ setup_required: false });
     mockedGetMe.mockReset();
     mockedGetHealth.mockReset();
+    mockedListVGateways.mockReset();
+    mockedListVGateways.mockResolvedValue({ data: [], pagination: { page: 1, per_page: 100, total: 0, total_pages: 0 } });
+    mockedListDeviceInventory.mockReset();
+    mockedListDeviceInventory.mockResolvedValue({ data: [], pagination: { page: 1, per_page: 1, total: 0, total_pages: 0 } });
+    mockedListTags.mockReset();
+    mockedListTags.mockResolvedValue({ data: [], pagination: { page: 1, per_page: 8, total: 0, total_pages: 0 } });
+    mockedListDataLoggers.mockReset();
+    mockedListDataLoggers.mockResolvedValue({ data: [], pagination: { page: 1, per_page: 100, total: 0, total_pages: 0 } });
     mockedLogin.mockReset();
     mockedRefreshAccessToken.mockReset();
     mockedSetup.mockReset();
@@ -233,9 +266,7 @@ describe("App", () => {
 
     renderAuthenticatedApp();
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Checking backend connection",
-    );
+    expect(screen.getByText("Checking backend connection…")).toBeInTheDocument();
   });
 
   it("shows backend status and version when the health check succeeds", async () => {
@@ -247,8 +278,7 @@ describe("App", () => {
     renderAuthenticatedApp();
 
     expect(await screen.findByText("Backend connected")).toBeInTheDocument();
-    expect(screen.getByText("ok")).toBeInTheDocument();
-    expect(screen.getByText("0.1.0")).toBeInTheDocument();
+    expect(screen.getByText("ok · version 0.1.0")).toBeInTheDocument();
   });
 
   it("shows an error state when the health check fails", async () => {
@@ -310,5 +340,26 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "Data Logger Query" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/data-loggers/logger-id/query");
+  });
+
+  it("protects and renders the Report inventory route", () => {
+    renderAuthenticatedApp("/reports");
+    expect(screen.getByRole("heading", { name: "Report Inventory" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/reports");
+  });
+
+  it.each(["/reports/new", "/reports/report-id/edit"])(
+    "protects and renders the Report builder route at %s",
+    (path) => {
+      renderAuthenticatedApp(path);
+      expect(screen.getByRole("heading", { name: "Report Builder" })).toBeInTheDocument();
+      expect(window.location.pathname).toBe(path);
+    },
+  );
+
+  it("protects and renders the Report detail route", () => {
+    renderAuthenticatedApp("/reports/report-id");
+    expect(screen.getByRole("heading", { name: "Report Detail" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/reports/report-id");
   });
 });

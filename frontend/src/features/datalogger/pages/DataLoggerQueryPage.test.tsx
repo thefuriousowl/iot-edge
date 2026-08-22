@@ -25,6 +25,7 @@ const logger: DataLogger = {
   mode: "interval",
   start_at: "2026-08-22T01:00:00Z",
   end_at: null,
+  max_size_bytes: null,
   config: { interval_seconds: 60 },
   tag_count: 3,
   tags: [

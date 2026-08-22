@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CircleAlert,
   Cpu,
+  FileChartColumn,
   Gauge,
   LayoutDashboard,
   LoaderCircle,
@@ -251,6 +252,10 @@ function VGatewayListPage() {
           <NavLink to="/tags">
             <Tags aria-hidden="true" size={21} />
             Tags
+          </NavLink>
+          <NavLink to="/reports">
+            <FileChartColumn aria-hidden="true" size={21} />
+            Reports
           </NavLink>
           <span aria-disabled="true">
             <Puzzle aria-hidden="true" size={21} />

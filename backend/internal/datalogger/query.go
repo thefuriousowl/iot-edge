@@ -36,15 +36,16 @@ const (
 var ErrInvalidQuery = errors.New("invalid Data Logger query")
 
 type QueryInput struct {
-	LoggerID  uuid.UUID
-	TagIDs    []uuid.UUID
-	From      time.Time
-	To        time.Time
-	Mode      QueryMode
-	Bucket    QueryBucket
-	Aggregate AggregateFunction
-	Page      int
-	PerPage   int
+	LoggerID   uuid.UUID
+	TagIDs     []uuid.UUID
+	From       time.Time
+	To         time.Time
+	Mode       QueryMode
+	Bucket     QueryBucket
+	Aggregate  AggregateFunction
+	Aggregates map[uuid.UUID]AggregateFunction
+	Page       int
+	PerPage    int
 }
 
 type QueryValue struct {
