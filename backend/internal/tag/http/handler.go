@@ -32,6 +32,7 @@ type ValueMonitor interface {
 	Latest(uuid.UUID) (tag.TagValue, bool)
 	History(uuid.UUID, int) []tag.TagValue
 	Subscribe(context.Context, []uuid.UUID) (<-chan tag.TagValue, func())
+	SubscribeValues(context.Context, []uuid.UUID, uint64) tag.ValueSubscription
 }
 
 type Handler struct {
@@ -39,7 +40,10 @@ type Handler struct {
 	values  ValueMonitor
 }
 
-const tagValueStreamHeartbeatInterval = 15 * time.Second
+const (
+	tagValueStreamHeartbeatInterval = 15 * time.Second
+	tagValueStreamRetryMilliseconds = 3000
+)
 
 type HandlerOption func(*Handler)
 
@@ -187,6 +191,76 @@ func (h *Handler) StreamValues(c *fiber.Ctx) error {
 		}
 	})
 	return nil
+}
+
+func (h *Handler) StreamAllValues(c *fiber.Ctx) error {
+	if h.values == nil {
+		return apiError(c, fiber.StatusServiceUnavailable, "TAG009", "Tag value monitoring is unavailable")
+	}
+	afterSequence, err := parseLastEventID(c.Get("Last-Event-ID"))
+	if err != nil {
+		return validation(c, "Last-Event-ID must be an unsigned integer")
+	}
+	subscription := h.values.SubscribeValues(c.UserContext(), nil, afterSequence)
+	return streamTagValues(c, subscription)
+}
+
+func parseLastEventID(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(raw, 10, 64)
+}
+
+func streamTagValues(c *fiber.Ctx, subscription tag.ValueSubscription) error {
+	c.Set(fiber.HeaderContentType, "text/event-stream")
+	c.Set(fiber.HeaderCacheControl, "no-cache, no-transform")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Context().SetBodyStreamWriter(func(writer *bufio.Writer) {
+		defer subscription.Unsubscribe()
+		if _, err := fmt.Fprintf(writer, "retry: %d\n: connected\n\n", tagValueStreamRetryMilliseconds); err != nil {
+			return
+		}
+		for _, value := range subscription.Replay {
+			if err := writeTagValueEvent(writer, value); err != nil {
+				return
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			return
+		}
+		heartbeat := time.NewTicker(tagValueStreamHeartbeatInterval)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case value, open := <-subscription.Stream:
+				if !open {
+					return
+				}
+				if err := writeTagValueEvent(writer, value); err != nil {
+					return
+				}
+			case <-heartbeat.C:
+				if _, err := writer.WriteString(": keep-alive\n\n"); err != nil {
+					return
+				}
+			}
+			if err := writer.Flush(); err != nil {
+				return
+			}
+		}
+	})
+	return nil
+}
+
+func writeTagValueEvent(writer io.Writer, value tag.TagValue) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(writer, "id: %d\nevent: tag_value\ndata: %s\n\n", value.Sequence, payload)
+	return err
 }
 
 func (h *Handler) Create(c *fiber.Ctx) error {

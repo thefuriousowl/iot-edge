@@ -90,8 +90,8 @@ func TestCORS_AllowsConfiguredHostnameWithCredentials(t *testing.T) {
 	if got := response.Header.Get(fiber.HeaderAccessControlAllowCredentials); got != "true" {
 		t.Errorf("Access-Control-Allow-Credentials = %q, want true", got)
 	}
-	if got := response.Header.Get(fiber.HeaderAccessControlAllowHeaders); !strings.Contains(got, fiber.HeaderAuthorization) {
-		t.Errorf("Access-Control-Allow-Headers = %q, want Authorization", got)
+	if got := response.Header.Get(fiber.HeaderAccessControlAllowHeaders); !strings.Contains(got, fiber.HeaderAuthorization) || !strings.Contains(got, "Last-Event-ID") {
+		t.Errorf("Access-Control-Allow-Headers = %q, want Authorization and Last-Event-ID", got)
 	}
 }
 

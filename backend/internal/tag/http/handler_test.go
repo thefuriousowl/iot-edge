@@ -160,6 +160,84 @@ func TestTagHandlerReturnsRuntimeHistoryAndStreamsValues(t *testing.T) {
 	}
 }
 
+func TestTagHandlerStreamsAllValuesWithSequenceResume(t *testing.T) {
+	t.Parallel()
+	firstID := uuid.New()
+	secondID := uuid.New()
+	observedAt := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	first := tag.TagValue{TagID: firstID, Sequence: 10, ObservedAt: observedAt, StoredAt: observedAt, Quality: tag.ValueQualityGood, DataType: tag.DataTypeUInt16, Value: uint16(42)}
+	bad := tag.TagValue{TagID: secondID, Sequence: 11, ObservedAt: observedAt.Add(time.Second), StoredAt: observedAt.Add(time.Second), Quality: tag.ValueQualityBad, DataType: tag.DataTypeFloat64, Error: "Modbus exception 0x02: Illegal Data Address"}
+	live := tag.TagValue{TagID: firstID, Sequence: 12, ObservedAt: observedAt.Add(2 * time.Second), StoredAt: observedAt.Add(2 * time.Second), Quality: tag.ValueQualityGood, DataType: tag.DataTypeUInt16, Value: uint16(43)}
+	stream := make(chan tag.TagValue, 1)
+	stream <- live
+	close(stream)
+	monitor := &handlerValueMonitor{subscription: tag.ValueSubscription{Replay: []tag.TagValue{first, bad}, Stream: stream}}
+	app := newHandlerTestApp(&handlerService{}, WithValueMonitor(monitor))
+	request := httptest.NewRequest(http.MethodGet, "/api/sse/tags", nil)
+	request.Header.Set("Last-Event-ID", "9")
+	response, err := app.Test(request, -1)
+	if err != nil {
+		t.Fatalf("stream request error = %v", err)
+	}
+	assertStatus(t, response, fiber.StatusOK)
+	body, err := io.ReadAll(response.Body)
+	closeResponse(t, response)
+	if err != nil {
+		t.Fatalf("reading stream: %v", err)
+	}
+	contents := string(body)
+	for _, expected := range []string{"retry: 3000", "id: 10", "id: 11", "id: 12", `"quality":"bad"`, `"error":"Modbus exception 0x02: Illegal Data Address"`} {
+		if !strings.Contains(contents, expected) {
+			t.Errorf("stream body missing %q: %s", expected, contents)
+		}
+	}
+	if strings.Index(contents, "id: 10") > strings.Index(contents, "id: 11") || strings.Index(contents, "id: 11") > strings.Index(contents, "id: 12") {
+		t.Errorf("stream sequence order = %s", contents)
+	}
+	if monitor.afterSequence != 9 || len(monitor.tagIDs) != 0 || !monitor.unsubscribed {
+		t.Errorf("subscription = after %d, tags %v, unsubscribed %v", monitor.afterSequence, monitor.tagIDs, monitor.unsubscribed)
+	}
+	if response.Header.Get("X-Accel-Buffering") != "no" {
+		t.Errorf("X-Accel-Buffering = %q", response.Header.Get("X-Accel-Buffering"))
+	}
+}
+
+func TestTagHandlerValidatesGlobalStreamCursorAndAvailability(t *testing.T) {
+	t.Parallel()
+	app := newHandlerTestApp(&handlerService{})
+	response := performRequest(t, app, http.MethodGet, "/api/sse/tags", "")
+	assertAPIError(t, response, fiber.StatusServiceUnavailable, "TAG009")
+
+	monitor := &handlerValueMonitor{}
+	app = newHandlerTestApp(&handlerService{}, WithValueMonitor(monitor))
+	request := httptest.NewRequest(http.MethodGet, "/api/sse/tags", nil)
+	request.Header.Set("Last-Event-ID", "not-a-sequence")
+	response, err := app.Test(request, -1)
+	if err != nil {
+		t.Fatalf("invalid cursor request error = %v", err)
+	}
+	assertAPIError(t, response, fiber.StatusBadRequest, "VALIDATION_ERROR")
+	if monitor.subscribeCalls != 0 {
+		t.Errorf("SubscribeValues() calls = %d, want 0", monitor.subscribeCalls)
+	}
+}
+
+func TestTagSSERouteHonorsProtectedRouterMiddleware(t *testing.T) {
+	t.Parallel()
+	monitor := &handlerValueMonitor{}
+	app := fiber.New()
+	protected := app.Group("/api", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusUnauthorized)
+	})
+	RegisterRoutes(protected, NewHandler(&handlerService{}, WithValueMonitor(monitor)))
+	response := performRequest(t, app, http.MethodGet, "/api/sse/tags", "")
+	assertStatus(t, response, fiber.StatusUnauthorized)
+	closeResponse(t, response)
+	if monitor.subscribeCalls != 0 {
+		t.Errorf("SubscribeValues() calls = %d, want 0", monitor.subscribeCalls)
+	}
+}
+
 func TestTagHandlerValidatesValueMonitoringAvailabilityAndLimit(t *testing.T) {
 	t.Parallel()
 	tagID := uuid.New()
@@ -273,10 +351,15 @@ type handlerService struct {
 }
 
 type handlerValueMonitor struct {
-	latest  tag.TagValue
-	history []tag.TagValue
-	stream  chan tag.TagValue
-	limit   int
+	latest         tag.TagValue
+	history        []tag.TagValue
+	stream         chan tag.TagValue
+	subscription   tag.ValueSubscription
+	limit          int
+	afterSequence  uint64
+	tagIDs         []uuid.UUID
+	subscribeCalls int
+	unsubscribed   bool
 }
 
 func (monitor *handlerValueMonitor) Latest(uuid.UUID) (tag.TagValue, bool) {
@@ -294,6 +377,19 @@ func (monitor *handlerValueMonitor) Subscribe(context.Context, []uuid.UUID) (<-c
 		close(monitor.stream)
 	}
 	return monitor.stream, func() {}
+}
+
+func (monitor *handlerValueMonitor) SubscribeValues(_ context.Context, tagIDs []uuid.UUID, afterSequence uint64) tag.ValueSubscription {
+	monitor.subscribeCalls++
+	monitor.tagIDs = append([]uuid.UUID(nil), tagIDs...)
+	monitor.afterSequence = afterSequence
+	if monitor.subscription.Stream == nil {
+		stream := make(chan tag.TagValue)
+		close(stream)
+		monitor.subscription.Stream = stream
+	}
+	monitor.subscription.Unsubscribe = func() { monitor.unsubscribed = true }
+	return monitor.subscription
 }
 
 func (service *handlerService) Create(_ context.Context, input tag.CreateInput) (*tag.Tag, error) {

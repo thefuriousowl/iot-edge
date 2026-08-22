@@ -164,6 +164,10 @@ func (store *PersistentValueStore) Subscribe(ctx context.Context, tagIDs []uuid.
 	return store.memory.Subscribe(ctx, tagIDs)
 }
 
+func (store *PersistentValueStore) SubscribeValues(ctx context.Context, tagIDs []uuid.UUID, afterSequence uint64) ValueSubscription {
+	return store.memory.SubscribeValues(ctx, tagIDs, afterSequence)
+}
+
 func (store *PersistentValueStore) Errors() <-chan error {
 	return store.errors
 }

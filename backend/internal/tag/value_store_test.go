@@ -225,6 +225,77 @@ func TestMemoryValueStorePreservesBadQualityAndRejectsInvalidValues(t *testing.T
 	}
 }
 
+func TestMemoryValueStoreResumesFromLatestValuesAfterSequence(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryValueStore()
+	firstID := uuid.New()
+	secondID := uuid.New()
+	observedAt := time.Date(2026, time.August, 22, 8, 0, 0, 0, time.UTC)
+	first, err := store.Put(TagValue{TagID: firstID, ObservedAt: observedAt, Quality: ValueQualityGood, DataType: DataTypeUInt16, Value: 1})
+	if err != nil {
+		t.Fatalf("Put(first) error = %v", err)
+	}
+	second, err := store.Put(TagValue{TagID: secondID, ObservedAt: observedAt.Add(time.Second), Quality: ValueQualityBad, DataType: DataTypeFloat64, Error: "connection lost"})
+	if err != nil {
+		t.Fatalf("Put(second) error = %v", err)
+	}
+	latestFirst, err := store.Put(TagValue{TagID: firstID, ObservedAt: observedAt.Add(2 * time.Second), Quality: ValueQualityGood, DataType: DataTypeUInt16, Value: 3})
+	if err != nil {
+		t.Fatalf("Put(latest first) error = %v", err)
+	}
+
+	subscription := store.SubscribeValues(context.Background(), nil, first.Sequence)
+	defer subscription.Unsubscribe()
+	if len(subscription.Replay) != 2 || subscription.Replay[0] != second || subscription.Replay[1] != latestFirst {
+		t.Fatalf("Replay = %#v, want sequences [%d %d]", subscription.Replay, second.Sequence, latestFirst.Sequence)
+	}
+	live, err := store.Put(TagValue{TagID: secondID, ObservedAt: observedAt.Add(3 * time.Second), Quality: ValueQualityGood, DataType: DataTypeFloat64, Value: 4.5})
+	if err != nil {
+		t.Fatalf("Put(live) error = %v", err)
+	}
+	select {
+	case received := <-subscription.Stream:
+		if received != live {
+			t.Errorf("live value = %#v, want %#v", received, live)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not receive live value")
+	}
+}
+
+func TestMemoryValueStoreDisconnectsLaggingResumableSubscriber(t *testing.T) {
+	t.Parallel()
+	store := NewMemoryValueStore()
+	tagID := uuid.New()
+	observedAt := time.Date(2026, time.August, 22, 8, 0, 0, 0, time.UTC)
+	subscription := store.SubscribeValues(context.Background(), nil, 0)
+	for index := 0; index <= DefaultTagEventBuffer; index++ {
+		if _, err := store.Put(TagValue{TagID: tagID, ObservedAt: observedAt.Add(time.Duration(index) * time.Second), Quality: ValueQualityGood, DataType: DataTypeUInt16, Value: index}); err != nil {
+			t.Fatalf("Put(%d) error = %v", index, err)
+		}
+	}
+
+	var lastReceived TagValue
+	receivedCount := 0
+	for value := range subscription.Stream {
+		lastReceived = value
+		receivedCount++
+	}
+	if receivedCount != DefaultTagEventBuffer || lastReceived.Sequence != DefaultTagEventBuffer {
+		t.Fatalf("lagging stream received %d values through sequence %d", receivedCount, lastReceived.Sequence)
+	}
+	latest, exists := store.Latest(tagID)
+	if !exists || latest.Sequence != DefaultTagEventBuffer+1 {
+		t.Fatalf("latest = %#v, exists = %v", latest, exists)
+	}
+
+	resumed := store.SubscribeValues(context.Background(), nil, lastReceived.Sequence)
+	defer resumed.Unsubscribe()
+	if len(resumed.Replay) != 1 || resumed.Replay[0] != latest {
+		t.Errorf("resumed Replay = %#v, want latest %#v", resumed.Replay, latest)
+	}
+}
+
 func TestMemoryValueStoreSerializesConcurrentWrites(t *testing.T) {
 	t.Parallel()
 	store := NewMemoryValueStore()

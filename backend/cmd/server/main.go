@@ -12,6 +12,9 @@ import (
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
+	"github.com/thefuriousowl/iot-edge/internal/datalogger"
+	dataloggerhttp "github.com/thefuriousowl/iot-edge/internal/datalogger/http"
+	dataloggerpostgres "github.com/thefuriousowl/iot-edge/internal/datalogger/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/device"
 	devicehttp "github.com/thefuriousowl/iot-edge/internal/device/http"
 	devicepostgres "github.com/thefuriousowl/iot-edge/internal/device/postgres"
@@ -131,6 +134,11 @@ func main() {
 		}
 	}()
 	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
+	dataLoggerService, err := datalogger.NewService(dataloggerpostgres.NewRepository(db))
+	if err != nil {
+		log.Fatalf("failed to initialize Data Logger service: %v", err)
+	}
+	dataLoggerHandler := dataloggerhttp.NewHandler(dataLoggerService)
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
 		cfg.InternetCheckTimeout,
@@ -152,6 +160,7 @@ func main() {
 	vgatewayhttp.RegisterRoutes(protectedAPI, vgatewayHandler)
 	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
 	taghttp.RegisterRoutes(protectedAPI, tagHandler)
+	dataloggerhttp.RegisterRoutes(protectedAPI, dataLoggerHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port
@@ -168,7 +177,7 @@ func newApp(corsAllowOrigins string) *fiber.App {
 	app.Use(logger.New())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     corsAllowOrigins,
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, Last-Event-ID",
 		AllowCredentials: true,
 	}))
 

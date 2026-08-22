@@ -36,12 +36,25 @@ func TestPersistentValueStoreHydratesAndPersistsWithContinuousSequence(t *testin
 	if !exists || hydrated.Sequence != 40 || hydrated.Value != uint16(12) || len(store.History(tagID, 10)) != 1 {
 		t.Errorf("hydrated value = %#v, exists = %t", hydrated, exists)
 	}
+	subscription := store.SubscribeValues(context.Background(), nil, 39)
+	defer subscription.Unsubscribe()
+	if len(subscription.Replay) != 1 || subscription.Replay[0] != hydrated {
+		t.Fatalf("hydrated Replay = %#v, want %#v", subscription.Replay, hydrated)
+	}
 	stored, err := store.Put(TagValue{TagID: tagID, ObservedAt: observedAt.Add(time.Second), Quality: ValueQualityGood, DataType: DataTypeUInt16, Value: 13})
 	if err != nil {
 		t.Fatalf("Put() error = %v", err)
 	}
 	if stored.Sequence != 41 {
 		t.Errorf("stored sequence = %d, want 41", stored.Sequence)
+	}
+	select {
+	case live := <-subscription.Stream:
+		if live != stored {
+			t.Errorf("live value = %#v, want %#v", live, stored)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription did not receive value after hydration")
 	}
 	awaitPersistentValue(t, repository, tagID, 41)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ const (
 	ValueQualityGood            = "good"
 	ValueQualityBad             = "bad"
 	DefaultTagValueHistoryLimit = 10
+	DefaultTagEventBuffer       = 64
 )
 
 var (
@@ -35,6 +37,12 @@ type TagValue struct {
 }
 
 type ValueSnapshot map[uuid.UUID]TagValue
+
+type ValueSubscription struct {
+	Replay      []TagValue
+	Stream      <-chan TagValue
+	Unsubscribe func()
+}
 
 func (snapshot ValueSnapshot) Resolve(ctx context.Context, tagID uuid.UUID) (any, error) {
 	if err := ctx.Err(); err != nil {
@@ -64,8 +72,10 @@ func NewMemoryValueStore() *MemoryValueStore {
 }
 
 type valueSubscriber struct {
-	tagIDs map[uuid.UUID]struct{}
-	stream chan TagValue
+	tagIDs          map[uuid.UUID]struct{}
+	stream          chan TagValue
+	done            chan struct{}
+	disconnectOnLag bool
 }
 
 func (store *MemoryValueStore) Put(value TagValue) (TagValue, error) {
@@ -94,11 +104,18 @@ func (store *MemoryValueStore) Put(value TagValue) (TagValue, error) {
 		history = append([]TagValue(nil), history[len(history)-DefaultTagValueHistoryLimit:]...)
 	}
 	store.history[value.TagID] = history
-	for _, subscriber := range store.subscribers {
+	for subscriberID, subscriber := range store.subscribers {
 		if len(subscriber.tagIDs) > 0 {
 			if _, subscribed := subscriber.tagIDs[value.TagID]; !subscribed {
 				continue
 			}
+		}
+		if offerTagValue(subscriber.stream, value) {
+			continue
+		}
+		if subscriber.disconnectOnLag {
+			store.closeSubscriberLocked(subscriberID, subscriber)
+			continue
 		}
 		offerLatestTagValue(subscriber.stream, value)
 	}
@@ -204,37 +221,67 @@ func (store *MemoryValueStore) History(tagID uuid.UUID, limit int) []TagValue {
 
 func (store *MemoryValueStore) Subscribe(ctx context.Context, tagIDs []uuid.UUID) (<-chan TagValue, func()) {
 	store.mu.Lock()
-	if store.subscribers == nil {
-		store.subscribers = make(map[uint64]*valueSubscriber)
-	}
-	store.nextSubscriber++
-	subscriberID := store.nextSubscriber
-	filter := make(map[uuid.UUID]struct{}, len(tagIDs))
-	for _, tagID := range tagIDs {
-		if tagID != uuid.Nil {
-			filter[tagID] = struct{}{}
-		}
-	}
-	subscriber := &valueSubscriber{tagIDs: filter, stream: make(chan TagValue, DefaultTagValueHistoryLimit+1)}
-	store.subscribers[subscriberID] = subscriber
-	if len(filter) > 0 {
-		for tagID := range filter {
+	subscriberID, subscriber := store.addSubscriberLocked(tagIDs, DefaultTagValueHistoryLimit+1, false)
+	if len(subscriber.tagIDs) > 0 {
+		for tagID := range subscriber.tagIDs {
 			if value, exists := store.latest[tagID]; exists {
 				offerLatestTagValue(subscriber.stream, value)
 			}
 		}
 	}
 	store.mu.Unlock()
+	unsubscribe := store.watchSubscriber(ctx, subscriberID, subscriber)
+	return subscriber.stream, unsubscribe
+}
 
-	done := make(chan struct{})
+func (store *MemoryValueStore) SubscribeValues(ctx context.Context, tagIDs []uuid.UUID, afterSequence uint64) ValueSubscription {
+	store.mu.Lock()
+	subscriberID, subscriber := store.addSubscriberLocked(tagIDs, DefaultTagEventBuffer, true)
+	replay := make([]TagValue, 0, len(store.latest))
+	for tagID, value := range store.latest {
+		if value.Sequence <= afterSequence || !subscriber.matches(tagID) {
+			continue
+		}
+		replay = append(replay, value)
+	}
+	sort.Slice(replay, func(first, second int) bool { return replay[first].Sequence < replay[second].Sequence })
+	store.mu.Unlock()
+
+	return ValueSubscription{
+		Replay:      replay,
+		Stream:      subscriber.stream,
+		Unsubscribe: store.watchSubscriber(ctx, subscriberID, subscriber),
+	}
+}
+
+func (store *MemoryValueStore) addSubscriberLocked(tagIDs []uuid.UUID, buffer int, disconnectOnLag bool) (uint64, *valueSubscriber) {
+	if store.subscribers == nil {
+		store.subscribers = make(map[uint64]*valueSubscriber)
+	}
+	store.nextSubscriber++
+	filter := make(map[uuid.UUID]struct{}, len(tagIDs))
+	for _, tagID := range tagIDs {
+		if tagID != uuid.Nil {
+			filter[tagID] = struct{}{}
+		}
+	}
+	subscriber := &valueSubscriber{
+		tagIDs:          filter,
+		stream:          make(chan TagValue, buffer),
+		done:            make(chan struct{}),
+		disconnectOnLag: disconnectOnLag,
+	}
+	store.subscribers[store.nextSubscriber] = subscriber
+	return store.nextSubscriber, subscriber
+}
+
+func (store *MemoryValueStore) watchSubscriber(ctx context.Context, subscriberID uint64, subscriber *valueSubscriber) func() {
 	var once sync.Once
 	unsubscribe := func() {
 		once.Do(func() {
-			close(done)
 			store.mu.Lock()
-			if current := store.subscribers[subscriberID]; current != nil {
-				delete(store.subscribers, subscriberID)
-				close(current.stream)
+			if current := store.subscribers[subscriberID]; current == subscriber {
+				store.closeSubscriberLocked(subscriberID, subscriber)
 			}
 			store.mu.Unlock()
 		})
@@ -243,10 +290,33 @@ func (store *MemoryValueStore) Subscribe(ctx context.Context, tagIDs []uuid.UUID
 		select {
 		case <-ctx.Done():
 			unsubscribe()
-		case <-done:
+		case <-subscriber.done:
 		}
 	}()
-	return subscriber.stream, unsubscribe
+	return unsubscribe
+}
+
+func (store *MemoryValueStore) closeSubscriberLocked(subscriberID uint64, subscriber *valueSubscriber) {
+	delete(store.subscribers, subscriberID)
+	close(subscriber.stream)
+	close(subscriber.done)
+}
+
+func (subscriber *valueSubscriber) matches(tagID uuid.UUID) bool {
+	if len(subscriber.tagIDs) == 0 {
+		return true
+	}
+	_, matches := subscriber.tagIDs[tagID]
+	return matches
+}
+
+func offerTagValue(stream chan TagValue, value TagValue) bool {
+	select {
+	case stream <- value:
+		return true
+	default:
+		return false
+	}
 }
 
 func offerLatestTagValue(stream chan TagValue, value TagValue) {

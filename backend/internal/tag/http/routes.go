@@ -3,6 +3,7 @@ package taghttp
 import "github.com/gofiber/fiber/v2"
 
 func RegisterRoutes(router fiber.Router, handler *Handler) {
+	router.Get("/sse/tags", handler.StreamAllValues)
 	routes := router.Group("/tags")
 	routes.Get("/", handler.List)
 	routes.Post("/", handler.Create)
