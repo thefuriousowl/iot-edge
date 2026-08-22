@@ -12,7 +12,7 @@ import {
   getVGateway,
   getVGatewayStatus,
 } from "../../../services/vgateway.service";
-import type { VGatewayDetail, VGatewayStatusResponse } from "../../../types/vgateway";
+import type { VGateway, VGatewayStatusResponse } from "../../../types/vgateway";
 import VGatewayDetailPage from "./VGatewayDetailPage";
 
 vi.mock("../../../services/vgateway.service", () => ({
@@ -36,7 +36,7 @@ const mockedGetVGateway = vi.mocked(getVGateway);
 const mockedGetVGatewayStatus = vi.mocked(getVGatewayStatus);
 
 const gatewayID = "7b194e9f-4f74-4a19-8cb1-c4d0d8d5400f";
-const gateway: VGatewayDetail = {
+const gateway: VGateway = {
   id: gatewayID,
   name: "Main PLC Gateway",
   type: "modbus_tcp",
@@ -51,13 +51,6 @@ const gateway: VGatewayDetail = {
     retry_delay: 1000,
     keep_alive: true,
     reconnect_interval: 30,
-  },
-  devices: [],
-  statistics: {
-    connected_at: "2026-08-21T10:15:00Z",
-    request_count: 100,
-    error_count: 2,
-    avg_latency_ms: 9.5,
   },
   created_at: "2026-08-20T08:00:00Z",
   updated_at: "2026-08-21T10:30:00Z",
@@ -105,7 +98,7 @@ describe("VGatewayDetailPage", () => {
   });
 
   it("loads detail and runtime status together and renders the complete empty-device view", async () => {
-    let resolveDetail: ((value: VGatewayDetail) => void) | undefined;
+    let resolveDetail: ((value: VGateway) => void) | undefined;
     mockedGetVGateway.mockReturnValue(
       new Promise((resolve) => {
         resolveDetail = resolve;
@@ -141,7 +134,7 @@ describe("VGatewayDetailPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Main PLC Gateway" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Unable to load runtime status");
-    expect(screen.getByText("100")).toBeInTheDocument();
+    expect(screen.getAllByText("0")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
@@ -220,13 +213,7 @@ describe("VGatewayDetailPage", () => {
   });
 
   it("renders healthy status with the device workspace and navigates to edit", async () => {
-    mockedGetVGateway.mockResolvedValue({
-      ...gateway,
-      devices: [
-        { id: "device-1", name: "Boiler PLC", unit_id: 7 },
-        { id: "device-2", name: "Meter", unit_id: 12 },
-      ],
-    });
+    mockedGetVGateway.mockResolvedValue(gateway);
     mockedGetVGatewayStatus.mockResolvedValue({
       ...runtime,
       health: { status: "healthy", last_check: "2026-08-21T10:29:00Z", latency_ms: 8.25 },

@@ -118,4 +118,92 @@ describe("DeviceWorkspace", () => {
     expect(screen.getByText("Paused")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Monitor" })).toBeDisabled();
   });
+
+  it("applies Modbus quantity limits before previewing", async () => {
+    mockedListDevices.mockResolvedValue([device]);
+    mockedListDatasources.mockResolvedValue([]);
+    mockedPreviewDatasource.mockResolvedValue({
+      datasource_id: "",
+      sequence: 0,
+      observed_at: "2026-08-21T00:00:00Z",
+      latency_ms: 2,
+      quality: "good",
+      raw_hex: "1234",
+      data: { registers: [] },
+    });
+    render(<DeviceWorkspace vgatewayId="gateway-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Power meter/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add datasource" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Register block" } });
+    const quantity = screen.getByLabelText("Quantity");
+    expect(quantity).toHaveAttribute("max", "125");
+
+    fireEvent.change(quantity, { target: { value: "126" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(mockedPreviewDatasource).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Function"), { target: { value: "1" } });
+    expect(quantity).toHaveAttribute("max", "2000");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    await waitFor(() => expect(mockedPreviewDatasource).toHaveBeenCalledWith(device.id, expect.objectContaining({
+      config: expect.objectContaining({ function_code: 1, quantity: 126 }),
+    })));
+  });
+
+  it("clears stale preview samples and errors between retries", async () => {
+    mockedListDevices.mockResolvedValue([device]);
+    mockedListDatasources.mockResolvedValue([]);
+    const sample = {
+      datasource_id: "",
+      sequence: 0,
+      observed_at: "2026-08-21T00:00:00Z",
+      latency_ms: 2,
+      quality: "good" as const,
+      raw_hex: "1234",
+      data: { registers: [] },
+    };
+    mockedPreviewDatasource
+      .mockResolvedValueOnce(sample)
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { data: { error: { code: "DS005", message: "Modbus exception 0x02: Illegal Data Address. The requested address range 99-100 is not available on the server." } } },
+      })
+      .mockResolvedValueOnce({ ...sample, raw_hex: "5678" });
+    render(<DeviceWorkspace vgatewayId="gateway-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Power meter/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add datasource" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Retry source" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(await screen.findByText("1234")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Modbus exception 0x02: Illegal Data Address");
+    expect(screen.getByRole("alert")).toHaveTextContent("address range 99-100");
+    expect(screen.queryByText("1234")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(await screen.findByText("5678")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("clears a saved datasource sample when a retry fails", async () => {
+    mockedListDevices.mockResolvedValue([device]);
+    mockedListDatasources.mockResolvedValue([datasource]);
+    mockedPreviewSavedDatasource
+      .mockResolvedValueOnce({ datasource_id: datasource.id, sequence: 1, observed_at: "2026-08-21T00:00:00Z", latency_ms: 2, quality: "good", raw_hex: "1234", data: { registers: [] } })
+      .mockRejectedValueOnce(new Error("read failed"));
+    render(<DeviceWorkspace vgatewayId="gateway-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Power meter/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Read once" }));
+    expect(await screen.findByText("1234")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Read once" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("read failed");
+    expect(screen.queryByText("1234")).not.toBeInTheDocument();
+  });
 });

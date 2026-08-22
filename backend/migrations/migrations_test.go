@@ -387,6 +387,137 @@ func TestCreateDevicesDatasourcesMigration_Integration(t *testing.T) {
 	}
 }
 
+func TestCreateTagsMigration_Integration(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run the PostgreSQL migration test")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("opening PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("closing PostgreSQL connection: %v", err)
+		}
+	})
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("getting dedicated PostgreSQL connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing dedicated PostgreSQL connection: %v", err)
+		}
+	})
+	schemaName := "tag_migration_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := conn.ExecContext(ctx, "CREATE SCHEMA "+schemaName); err != nil {
+		t.Fatalf("creating isolated schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.ExecContext(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE"); err != nil {
+			t.Errorf("dropping isolated schema: %v", err)
+		}
+	})
+	if _, err := conn.ExecContext(ctx, "SET search_path TO "+schemaName+", public"); err != nil {
+		t.Fatalf("setting search path: %v", err)
+	}
+	applyMigrationFile(t, ctx, conn, "000002_create_vgateways.up.sql")
+	applyMigrationFile(t, ctx, conn, "000003_create_devices_datasources.up.sql")
+	applyMigrationFile(t, ctx, conn, "000004_create_tags.up.sql")
+
+	for _, relation := range []string{"tags", "tag_dependencies", "idx_tags_datasource", "idx_tags_type", "idx_tags_enabled", "idx_tag_dependencies_dependency"} {
+		if !relationExists(t, ctx, conn, schemaName, relation) {
+			t.Errorf("relation %q was not created", relation)
+		}
+	}
+
+	var gatewayID, deviceID, datasourceID string
+	if err := conn.QueryRowContext(ctx, `INSERT INTO vgateways (name,type,config) VALUES ('Tag PLC','modbus_tcp','{}') RETURNING id`).Scan(&gatewayID); err != nil {
+		t.Fatalf("inserting gateway: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO devices (vgateway_id,name,type,config) VALUES ($1,'Tag meter','modbus_device','{}') RETURNING id`, gatewayID).Scan(&deviceID); err != nil {
+		t.Fatalf("inserting device: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO datasources (device_id,name,type,config) VALUES ($1,'Tag registers','modbus_read','{}') RETURNING id`, deviceID).Scan(&datasourceID); err != nil {
+		t.Fatalf("inserting datasource: %v", err)
+	}
+
+	var readingID, constantID, calculatedID string
+	var enabled bool
+	if err := conn.QueryRowContext(ctx, `INSERT INTO tags (datasource_id,name,type,data_type,config) VALUES ($1,'Line voltage','reading','float32','{"decoder":{"type":"binary_numeric","config":{"byte_offset":0,"byte_order":"big_endian"}}}') RETURNING id,enabled`, datasourceID).Scan(&readingID, &enabled); err != nil {
+		t.Fatalf("inserting reading tag: %v", err)
+	}
+	if !enabled {
+		t.Error("reading tag enabled default = false, want true")
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO tags (name,type,data_type,config) VALUES ('Nominal voltage','constant','float64','{"value":230}') RETURNING id`).Scan(&constantID); err != nil {
+		t.Fatalf("inserting constant tag: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `INSERT INTO tags (name,type,data_type,config) VALUES ('Voltage delta','calculated','float64','{"expression":"reading - constant"}') RETURNING id`).Scan(&calculatedID); err != nil {
+		t.Fatalf("inserting calculated tag: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO tag_dependencies (tag_id,depends_on_tag_id) VALUES ($1,$2),($1,$3)`, calculatedID, readingID, constantID); err != nil {
+		t.Fatalf("inserting dependencies: %v", err)
+	}
+
+	expectExecFailure(t, ctx, conn, "duplicate tag name", `INSERT INTO tags (name,type,data_type,config) VALUES ('Nominal voltage','constant','float64','{}')`)
+	expectExecFailure(t, ctx, conn, "unsupported tag type", `INSERT INTO tags (name,type,data_type,config) VALUES ('Bad type','future','float64','{}')`)
+	expectExecFailure(t, ctx, conn, "unsupported data type", `INSERT INTO tags (name,type,data_type,config) VALUES ('Bad data','constant','decimal128','{}')`)
+	expectExecFailure(t, ctx, conn, "non-object config", `INSERT INTO tags (name,type,data_type,config) VALUES ('Bad config','constant','float64','[]')`)
+	expectExecFailure(t, ctx, conn, "reading without datasource", `INSERT INTO tags (name,type,data_type,config) VALUES ('Missing source','reading','uint16','{}')`)
+	expectExecFailure(t, ctx, conn, "constant with datasource", `INSERT INTO tags (datasource_id,name,type,data_type,config) VALUES ($1,'Unexpected source','constant','float64','{}')`, datasourceID)
+	expectExecFailure(t, ctx, conn, "self dependency", `INSERT INTO tag_dependencies (tag_id,depends_on_tag_id) VALUES ($1,$1)`, calculatedID)
+	expectExecFailure(t, ctx, conn, "duplicate dependency", `INSERT INTO tag_dependencies (tag_id,depends_on_tag_id) VALUES ($1,$2)`, calculatedID, readingID)
+
+	if _, err := conn.ExecContext(ctx, `DELETE FROM datasources WHERE id = $1`, datasourceID); err != nil {
+		t.Fatalf("deleting datasource: %v", err)
+	}
+	var count int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM tags WHERE id = $1`, readingID).Scan(&count); err != nil {
+		t.Fatalf("counting cascaded reading tag: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("reading tags after datasource cascade = %d, want 0", count)
+	}
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM tag_dependencies WHERE depends_on_tag_id = $1`, readingID).Scan(&count); err != nil {
+		t.Fatalf("counting cascaded source dependencies: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("dependencies after reading tag cascade = %d, want 0", count)
+	}
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM tags WHERE id = $1`, calculatedID).Scan(&count); err != nil {
+		t.Fatalf("counting calculated tag after source cascade: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("calculated tags after source cascade = %d, want 1", count)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM tags WHERE id = $1`, calculatedID); err != nil {
+		t.Fatalf("deleting calculated tag: %v", err)
+	}
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM tag_dependencies WHERE tag_id = $1`, calculatedID).Scan(&count); err != nil {
+		t.Fatalf("counting cascaded calculated dependencies: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("dependencies after calculated tag delete = %d, want 0", count)
+	}
+
+	applyMigrationFile(t, ctx, conn, "000004_create_tags.down.sql")
+	for _, table := range []string{"tag_dependencies", "tags"} {
+		if relationExists(t, ctx, conn, schemaName, table) {
+			t.Errorf("table %q remains after down", table)
+		}
+	}
+}
+
+func expectExecFailure(t *testing.T, ctx context.Context, conn *sql.Conn, name, query string, args ...any) {
+	t.Helper()
+	if _, err := conn.ExecContext(ctx, query, args...); err == nil {
+		t.Errorf("%s succeeded", name)
+	}
+}
+
 func applyMigrationFile(t *testing.T, ctx context.Context, conn *sql.Conn, filename string) {
 	t.Helper()
 

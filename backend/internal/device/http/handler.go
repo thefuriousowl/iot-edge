@@ -8,16 +8,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/thefuriousowl/iot-edge/internal/device"
+	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
 
 type Service interface {
 	CreateDevice(context.Context, uuid.UUID, device.CreateDeviceInput) (*device.Device, error)
 	GetDevice(context.Context, uuid.UUID) (*device.DeviceView, error)
 	ListDevices(context.Context, uuid.UUID) ([]device.DeviceView, error)
+	ListDeviceInventory(context.Context, device.DeviceInventoryInput) (*device.DeviceInventoryResult, error)
 	UpdateDevice(context.Context, uuid.UUID, device.UpdateDeviceInput) (*device.Device, error)
 	DeleteDevice(context.Context, uuid.UUID) error
 	CreateDatasource(context.Context, uuid.UUID, device.CreateDatasourceInput) (*device.Datasource, error)
@@ -62,6 +65,26 @@ type previewRequest struct {
 }
 
 func NewHandler(service Service) *Handler { return &Handler{service: service} }
+
+func (h *Handler) ListDeviceInventory(c *fiber.Ctx) error {
+	input, err := parseDeviceInventoryInput(c)
+	if err != nil {
+		return validation(c, "Invalid query parameters")
+	}
+	result, err := h.service.ListDeviceInventory(c.UserContext(), input)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(fiber.Map{
+		"data": result.Data,
+		"pagination": fiber.Map{
+			"page":        result.Page,
+			"per_page":    result.PerPage,
+			"total":       result.Total,
+			"total_pages": result.TotalPages,
+		},
+	})
+}
 
 func (h *Handler) ListDevices(c *fiber.Ctx) error {
 	id, err := parseID(c.Params("vgateway_id"))
@@ -318,11 +341,66 @@ func decode(body []byte, target any) error {
 }
 
 func parseID(value string) (uuid.UUID, error) { return uuid.Parse(value) }
+
+func parseDeviceInventoryInput(c *fiber.Ctx) (device.DeviceInventoryInput, error) {
+	var input device.DeviceInventoryInput
+	if value := c.Query("vgateway_id"); value != "" {
+		gatewayID, err := uuid.Parse(value)
+		if err != nil {
+			return input, err
+		}
+		input.VGatewayID = &gatewayID
+	}
+	if value := c.Query("type"); value != "" {
+		deviceType := device.DeviceType(value)
+		input.Type = &deviceType
+	}
+	if value := c.Query("enabled"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return input, err
+		}
+		input.Enabled = &enabled
+	}
+	input.Search = c.Query("search")
+	if value := c.Query("page"); value != "" {
+		page, err := parsePositiveInteger(value)
+		if err != nil {
+			return input, err
+		}
+		input.Page = page
+	}
+	if value := c.Query("per_page"); value != "" {
+		perPage, err := parsePositiveInteger(value)
+		if err != nil {
+			return input, err
+		}
+		input.PerPage = perPage
+	}
+	return input, nil
+}
+
+func parsePositiveInteger(value string) (int, error) {
+	number, err := strconv.Atoi(value)
+	if err != nil || number <= 0 {
+		return 0, errors.New("value must be a positive integer")
+	}
+	return number, nil
+}
+
 func validation(c *fiber.Ctx, message string) error {
 	return apiError(c, fiber.StatusBadRequest, "VALIDATION_ERROR", message)
 }
 func apiError(c *fiber.Ctx, status int, code, message string) error {
 	return c.Status(status).JSON(fiber.Map{"error": fiber.Map{"code": code, "message": message}})
+}
+
+func requestAPIError(c *fiber.Ctx, status int, code, fallback string, err error) error {
+	message, details, ok := protocol.PublicRequestError(err)
+	if !ok {
+		return apiError(c, status, code, fallback)
+	}
+	return c.Status(status).JSON(fiber.Map{"error": fiber.Map{"code": code, "message": message, "details": details}})
 }
 
 func handleError(c *fiber.Ctx, err error) error {
@@ -344,7 +422,7 @@ func handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, device.ErrDatasourceSampleUnavailable):
 		return apiError(c, fiber.StatusNotFound, "DS010", "No datasource sample is available yet")
 	case errors.Is(err, device.ErrDatasourceReadFailed):
-		return apiError(c, fiber.StatusBadGateway, "DS005", "Datasource read failed")
+		return requestAPIError(c, fiber.StatusBadGateway, "DS005", "Datasource read failed", err)
 	default:
 		return apiError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
 	}

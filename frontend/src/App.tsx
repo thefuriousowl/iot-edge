@@ -9,7 +9,10 @@ import AuthRoute from "./components/common/AuthRoute";
 import ProtectedRoute from "./components/common/ProtectedRoute";
 import LoginPage from "./features/auth/pages/LoginPage";
 import SetupPage from "./features/auth/pages/SetupPage";
+import DeviceListPage from "./features/device/pages/DeviceListPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
+import TagListPage from "./features/tag/pages/TagListPage";
+import TagWizardPage from "./features/tag/pages/TagWizardPage";
 import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
@@ -50,6 +53,38 @@ function App() {
           element={
             <ProtectedRoute>
               <VGatewayListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/devices"
+          element={
+            <ProtectedRoute>
+              <DeviceListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tags"
+          element={
+            <ProtectedRoute>
+              <TagListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tags/new"
+          element={
+            <ProtectedRoute>
+              <TagWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tags/new/:type"
+          element={
+            <ProtectedRoute>
+              <TagWizardPage />
             </ProtectedRoute>
           }
         />

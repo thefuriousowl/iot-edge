@@ -37,6 +37,13 @@ func TestFeatureCoreImportBoundaries(t *testing.T) {
 				"github.com/thefuriousowl/iot-edge/internal/protocol": true,
 			},
 		},
+		{
+			name:      "tag core",
+			directory: filepath.Join(backendRoot, "internal", "tag"),
+			allowedInternal: map[string]bool{
+				"github.com/thefuriousowl/iot-edge/internal/protocol": true,
+			},
+		},
 	}
 
 	for _, test := range tests {

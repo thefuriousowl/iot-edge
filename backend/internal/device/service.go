@@ -15,6 +15,11 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
 
+const (
+	defaultDevicesPerPage = 20
+	maxDevicesPerPage     = 100
+)
+
 var (
 	ErrRepositoryRequired          = errors.New("device repository is required")
 	ErrDriversRequired             = errors.New("datasource drivers are required")
@@ -73,8 +78,19 @@ type OptionalDescription struct {
 	Value *string
 }
 
+type GatewayRequestRecorder interface {
+	RecordGatewayRequest(
+		uuid.UUID,
+		time.Time,
+		time.Duration,
+		int,
+		error,
+	)
+}
+
 type Service struct {
 	repository        Repository
+	requestRecorder   GatewayRequestRecorder
 	deviceDrivers     map[DeviceType]protocol.DatasourceDriver
 	datasourceDrivers map[DatasourceType]protocol.DatasourceDriver
 	monitorMu         sync.Mutex
@@ -87,13 +103,29 @@ type Service struct {
 }
 
 func NewService(repository Repository, drivers ...protocol.DatasourceDriver) (*Service, error) {
+	return newService(repository, nil, drivers...)
+}
+
+func NewServiceWithGatewayRequestRecorder(
+	repository Repository,
+	recorder GatewayRequestRecorder,
+	drivers ...protocol.DatasourceDriver,
+) (*Service, error) {
+	return newService(repository, recorder, drivers...)
+}
+
+func newService(
+	repository Repository,
+	recorder GatewayRequestRecorder,
+	drivers ...protocol.DatasourceDriver,
+) (*Service, error) {
 	if repository == nil {
 		return nil, ErrRepositoryRequired
 	}
 	if len(drivers) == 0 {
 		return nil, ErrDriversRequired
 	}
-	service := &Service{repository: repository, deviceDrivers: map[DeviceType]protocol.DatasourceDriver{}, datasourceDrivers: map[DatasourceType]protocol.DatasourceDriver{}, monitors: map[uuid.UUID]*monitorRuntime{}, gates: map[uuid.UUID]*executionGate{}, samples: map[uuid.UUID]DatasourceSample{}}
+	service := &Service{repository: repository, requestRecorder: recorder, deviceDrivers: map[DeviceType]protocol.DatasourceDriver{}, datasourceDrivers: map[DatasourceType]protocol.DatasourceDriver{}, monitors: map[uuid.UUID]*monitorRuntime{}, gates: map[uuid.UUID]*executionGate{}, samples: map[uuid.UUID]DatasourceSample{}}
 	for _, driver := range drivers {
 		if driver == nil {
 			return nil, ErrDriversRequired
@@ -150,6 +182,24 @@ func (s *Service) ListDevices(ctx context.Context, gatewayID uuid.UUID) ([]Devic
 		return nil, mapRepositoryError(err)
 	}
 	return s.repository.ListDevices(ctx, gatewayID)
+}
+
+func (s *Service) ListDeviceInventory(ctx context.Context, input DeviceInventoryInput) (*DeviceInventoryResult, error) {
+	if input.Type != nil {
+		if _, ok := s.deviceDrivers[*input.Type]; !ok {
+			return nil, fmt.Errorf("%w: %q", ErrUnsupportedDeviceType, *input.Type)
+		}
+	}
+	if input.Page < 0 || input.PerPage < 0 || input.PerPage > maxDevicesPerPage {
+		return nil, fmt.Errorf("%w: invalid pagination", ErrInvalidDevice)
+	}
+	if input.Page == 0 {
+		input.Page = 1
+	}
+	if input.PerPage == 0 {
+		input.PerPage = defaultDevicesPerPage
+	}
+	return s.repository.ListDeviceInventory(ctx, input)
 }
 
 func (s *Service) UpdateDevice(ctx context.Context, id uuid.UUID, input UpdateDeviceInput) (*Device, error) {
@@ -314,27 +364,85 @@ func (s *Service) PreviewDatasource(ctx context.Context, deviceID uuid.UUID, inp
 }
 
 func (s *Service) PreviewSavedDatasource(ctx context.Context, id uuid.UUID) (*DatasourceSample, error) {
-	entity, err := s.repository.FindDatasource(ctx, id)
-	if err != nil {
-		return nil, mapRepositoryError(err)
-	}
-	driver, err := s.driverForDatasource(&entity.Device, entity.Type)
+	sample, err := s.ReadSavedDatasource(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return s.readOnce(ctx, driver, &entity.Device, entity.Config, entity.ID)
+	formatted := s.formatSample(id, sample)
+	s.storeSample(formatted)
+	return &formatted, nil
+}
+
+func (s *Service) ReadSavedDatasource(ctx context.Context, id uuid.UUID) (protocol.DatasourceSample, error) {
+	return s.readSavedDatasource(ctx, id, false)
+}
+
+func (s *Service) ReadDatasourceForTag(ctx context.Context, id uuid.UUID) (protocol.DatasourceSample, error) {
+	return s.readSavedDatasource(ctx, id, true)
+}
+
+func (s *Service) readSavedDatasource(ctx context.Context, id uuid.UUID, requireEnabled bool) (protocol.DatasourceSample, error) {
+	entity, err := s.repository.FindDatasource(ctx, id)
+	if err != nil {
+		return protocol.DatasourceSample{}, mapRepositoryError(err)
+	}
+	if requireEnabled && !monitoringEnabled(entity) {
+		return protocol.DatasourceSample{}, ErrMonitoringDisabled
+	}
+	driver, err := s.driverForDatasource(&entity.Device, entity.Type)
+	if err != nil {
+		return protocol.DatasourceSample{}, err
+	}
+	startedAt := time.Now()
+	sample, err := driver.Preview(ctx, s.datasourceReadRequest(&entity.Device, entity.Config))
+	s.recordGatewayRequest(entity.Device.Gateway.ID, sample, time.Since(startedAt), err)
+	if err != nil {
+		return protocol.DatasourceSample{}, fmt.Errorf("%w: %w", ErrDatasourceReadFailed, err)
+	}
+	return sample, nil
 }
 
 func (s *Service) readOnce(ctx context.Context, driver protocol.DatasourceDriver, parent *DeviceContext, config Config, id uuid.UUID) (*DatasourceSample, error) {
+	startedAt := time.Now()
 	sample, err := driver.Preview(ctx, s.datasourceReadRequest(parent, config))
+	s.recordGatewayRequest(parent.Gateway.ID, sample, time.Since(startedAt), err)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDatasourceReadFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrDatasourceReadFailed, err)
 	}
 	formatted := s.formatSample(id, sample)
 	if id != uuid.Nil {
 		s.storeSample(formatted)
 	}
 	return &formatted, nil
+}
+
+func (s *Service) recordGatewayRequest(
+	gatewayID uuid.UUID,
+	sample protocol.DatasourceSample,
+	elapsed time.Duration,
+	requestErr error,
+) {
+	if s.requestRecorder == nil {
+		return
+	}
+	observedAt := sample.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	latency := sample.Latency
+	if latency <= 0 && elapsed > 0 {
+		latency = elapsed
+	}
+	if requestErr == nil && sample.Quality == "bad" {
+		requestErr = ErrDatasourceReadFailed
+	}
+	s.requestRecorder.RecordGatewayRequest(
+		gatewayID,
+		observedAt,
+		latency,
+		len(sample.Raw),
+		requestErr,
+	)
 }
 
 func (s *Service) LatestSample(ctx context.Context, id uuid.UUID) (*DatasourceSample, error) {

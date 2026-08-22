@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Tags,
   Trash2,
   Unplug,
   X,
@@ -247,6 +248,10 @@ function VGatewayListPage() {
             <Boxes aria-hidden="true" size={21} />
             Devices
           </span>
+          <NavLink to="/tags">
+            <Tags aria-hidden="true" size={21} />
+            Tags
+          </NavLink>
           <span aria-disabled="true">
             <Puzzle aria-hidden="true" size={21} />
             Plugins

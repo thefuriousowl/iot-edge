@@ -8,7 +8,6 @@ import type {
   UpdateVGatewayRequest,
   VGateway,
   VGatewayConnectionActionResponse,
-  VGatewayDetail,
   VGatewayListResponse,
   VGatewayStatusResponse,
 } from "../types/vgateway";
@@ -121,22 +120,7 @@ describe("vGateway service", () => {
 
   it("gets gateway details with cancellation", async () => {
     const controller = new AbortController();
-    const expected: VGatewayDetail = {
-      ...gateway,
-      devices: [
-        {
-          id: "660e8400-e29b-41d4-a716-446655440000",
-          name: "Power Meter #1",
-          unit_id: 1,
-        },
-      ],
-      statistics: {
-        connected_at: null,
-        request_count: 12_345,
-        error_count: 5,
-        avg_latency_ms: 12.5,
-      },
-    };
+    const expected = gateway;
     mockedGet.mockResolvedValue(responseWith(expected));
 
     await expect(

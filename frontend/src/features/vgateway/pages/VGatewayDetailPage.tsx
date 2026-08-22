@@ -19,8 +19,8 @@ import {
   getVGatewayStatus,
 } from "../../../services/vgateway.service";
 import type {
+  VGateway,
   VGatewayConnectionStatus,
-  VGatewayDetail,
   VGatewayHealthStatus,
   VGatewayStatusResponse,
 } from "../../../types/vgateway";
@@ -71,7 +71,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 function VGatewayDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [gateway, setGateway] = useState<VGatewayDetail | null>(null);
+  const [gateway, setGateway] = useState<VGateway | null>(null);
   const [runtime, setRuntime] = useState<VGatewayStatusResponse | null>(null);
   const [detailState, setDetailState] = useState<DetailLoadState>("loading");
   const [statusState, setStatusState] = useState<StatusLoadState>("loading");
@@ -165,12 +165,12 @@ function VGatewayDetailPage() {
   const statistics = useMemo(
     () =>
       runtime?.statistics ?? {
-        request_count: gateway?.statistics.request_count ?? 0,
-        error_count: gateway?.statistics.error_count ?? 0,
+        request_count: 0,
+        error_count: 0,
         bytes_received: 0,
-        avg_latency_ms: gateway?.statistics.avg_latency_ms ?? null,
+        avg_latency_ms: null,
       },
-    [gateway, runtime],
+    [runtime],
   );
 
   async function handleConnection() {
@@ -196,7 +196,7 @@ function VGatewayDetailPage() {
     }
   }
 
-  const connectedAt = runtime?.connected_at ?? gateway?.statistics.connected_at;
+  const connectedAt = runtime?.connected_at ?? null;
   const health = runtime?.health ?? {
     status: "unknown" as const,
     last_check: null,

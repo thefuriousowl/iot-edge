@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/aldas/go-modbus-client/packet"
 	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
 
@@ -99,6 +101,51 @@ func TestDatasourceDriverPreviewReturnsRegisterEnvelope(t *testing.T) {
 	}
 }
 
+func TestDatasourceDriverPreviewPreservesPublicModbusException(t *testing.T) {
+	t.Parallel()
+	exception := &packet.ErrorResponseTCP{UnitID: 7, Function: 3, Code: packet.ErrIllegalDataAddress}
+	client := &fakeModbusClient{readErr: exception}
+	driver, err := NewModbusTCPDriver(func(ModbusTCPConfig) (ModbusClient, error) { return client, nil })
+	if err != nil {
+		t.Fatalf("NewModbusTCPDriver() error = %v", err)
+	}
+	_, err = driver.Preview(context.Background(), datasourceReadRequest())
+	if !errors.Is(err, exception) {
+		t.Fatalf("Preview() error = %v, want exception cause", err)
+	}
+	message, details, ok := protocol.PublicRequestError(err)
+	if !ok || !strings.Contains(message, "Illegal Data Address") || details["exception_hex"] != "0x02" {
+		t.Fatalf("public error = %q / %#v", message, details)
+	}
+}
+
+func TestDatasourceDriverMonitorEmitsPublicModbusExceptionWithoutDroppingConnection(t *testing.T) {
+	t.Parallel()
+	exception := &packet.ErrorResponseTCP{UnitID: 7, Function: 3, Code: packet.ErrIllegalDataAddress}
+	client := &fakeModbusClient{readErr: exception}
+	driver, err := NewModbusTCPDriver(func(ModbusTCPConfig) (ModbusClient, error) { return client, nil })
+	if err != nil {
+		t.Fatalf("NewModbusTCPDriver() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	connectedDuringEmit := false
+	var emitted protocol.DatasourceSample
+	err = driver.Monitor(ctx, datasourceReadRequest(), 100, func(sample protocol.DatasourceSample) {
+		emitted = sample
+		connectedDuringEmit = client.IsConnected()
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Monitor() error = %v, want context cancellation", err)
+	}
+	if emitted.Quality != "bad" || !strings.Contains(emitted.Error, "Modbus exception 0x02: Illegal Data Address") {
+		t.Errorf("emitted sample = %#v", emitted)
+	}
+	if !connectedDuringEmit {
+		t.Error("Monitor() disconnected a healthy Modbus transport after an exception response")
+	}
+}
+
 func TestFormatModbusDataRejectsShortPayload(t *testing.T) {
 	t.Parallel()
 	if _, err := formatModbusData(ReadRequest{FunctionCode: FunctionReadCoils, Quantity: 9}, []byte{1}); err == nil {
@@ -106,5 +153,13 @@ func TestFormatModbusDataRejectsShortPayload(t *testing.T) {
 	}
 	if _, err := formatModbusData(ReadRequest{FunctionCode: FunctionReadHoldingRegisters, Quantity: 1}, []byte{1}); err == nil {
 		t.Error("register payload error = nil")
+	}
+}
+
+func datasourceReadRequest() protocol.DatasourceReadRequest {
+	return protocol.DatasourceReadRequest{
+		GatewayConfig:    json.RawMessage(`{"host":"plc.local","port":502,"timeout":5000,"retry_count":0,"retry_delay":0,"keep_alive":true,"reconnect_interval":0}`),
+		DeviceConfig:     json.RawMessage(`{"unit_id":7,"poll_interval_ms":1000,"request_timeout_ms":null}`),
+		DatasourceConfig: json.RawMessage(`{"function_code":3,"start_address":96,"quantity":5,"poll_interval_ms":null}`),
 	}
 }

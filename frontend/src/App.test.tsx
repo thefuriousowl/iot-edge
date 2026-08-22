@@ -29,6 +29,14 @@ vi.mock("./services/auth.service", () => ({
   setup: vi.fn(),
 }));
 
+vi.mock("./features/tag/pages/TagWizardPage", () => ({
+  default: () => <h1>Add Tag Wizard</h1>,
+}));
+
+vi.mock("./features/device/pages/DeviceListPage", () => ({
+  default: () => <h1>Global Device Inventory</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedCheckSetupStatus = vi.mocked(checkSetupStatus);
 const mockedGetMe = vi.mocked(getMe);
@@ -227,5 +235,19 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Backend unavailable",
     );
+  });
+
+  it("protects and renders the Tag wizard route", () => {
+    renderAuthenticatedApp("/tags/new");
+
+    expect(screen.getByRole("heading", { name: "Add Tag Wizard" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/tags/new");
+  });
+
+  it("protects and renders the global Devices route", () => {
+    renderAuthenticatedApp("/devices");
+
+    expect(screen.getByRole("heading", { name: "Global Device Inventory" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/devices");
   });
 });

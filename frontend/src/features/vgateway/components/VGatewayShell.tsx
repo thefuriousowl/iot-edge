@@ -8,6 +8,7 @@ import {
   Menu,
   Puzzle,
   Settings,
+  Tags,
   X,
 } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
@@ -56,10 +57,14 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
             <Cpu aria-hidden="true" size={21} />
             vGateways
           </NavLink>
-          <span aria-disabled="true">
+          <NavLink to="/devices">
             <Boxes aria-hidden="true" size={21} />
             Devices
-          </span>
+          </NavLink>
+          <NavLink to="/tags">
+            <Tags aria-hidden="true" size={21} />
+            Tags
+          </NavLink>
           <span aria-disabled="true">
             <Puzzle aria-hidden="true" size={21} />
             Plugins

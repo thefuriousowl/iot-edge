@@ -8,6 +8,7 @@ func RegisterRoutes(router fiber.Router, handler *Handler) {
 	gateways.Post("/", handler.CreateDevice)
 
 	devices := router.Group("/devices")
+	devices.Get("/", handler.ListDeviceInventory)
 	devices.Get("/:id", handler.GetDevice)
 	devices.Put("/:id", handler.UpdateDevice)
 	devices.Delete("/:id", handler.DeleteDevice)

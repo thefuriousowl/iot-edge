@@ -41,7 +41,7 @@ func TestDeviceDatasourceCRUDAndPreview_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing simulator port: %v", err)
 	}
-	app, gatewayID, countDevices := newDeviceIntegrationApp(t, host, port)
+	app, gatewayID, countDevices, db := newDeviceIntegrationApp(t, host, port)
 
 	var createdDevice device.Device
 	requestJSON(t, app, http.MethodPost, "/api/vgateways/"+gatewayID.String()+"/devices", `{"name":" Meter 7 ","type":"modbus_device","config":{"unit_id":7,"poll_interval_ms":100}}`, fiber.StatusCreated, &createdDevice)
@@ -71,11 +71,65 @@ func TestDeviceDatasourceCRUDAndPreview_EndToEnd(t *testing.T) {
 	requestJSON(t, app, http.MethodPost, "/api/devices/"+createdDevice.ID.String()+"/datasources/preview", previewBody, fiber.StatusOK, &unsaved)
 	assertIntegrationSample(t, unsaved, uuid.Nil)
 
+	var failedPreview struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				Protocol      string `json:"protocol"`
+				ExceptionCode int    `json:"exception_code"`
+				ExceptionName string `json:"exception_name"`
+				StartAddress  int    `json:"start_address"`
+				Quantity      int    `json:"quantity"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	requestJSON(t, app, http.MethodPost, "/api/devices/"+createdDevice.ID.String()+"/datasources/preview", `{"type":"modbus_read","config":{"function_code":3,"start_address":99,"quantity":2}}`, fiber.StatusBadGateway, &failedPreview)
+	if failedPreview.Error.Code != "DS005" || !strings.Contains(failedPreview.Error.Message, "Modbus exception 0x02: Illegal Data Address") {
+		t.Errorf("failed preview error = %#v", failedPreview.Error)
+	}
+	if failedPreview.Error.Details.Protocol != "modbus_tcp" || failedPreview.Error.Details.ExceptionCode != 2 || failedPreview.Error.Details.ExceptionName != "ILLEGAL_DATA_ADDRESS" || failedPreview.Error.Details.StartAddress != 99 || failedPreview.Error.Details.Quantity != 2 {
+		t.Errorf("failed preview details = %#v", failedPreview.Error.Details)
+	}
+
 	var createdDatasource device.Datasource
 	requestJSON(t, app, http.MethodPost, "/api/devices/"+createdDevice.ID.String()+"/datasources", `{"name":" Voltage ","type":"modbus_read","config":{"function_code":3,"start_address":10,"quantity":2}}`, fiber.StatusCreated, &createdDatasource)
 	if createdDatasource.ID == uuid.Nil || createdDatasource.Name != "Voltage" {
 		t.Errorf("created datasource = %#v", createdDatasource)
 	}
+	if err := db.Exec(`INSERT INTO tags (name,type,data_type,datasource_id,config) VALUES (?,?,?,?,CAST(? AS jsonb))`, "Meter voltage", "reading", "uint16", createdDatasource.ID, `{"decoder":{"type":"binary_numeric","config":{"byte_offset":0,"byte_order":"big_endian"}}}`).Error; err != nil {
+		t.Fatalf("inserting reading tag: %v", err)
+	}
+	var inventory struct {
+		Data       []device.DeviceInventoryItem `json:"data"`
+		Pagination struct {
+			Page       int   `json:"page"`
+			PerPage    int   `json:"per_page"`
+			Total      int64 `json:"total"`
+			TotalPages int   `json:"total_pages"`
+		} `json:"pagination"`
+	}
+	inventoryPath := fmt.Sprintf("/api/devices?vgateway_id=%s&type=modbus_device&enabled=true&search=simulator&page=1&per_page=20", gatewayID)
+	requestJSON(t, app, http.MethodGet, inventoryPath, "", fiber.StatusOK, &inventory)
+	if len(inventory.Data) != 1 || inventory.Data[0].ID != createdDevice.ID || inventory.Data[0].VGatewayName != "Simulator" || inventory.Data[0].VGatewayType != "modbus_tcp" || !inventory.Data[0].VGatewayEnabled || inventory.Data[0].DatasourceCount != 1 || inventory.Data[0].TagCount != 1 {
+		t.Errorf("device inventory = %#v", inventory.Data)
+	}
+	if inventory.Pagination.Page != 1 || inventory.Pagination.PerPage != 20 || inventory.Pagination.Total != 1 || inventory.Pagination.TotalPages != 1 {
+		t.Errorf("device inventory pagination = %#v", inventory.Pagination)
+	}
+	var escapedSearch struct {
+		Data       []device.DeviceInventoryItem `json:"data"`
+		Pagination struct {
+			Total int64 `json:"total"`
+		} `json:"pagination"`
+	}
+	requestJSON(t, app, http.MethodGet, "/api/devices?search=%25", "", fiber.StatusOK, &escapedSearch)
+	if len(escapedSearch.Data) != 0 || escapedSearch.Pagination.Total != 0 {
+		t.Errorf("escaped wildcard search = %#v", escapedSearch)
+	}
+	var invalidQuery map[string]any
+	requestJSON(t, app, http.MethodGet, "/api/devices?enabled=maybe", "", fiber.StatusBadRequest, &invalidQuery)
+	requestJSON(t, app, http.MethodGet, "/api/devices?type=mqtt_device", "", fiber.StatusBadRequest, &invalidQuery)
 	requestJSON(t, app, http.MethodGet, "/api/devices/"+createdDevice.ID.String(), "", fiber.StatusOK, &fetchedDevice)
 	if fetchedDevice.DatasourceCount != 1 {
 		t.Errorf("device datasource count = %d, want 1", fetchedDevice.DatasourceCount)
@@ -94,7 +148,7 @@ func TestDeviceDatasourceCRUDAndPreview_EndToEnd(t *testing.T) {
 	var saved device.DatasourceSample
 	requestJSON(t, app, http.MethodPost, "/api/datasources/"+createdDatasource.ID.String()+"/preview", "", fiber.StatusOK, &saved)
 	assertIntegrationSample(t, saved, createdDatasource.ID)
-	server.assertRequests(t, 2)
+	server.assertRequests(t, 3)
 
 	var listed struct {
 		Data []device.DatasourceView `json:"data"`
@@ -140,7 +194,7 @@ func assertIntegrationSample(t *testing.T, sample device.DatasourceSample, datas
 	}
 }
 
-func newDeviceIntegrationApp(t *testing.T, host string, port int) (*fiber.App, uuid.UUID, func(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error)) {
+func newDeviceIntegrationApp(t *testing.T, host string, port int) (*fiber.App, uuid.UUID, func(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error), *gorm.DB) {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -171,7 +225,7 @@ func newDeviceIntegrationApp(t *testing.T, host string, port int) (*fiber.App, u
 	if err != nil {
 		t.Fatalf("opening GORM: %v", err)
 	}
-	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql"} {
+	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql"} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatalf("reading migration: %v", err)
@@ -194,7 +248,7 @@ func newDeviceIntegrationApp(t *testing.T, host string, port int) (*fiber.App, u
 	app := fiber.New()
 	RegisterRoutes(app.Group("/api"), NewHandler(service))
 	t.Cleanup(func() { _ = app.Shutdown() })
-	return app, gatewayID, repository.CountByVGatewayIDs
+	return app, gatewayID, repository.CountByVGatewayIDs, db
 }
 
 type modbusReadServer struct {
@@ -233,7 +287,29 @@ func (s *modbusReadServer) handle(connection net.Conn) {
 		s.errors <- err
 		return
 	}
-	if request[6] != 7 || request[7] != 3 || binary.BigEndian.Uint16(request[8:10]) != 10 || binary.BigEndian.Uint16(request[10:12]) != 2 {
+	address := binary.BigEndian.Uint16(request[8:10])
+	quantity := binary.BigEndian.Uint16(request[10:12])
+	if request[6] != 7 || request[7] != 3 {
+		s.errors <- fmt.Errorf("unexpected request %x", request)
+		return
+	}
+	if address == 99 && quantity == 2 {
+		response := make([]byte, 9)
+		copy(response[:2], request[:2])
+		binary.BigEndian.PutUint16(response[4:6], 3)
+		response[6] = request[6]
+		response[7] = request[7] | 0x80
+		response[8] = 2
+		if _, err := connection.Write(response); err != nil {
+			s.errors <- err
+			return
+		}
+		s.mu.Lock()
+		s.requests++
+		s.mu.Unlock()
+		return
+	}
+	if address != 10 || quantity != 2 {
 		s.errors <- fmt.Errorf("unexpected request %x", request)
 		return
 	}

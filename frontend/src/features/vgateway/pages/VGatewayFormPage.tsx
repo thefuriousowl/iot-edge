@@ -180,7 +180,6 @@ function VGatewayFormPage() {
     setSubmitError(null);
     const payload = {
       name: values.name.trim(),
-      type: "modbus_tcp" as const,
       description: values.description.trim() || null,
       enabled: values.enabled,
       config: connectionConfig(values),
@@ -190,7 +189,7 @@ function VGatewayFormPage() {
       if (id) {
         await updateVGateway(id, payload);
       } else {
-        await createVGateway(payload);
+        await createVGateway({ ...payload, type: "modbus_tcp" });
       }
       navigate("/vgateways", { replace: true });
     } catch (error) {

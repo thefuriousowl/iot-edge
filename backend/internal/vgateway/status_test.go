@@ -173,6 +173,41 @@ func TestVGatewayServiceStatusSnapshotsRuntimeStatistics(t *testing.T) {
 	}
 }
 
+func TestVGatewayServiceRecordsDatasourceRequestsInRuntimeStatus(t *testing.T) {
+	t.Parallel()
+
+	gateway := existingVGateway()
+	service := newTestVGatewayService(t, &stubVGatewayRepository{
+		findByIDFunc: func(context.Context, uuid.UUID) (*VGateway, error) {
+			return gateway, nil
+		},
+	}, func(modbus.ModbusTCPConfig) (modbus.ModbusClient, error) {
+		return nil, nil
+	})
+
+	firstActivity := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	secondActivity := firstActivity.Add(time.Second)
+	service.RecordGatewayRequest(gateway.ID, firstActivity, 12*time.Millisecond, 8, nil)
+	service.RecordGatewayRequest(gateway.ID, secondActivity, 8*time.Millisecond, 0, errors.New("read failed"))
+
+	got, err := service.Status(context.Background(), gateway.ID)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.LastActivity == nil || !got.LastActivity.Equal(secondActivity) {
+		t.Fatalf("last activity = %v, want %v", got.LastActivity, secondActivity)
+	}
+	if got.Statistics.RequestCount != 2 || got.Statistics.ErrorCount != 1 || got.Statistics.BytesReceived != 8 {
+		t.Fatalf("statistics = %#v", got.Statistics)
+	}
+	if got.Statistics.AvgLatencyMS == nil || *got.Statistics.AvgLatencyMS != 10 {
+		t.Fatalf("average latency = %v, want 10", got.Statistics.AvgLatencyMS)
+	}
+	if got.Status != VGatewayStatusDisconnected {
+		t.Fatalf("status = %q, want disconnected", got.Status)
+	}
+}
+
 func TestVGatewayServiceStatusProjectsEffectiveState(t *testing.T) {
 	t.Parallel()
 

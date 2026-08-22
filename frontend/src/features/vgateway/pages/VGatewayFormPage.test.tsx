@@ -12,7 +12,7 @@ import {
   testVGatewayConfig,
   updateVGateway,
 } from "../../../services/vgateway.service";
-import type { VGateway, VGatewayDetail } from "../../../types/vgateway";
+import type { VGateway } from "../../../types/vgateway";
 import VGatewayFormPage from "./VGatewayFormPage";
 
 vi.mock("../../../services/vgateway.service", () => ({
@@ -32,7 +32,7 @@ const mockedTestVGatewayConfig = vi.mocked(testVGatewayConfig);
 const mockedUpdateVGateway = vi.mocked(updateVGateway);
 
 const gatewayID = "7b194e9f-4f74-4a19-8cb1-c4d0d8d5400f";
-const gateway: VGatewayDetail = {
+const gateway: VGateway = {
   id: gatewayID,
   name: "Main PLC Gateway",
   type: "modbus_tcp",
@@ -47,13 +47,6 @@ const gateway: VGatewayDetail = {
     retry_delay: 1000,
     keep_alive: true,
     reconnect_interval: 30,
-  },
-  devices: [],
-  statistics: {
-    connected_at: null,
-    request_count: 0,
-    error_count: 0,
-    avg_latency_ms: null,
   },
   created_at: "2026-08-20T08:00:00Z",
   updated_at: "2026-08-21T10:30:00Z",
@@ -71,14 +64,6 @@ function renderForm(path: string) {
   );
 }
 
-function createdGateway(): VGateway {
-  return {
-    ...gateway,
-    devices: undefined,
-    statistics: undefined,
-  } as unknown as VGateway;
-}
-
 describe("VGatewayFormPage", () => {
   beforeEach(() => {
     mockedCreateVGateway.mockReset();
@@ -92,7 +77,7 @@ describe("VGatewayFormPage", () => {
   });
 
   it("creates a Modbus TCP gateway with defaults and normalized optional description", async () => {
-    mockedCreateVGateway.mockResolvedValue(createdGateway());
+    mockedCreateVGateway.mockResolvedValue(gateway);
     renderForm("/vgateways/new");
 
     fireEvent.change(screen.getByLabelText(/Gateway name/), {
@@ -142,7 +127,7 @@ describe("VGatewayFormPage", () => {
 
   it("loads and updates an existing gateway", async () => {
     mockedGetVGateway.mockResolvedValue(gateway);
-    mockedUpdateVGateway.mockResolvedValue(createdGateway());
+    mockedUpdateVGateway.mockResolvedValue(gateway);
     renderForm(`/vgateways/${gatewayID}/edit`);
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading vGateway");
@@ -158,14 +143,12 @@ describe("VGatewayFormPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save Gateway" }));
 
     await waitFor(() => {
-      expect(mockedUpdateVGateway).toHaveBeenCalledWith(
-        gatewayID,
-        expect.objectContaining({
-          name: "Updated PLC",
-          description: "Updated description",
-          config: expect.objectContaining({ host: "192.0.2.10" }),
-        }),
-      );
+      expect(mockedUpdateVGateway).toHaveBeenCalledWith(gatewayID, {
+        name: "Updated PLC",
+        description: "Updated description",
+        enabled: true,
+        config: gateway.config,
+      });
     });
     expect(await screen.findByText("Gateway list destination")).toBeInTheDocument();
   });

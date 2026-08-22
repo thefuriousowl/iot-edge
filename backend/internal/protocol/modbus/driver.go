@@ -164,7 +164,10 @@ func (d *modbusTCPDriver) Preview(ctx context.Context, request protocol.Datasour
 		sample, readErr = readModbusSample(exclusiveCtx, client, readRequest)
 		return readErr
 	})
-	return sample, err
+	if err != nil {
+		return sample, classifyRequestError(err, readRequest)
+	}
+	return sample, nil
 }
 
 func (d *modbusTCPDriver) Monitor(ctx context.Context, request protocol.DatasourceReadRequest, interval time.Duration, emit protocol.SampleEmitter) error {
@@ -184,13 +187,18 @@ func (d *modbusTCPDriver) Monitor(ctx context.Context, request protocol.Datasour
 			}
 			var readErr error
 			sample, readErr = readModbusSample(exclusiveCtx, client, readRequest)
-			if readErr != nil {
+			if readErr != nil && !isModbusException(readErr) {
 				_ = client.Disconnect()
 			}
 			return readErr
 		})
 		if err != nil {
-			emit(protocol.DatasourceSample{ObservedAt: time.Now().UTC(), Quality: "bad", Error: "Read failed"})
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			classified := classifyRequestError(err, readRequest)
+			message, _, _ := protocol.PublicRequestError(classified)
+			emit(protocol.DatasourceSample{ObservedAt: time.Now().UTC(), Quality: "bad", Error: message})
 			return
 		}
 		emit(sample)

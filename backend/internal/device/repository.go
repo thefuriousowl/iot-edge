@@ -23,11 +23,29 @@ type DatasourceContext struct {
 	Device DeviceContext
 }
 
+type DeviceInventoryInput struct {
+	VGatewayID *uuid.UUID
+	Type       *DeviceType
+	Enabled    *bool
+	Search     string
+	Page       int
+	PerPage    int
+}
+
+type DeviceInventoryResult struct {
+	Data       []DeviceInventoryItem
+	Page       int
+	PerPage    int
+	Total      int64
+	TotalPages int
+}
+
 type Repository interface {
 	FindGateway(context.Context, uuid.UUID) (*GatewayContext, error)
 	CreateDevice(context.Context, *Device) error
 	FindDevice(context.Context, uuid.UUID) (*DeviceContext, error)
 	ListDevices(context.Context, uuid.UUID) ([]DeviceView, error)
+	ListDeviceInventory(context.Context, DeviceInventoryInput) (*DeviceInventoryResult, error)
 	UpdateDevice(context.Context, *Device) error
 	DeleteDevice(context.Context, uuid.UUID) error
 	CreateDatasource(context.Context, *Datasource) error

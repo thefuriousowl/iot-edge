@@ -49,6 +49,56 @@ func TestServiceRejectsCrossProtocolDatasource(t *testing.T) {
 	}
 }
 
+func TestServiceListsGlobalDeviceInventoryWithValidatedDefaults(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	repository.addDevice()
+	service := newTestService(t, repository, &testDatasourceDriver{})
+	deviceType := DeviceTypeModbus
+	enabled := true
+
+	result, err := service.ListDeviceInventory(context.Background(), DeviceInventoryInput{
+		VGatewayID: &repository.gateway.ID,
+		Type:       &deviceType,
+		Enabled:    &enabled,
+		Search:     "Meter",
+	})
+	if err != nil {
+		t.Fatalf("ListDeviceInventory() error = %v", err)
+	}
+	if len(result.Data) != 1 || result.Page != 1 || result.PerPage != defaultDevicesPerPage {
+		t.Fatalf("inventory result = %#v", result)
+	}
+	if repository.inventoryInput.Page != 1 || repository.inventoryInput.PerPage != defaultDevicesPerPage || repository.inventoryInput.Search != "Meter" {
+		t.Errorf("repository input = %#v", repository.inventoryInput)
+	}
+}
+
+func TestServiceRejectsInvalidDeviceInventoryFilters(t *testing.T) {
+	t.Parallel()
+	service := newTestService(t, newMemoryRepository(), &testDatasourceDriver{})
+	unsupported := DeviceType("mqtt_device")
+	tests := []struct {
+		name  string
+		input DeviceInventoryInput
+		want  error
+	}{
+		{name: "unsupported type", input: DeviceInventoryInput{Type: &unsupported}, want: ErrUnsupportedDeviceType},
+		{name: "negative page", input: DeviceInventoryInput{Page: -1}, want: ErrInvalidDevice},
+		{name: "negative page size", input: DeviceInventoryInput{PerPage: -1}, want: ErrInvalidDevice},
+		{name: "oversized page", input: DeviceInventoryInput{PerPage: maxDevicesPerPage + 1}, want: ErrInvalidDevice},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := service.ListDeviceInventory(context.Background(), test.input)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("ListDeviceInventory() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestServicePreviewDoesNotPersistAndFormatsSample(t *testing.T) {
 	t.Parallel()
 	repository := newMemoryRepository()
@@ -64,6 +114,69 @@ func TestServicePreviewDoesNotPersistAndFormatsSample(t *testing.T) {
 	}
 	if sample.DatasourceID != uuid.Nil || sample.RawHex != "1234" || sample.Sequence == 0 || sample.Quality != "good" {
 		t.Errorf("sample = %#v", sample)
+	}
+}
+
+func TestServiceRecordsPreviewAndMonitorGatewayRequests(t *testing.T) {
+	repository := newMemoryRepository()
+	parent := repository.addDevice()
+	datasource := repository.addDatasource(parent.ID)
+	driver := &testDatasourceDriver{monitorStarted: make(chan struct{})}
+	recorder := &testGatewayRequestRecorder{requests: make(chan recordedGatewayRequest, 4)}
+	service, err := NewServiceWithGatewayRequestRecorder(repository, recorder, driver)
+	if err != nil {
+		t.Fatalf("NewServiceWithGatewayRequestRecorder() error = %v", err)
+	}
+
+	if _, err := service.PreviewSavedDatasource(context.Background(), datasource.ID); err != nil {
+		t.Fatalf("PreviewSavedDatasource() error = %v", err)
+	}
+	preview := <-recorder.requests
+	if preview.gatewayID != repository.gateway.ID || preview.bytesReceived != 2 || preview.latency != 2*time.Millisecond || preview.err != nil {
+		t.Fatalf("preview request = %#v", preview)
+	}
+
+	stream, unsubscribe, err := service.Subscribe(context.Background(), datasource.ID)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer unsubscribe()
+	select {
+	case <-stream:
+	case <-time.After(time.Second):
+		t.Fatal("monitor emitted no sample")
+	}
+	monitor := <-recorder.requests
+	if monitor.gatewayID != repository.gateway.ID || monitor.bytesReceived != 2 || monitor.err != nil {
+		t.Fatalf("monitor request = %#v", monitor)
+	}
+	service.stopMonitor(datasource.ID)
+}
+
+func TestServiceRecordsFailedGatewayRequest(t *testing.T) {
+	repository := newMemoryRepository()
+	parent := repository.addDevice()
+	driverError := errors.New("driver read failed")
+	recorder := &testGatewayRequestRecorder{requests: make(chan recordedGatewayRequest, 1)}
+	service, err := NewServiceWithGatewayRequestRecorder(
+		repository,
+		recorder,
+		&testDatasourceDriver{previewErr: driverError},
+	)
+	if err != nil {
+		t.Fatalf("NewServiceWithGatewayRequestRecorder() error = %v", err)
+	}
+
+	_, err = service.PreviewDatasource(context.Background(), parent.ID, PreviewDatasourceInput{
+		Type:   DatasourceTypeModbusRead,
+		Config: json.RawMessage(`{"address":1}`),
+	})
+	if !errors.Is(err, driverError) {
+		t.Fatalf("PreviewDatasource() error = %v", err)
+	}
+	recorded := <-recorder.requests
+	if recorded.gatewayID != repository.gateway.ID || recorded.err != driverError || recorded.bytesReceived != 0 || recorded.latency <= 0 || recorded.observedAt.IsZero() {
+		t.Fatalf("failed request = %#v", recorded)
 	}
 }
 
@@ -174,6 +287,65 @@ func TestServiceReportsPausedAndRejectsMonitoringWhenHierarchyIsDisabled(t *test
 				t.Fatalf("Subscribe() error = %v, want monitoring disabled", err)
 			}
 		})
+	}
+}
+
+func TestServiceTagReadRequiresEnabledHierarchyWhileManualPreviewRemainsAvailable(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		disable func(*memoryRepository, Device, Datasource)
+	}{
+		{name: "gateway", disable: func(repository *memoryRepository, _ Device, _ Datasource) { repository.gateway.Enabled = false }},
+		{name: "device", disable: func(repository *memoryRepository, parent Device, _ Datasource) {
+			parent.Enabled = false
+			repository.devices[parent.ID] = parent
+		}},
+		{name: "datasource", disable: func(repository *memoryRepository, _ Device, datasource Datasource) {
+			datasource.Enabled = false
+			repository.datasources[datasource.ID] = datasource
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newMemoryRepository()
+			parent := repository.addDevice()
+			datasource := repository.addDatasource(parent.ID)
+			test.disable(repository, parent, datasource)
+			driver := &testDatasourceDriver{}
+			service := newTestService(t, repository, driver)
+
+			if _, err := service.ReadDatasourceForTag(context.Background(), datasource.ID); !errors.Is(err, ErrMonitoringDisabled) {
+				t.Fatalf("ReadDatasourceForTag() error = %v, want monitoring disabled", err)
+			}
+			if driver.previewCalls.Load() != 0 {
+				t.Fatalf("Preview() calls after rejected Tag read = %d", driver.previewCalls.Load())
+			}
+			if _, err := service.PreviewSavedDatasource(context.Background(), datasource.ID); err != nil {
+				t.Fatalf("PreviewSavedDatasource() error = %v", err)
+			}
+			if driver.previewCalls.Load() != 1 {
+				t.Errorf("Preview() calls after manual preview = %d, want 1", driver.previewCalls.Load())
+			}
+		})
+	}
+}
+
+func TestServiceDatasourceReadsPreserveDriverError(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	parent := repository.addDevice()
+	datasource := repository.addDatasource(parent.ID)
+	driverError := errors.New("protocol timeout")
+	driver := &testDatasourceDriver{previewErr: driverError}
+	service := newTestService(t, repository, driver)
+
+	if _, err := service.ReadDatasourceForTag(context.Background(), datasource.ID); !errors.Is(err, ErrDatasourceReadFailed) || !errors.Is(err, driverError) {
+		t.Fatalf("ReadDatasourceForTag() error = %v", err)
+	}
+	if _, err := service.PreviewSavedDatasource(context.Background(), datasource.ID); !errors.Is(err, ErrDatasourceReadFailed) || !errors.Is(err, driverError) {
+		t.Fatalf("PreviewSavedDatasource() error = %v", err)
 	}
 }
 
@@ -311,8 +483,38 @@ func TestServiceReusesExecutionGatePerGateway(t *testing.T) {
 type testDatasourceDriver struct {
 	deviceNormalizations     atomic.Int64
 	datasourceNormalizations atomic.Int64
+	previewCalls             atomic.Int64
+	previewErr               error
 	monitorCalls             atomic.Int64
 	monitorStarted           chan struct{}
+}
+
+type recordedGatewayRequest struct {
+	gatewayID     uuid.UUID
+	observedAt    time.Time
+	latency       time.Duration
+	bytesReceived int
+	err           error
+}
+
+type testGatewayRequestRecorder struct {
+	requests chan recordedGatewayRequest
+}
+
+func (r *testGatewayRequestRecorder) RecordGatewayRequest(
+	gatewayID uuid.UUID,
+	observedAt time.Time,
+	latency time.Duration,
+	bytesReceived int,
+	err error,
+) {
+	r.requests <- recordedGatewayRequest{
+		gatewayID:     gatewayID,
+		observedAt:    observedAt,
+		latency:       latency,
+		bytesReceived: bytesReceived,
+		err:           err,
+	}
 }
 
 func (*testDatasourceDriver) GatewayType() string { return "modbus_tcp" }
@@ -338,7 +540,11 @@ func (d *testDatasourceDriver) NormalizeDatasourceConfig(_ string, raw json.RawM
 	value["normalized"] = true
 	return json.Marshal(value)
 }
-func (*testDatasourceDriver) Preview(context.Context, protocol.DatasourceReadRequest) (protocol.DatasourceSample, error) {
+func (d *testDatasourceDriver) Preview(context.Context, protocol.DatasourceReadRequest) (protocol.DatasourceSample, error) {
+	d.previewCalls.Add(1)
+	if d.previewErr != nil {
+		return protocol.DatasourceSample{}, d.previewErr
+	}
 	return protocol.DatasourceSample{ObservedAt: time.Now().UTC(), Latency: 2 * time.Millisecond, Quality: "good", Raw: []byte{0x12, 0x34}, Data: json.RawMessage(`{"registers":[]}`)}, nil
 }
 func (d *testDatasourceDriver) Monitor(ctx context.Context, _ protocol.DatasourceReadRequest, _ time.Duration, emit protocol.SampleEmitter) error {
@@ -352,9 +558,10 @@ func (d *testDatasourceDriver) Monitor(ctx context.Context, _ protocol.Datasourc
 }
 
 type memoryRepository struct {
-	gateway     GatewayContext
-	devices     map[uuid.UUID]Device
-	datasources map[uuid.UUID]Datasource
+	gateway        GatewayContext
+	devices        map[uuid.UUID]Device
+	datasources    map[uuid.UUID]Datasource
+	inventoryInput DeviceInventoryInput
 }
 
 type failingRepository struct {
@@ -419,6 +626,23 @@ func (r *memoryRepository) ListDevices(_ context.Context, gatewayID uuid.UUID) (
 		}
 	}
 	return result, nil
+}
+func (r *memoryRepository) ListDeviceInventory(_ context.Context, input DeviceInventoryInput) (*DeviceInventoryResult, error) {
+	r.inventoryInput = input
+	result := make([]DeviceInventoryItem, 0)
+	for _, entity := range r.devices {
+		if input.VGatewayID != nil && entity.VGatewayID != *input.VGatewayID {
+			continue
+		}
+		if input.Type != nil && entity.Type != *input.Type {
+			continue
+		}
+		if input.Enabled != nil && entity.Enabled != *input.Enabled {
+			continue
+		}
+		result = append(result, DeviceInventoryItem{Device: entity, VGatewayName: "Gateway", VGatewayType: r.gateway.Type, VGatewayEnabled: r.gateway.Enabled})
+	}
+	return &DeviceInventoryResult{Data: result, Page: input.Page, PerPage: input.PerPage, Total: int64(len(result)), TotalPages: 1}, nil
 }
 func (r *memoryRepository) UpdateDevice(_ context.Context, entity *Device) error {
 	if _, ok := r.devices[entity.ID]; !ok {

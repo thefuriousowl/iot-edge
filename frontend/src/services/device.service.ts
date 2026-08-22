@@ -5,6 +5,8 @@ import type {
   Datasource,
   DatasourceSample,
   Device,
+  DeviceInventoryParams,
+  DeviceInventoryResponse,
   UpdateDatasourceRequest,
   UpdateDeviceRequest,
 } from "../types/device";
@@ -14,6 +16,14 @@ interface ListResponse<T> { data: T[] }
 export async function listDevices(vgatewayId: string, signal?: AbortSignal): Promise<Device[]> {
   const response = await api.get<ListResponse<Device>>(`/vgateways/${vgatewayId}/devices`, { signal });
   return response.data.data;
+}
+
+export async function listDeviceInventory(
+  params?: DeviceInventoryParams,
+  signal?: AbortSignal,
+): Promise<DeviceInventoryResponse> {
+  const response = await api.get<DeviceInventoryResponse>("/devices", { params, signal });
+  return response.data;
 }
 
 export async function createDevice(vgatewayId: string, request: CreateDeviceRequest): Promise<Device> {

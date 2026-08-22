@@ -1,6 +1,8 @@
 package vgateway
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"time"
@@ -8,6 +10,35 @@ import (
 	"github.com/google/uuid"
 	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
+
+func (s *vGatewayService) RecordGatewayRequest(
+	id uuid.UUID,
+	observedAt time.Time,
+	latency time.Duration,
+	bytesReceived int,
+	requestErr error,
+) {
+	if observedAt.IsZero() {
+		observedAt = s.now().UTC()
+	}
+	if latency < 0 {
+		latency = 0
+	}
+	if bytesReceived < 0 {
+		bytesReceived = 0
+	}
+
+	runtime := s.runtimeForGateway(id)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.lastActivity = cloneTimePointer(&observedAt)
+	runtime.requestCount++
+	runtime.bytesReceived += int64(bytesReceived)
+	runtime.totalLatency += latency
+	if requestErr != nil && !errors.Is(requestErr, context.Canceled) {
+		runtime.errorCount++
+	}
+}
 
 type vGatewayRuntime struct {
 	operationMu sync.Mutex

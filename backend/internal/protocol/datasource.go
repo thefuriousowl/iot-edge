@@ -21,6 +21,20 @@ type DatasourceReadRequest struct {
 
 type ExclusiveExecutor func(context.Context, func(context.Context) error) error
 
+type RequestError interface {
+	error
+	PublicMessage() string
+	PublicDetails() map[string]any
+}
+
+func PublicRequestError(err error) (string, map[string]any, bool) {
+	var requestError RequestError
+	if !errors.As(err, &requestError) {
+		return "", nil, false
+	}
+	return requestError.PublicMessage(), requestError.PublicDetails(), true
+}
+
 type DatasourceSample struct {
 	ObservedAt time.Time       `json:"observed_at"`
 	Latency    time.Duration   `json:"-"`

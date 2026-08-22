@@ -87,6 +87,7 @@ func (s *Service) Subscribe(ctx context.Context, id uuid.UUID) (<-chan Datasourc
 func (s *Service) runMonitor(id uuid.UUID, runtime *monitorRuntime, driver protocol.DatasourceDriver, entity *DatasourceContext) {
 	interval := datasourceInterval(entity.Config, entity.Device.Config)
 	err := driver.Monitor(runtime.ctx, s.datasourceReadRequest(&entity.Device, entity.Config), interval, func(sample protocol.DatasourceSample) {
+		s.recordGatewayRequest(entity.Device.Gateway.ID, sample, 0, nil)
 		formatted := s.formatSample(id, sample)
 		s.storeSample(formatted)
 		runtime.mu.Lock()

@@ -17,6 +17,9 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
 	"github.com/thefuriousowl/iot-edge/internal/system"
 	systemhttp "github.com/thefuriousowl/iot-edge/internal/system/http"
+	"github.com/thefuriousowl/iot-edge/internal/tag"
+	taghttp "github.com/thefuriousowl/iot-edge/internal/tag/http"
+	tagpostgres "github.com/thefuriousowl/iot-edge/internal/tag/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/vgateway"
 	vgatewayhttp "github.com/thefuriousowl/iot-edge/internal/vgateway/http"
 	vgatewaypostgres "github.com/thefuriousowl/iot-edge/internal/vgateway/postgres"
@@ -77,14 +80,24 @@ func main() {
 		vgatewayService,
 		vgatewayhttp.WithDeviceCounter(deviceRepository),
 	)
-	deviceService, err := device.NewService(
+	deviceService, err := device.NewServiceWithGatewayRequestRecorder(
 		deviceRepository,
+		vgatewayService,
 		modbusDriver,
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize device service: %v", err)
 	}
 	deviceHandler := devicehttp.NewHandler(deviceService)
+	tagService, err := tag.NewService(
+		tagpostgres.NewRepository(db),
+		deviceService,
+		tag.NewBinaryNumericDecoder(),
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize tag service: %v", err)
+	}
+	tagHandler := taghttp.NewHandler(tagService)
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
 		cfg.InternetCheckTimeout,
@@ -105,6 +118,7 @@ func main() {
 	systemhttp.RegisterRoutes(protectedAPI, systemHandler)
 	vgatewayhttp.RegisterRoutes(protectedAPI, vgatewayHandler)
 	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
+	taghttp.RegisterRoutes(protectedAPI, tagHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port

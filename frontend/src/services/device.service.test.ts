@@ -2,8 +2,8 @@ import type { AxiosResponse } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import api, { getAccessToken } from "./api";
-import { createDatasource, createDevice, deleteDatasource, deleteDevice, listDatasources, listDevices, monitorDatasource, previewDatasource, previewSavedDatasource, updateDatasource, updateDevice } from "./device.service";
-import type { CreateDatasourceRequest, Datasource, DatasourceSample, Device } from "../types/device";
+import { createDatasource, createDevice, deleteDatasource, deleteDevice, listDatasources, listDeviceInventory, listDevices, monitorDatasource, previewDatasource, previewSavedDatasource, updateDatasource, updateDevice } from "./device.service";
+import type { CreateDatasourceRequest, Datasource, DatasourceSample, Device, DeviceInventoryResponse } from "../types/device";
 
 vi.mock("./api", () => ({
   default: { delete: vi.fn(), get: vi.fn(), post: vi.fn(), put: vi.fn() },
@@ -33,6 +33,21 @@ describe("device service", () => {
     const createRequest = { name: "Meter", type: "modbus_device" as const, config: { unit_id: 7 } };
     await expect(createDevice("gateway-1", createRequest)).resolves.toEqual(device);
     expect(mockedPost).toHaveBeenCalledWith("/vgateways/gateway-1/devices", createRequest);
+  });
+
+  it("lists the global device inventory with filters, pagination, and cancellation", async () => {
+    const signal = new AbortController().signal;
+    const inventory: DeviceInventoryResponse = {
+      data: [{ ...device, vgateway_name: "Factory", vgateway_type: "modbus_tcp", vgateway_enabled: true, datasource_count: 2, tag_count: 1 }],
+      pagination: { page: 2, per_page: 20, total: 21, total_pages: 2 },
+    };
+    mockedGet.mockResolvedValue(responseWith(inventory));
+
+    await expect(listDeviceInventory({ vgateway_id: "gateway-1", type: "modbus_device", enabled: true, search: "meter", page: 2, per_page: 20 }, signal)).resolves.toEqual(inventory);
+    expect(mockedGet).toHaveBeenCalledWith("/devices", {
+      params: { vgateway_id: "gateway-1", type: "modbus_device", enabled: true, search: "meter", page: 2, per_page: 20 },
+      signal,
+    });
   });
 
   it("lists datasources and previews current unsaved config", async () => {

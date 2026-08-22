@@ -50,6 +50,15 @@ type DeviceView struct {
 	TagCount        int64 `json:"tag_count"`
 }
 
+type DeviceInventoryItem struct {
+	Device
+	VGatewayName    string `gorm:"column:vgateway_name" json:"vgateway_name"`
+	VGatewayType    string `gorm:"column:vgateway_type" json:"vgateway_type"`
+	VGatewayEnabled bool   `gorm:"column:vgateway_enabled" json:"vgateway_enabled"`
+	DatasourceCount int64  `gorm:"column:datasource_count" json:"datasource_count"`
+	TagCount        int64  `gorm:"column:tag_count" json:"tag_count"`
+}
+
 type DatasourceView struct {
 	Datasource
 	Status string `json:"status"`

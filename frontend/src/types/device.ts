@@ -29,6 +29,35 @@ export interface Device {
   updated_at: string;
 }
 
+export interface DeviceInventoryItem extends Device {
+  vgateway_name: string;
+  vgateway_type: string;
+  vgateway_enabled: boolean;
+  datasource_count: number;
+  tag_count: number;
+}
+
+export interface DeviceInventoryParams {
+  vgateway_id?: string;
+  type?: DeviceType;
+  enabled?: boolean;
+  search?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface DeviceInventoryPagination {
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface DeviceInventoryResponse {
+  data: DeviceInventoryItem[];
+  pagination: DeviceInventoryPagination;
+}
+
 export interface Datasource {
   id: string;
   device_id: string;

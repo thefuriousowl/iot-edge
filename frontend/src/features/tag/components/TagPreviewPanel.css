@@ -1,0 +1,40 @@
+.tag-preview-panel {
+  display: grid;
+  min-height: 5.2rem;
+  box-sizing: border-box;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: 0.5rem;
+  background: rgba(11, 21, 29, 0.36);
+  color: var(--vgateway-muted);
+}
+
+.tag-preview-panel > svg { color: var(--vgateway-accent); }
+.tag-preview-panel strong,
+.tag-preview-panel span { display: block; }
+.tag-preview-panel strong { color: var(--vgateway-text); font-size: 0.9rem; font-weight: 590; }
+.tag-preview-panel span { margin-top: 0.22rem; font-size: 0.75rem; line-height: 1.4; }
+.tag-preview-panel.is-loading > svg { animation: vgateway-spin 900ms linear infinite; }
+.tag-preview-panel.is-error { border-color: rgba(251, 113, 133, 0.4); background: rgba(251, 113, 133, 0.06); }
+.tag-preview-panel.is-error > svg,
+.tag-preview-panel.is-error strong { color: var(--vgateway-danger); }
+.tag-preview-panel.is-success { border-color: rgba(74, 222, 128, 0.4); background: rgba(74, 222, 128, 0.055); }
+.tag-preview-panel.is-success > svg { color: var(--vgateway-success); }
+.tag-preview-panel.is-uncertain { border-color: rgba(250, 204, 21, 0.38); background: rgba(250, 204, 21, 0.05); }
+.tag-preview-panel.is-uncertain > svg { color: #facc15; }
+.tag-preview-panel.is-bad { border-color: rgba(251, 113, 133, 0.4); background: rgba(251, 113, 133, 0.06); }
+.tag-preview-panel.is-bad > svg { color: var(--vgateway-danger); }
+
+.tag-preview-value { min-width: 8rem; text-align: right; }
+.tag-preview-value strong { color: var(--vgateway-success); font-size: 1.55rem; line-height: 1; }
+.tag-preview-panel.is-uncertain .tag-preview-value strong { color: #facc15; }
+.tag-preview-panel.is-bad .tag-preview-value strong { color: var(--vgateway-danger); }
+.tag-preview-value span { text-transform: capitalize; }
+
+@media (max-width: 620px) {
+  .tag-preview-panel { grid-template-columns: auto 1fr; }
+  .tag-preview-value { grid-column: 1 / -1; padding-top: 0.75rem; border-top: 1px solid var(--vgateway-border); text-align: left; }
+}

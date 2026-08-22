@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS tag_dependencies;
+DROP TABLE IF EXISTS tags;
+
+COMMIT;

@@ -6,7 +6,6 @@ import type {
   UpdateVGatewayRequest,
   VGateway,
   VGatewayConnectionActionResponse,
-  VGatewayDetail,
   VGatewayListParams,
   VGatewayListResponse,
   VGatewayStatusResponse,
@@ -40,8 +39,8 @@ export async function createVGateway(
 export async function getVGateway(
   id: string,
   signal?: AbortSignal,
-): Promise<VGatewayDetail> {
-  const response = await api.get<VGatewayDetail>(vGatewayPath(id), { signal });
+): Promise<VGateway> {
+  const response = await api.get<VGateway>(vGatewayPath(id), { signal });
 
   return response.data;
 }

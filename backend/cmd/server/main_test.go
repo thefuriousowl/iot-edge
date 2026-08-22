@@ -29,7 +29,7 @@ func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 
 	// Act
-	response, err := app.Test(request)
+	response, err := app.Test(request, -1)
 	if err != nil {
 		t.Fatalf("health-check request returned an unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCORS_AllowsConfiguredHostnameWithCredentials(t *testing.T) {
 	request.Header.Set(fiber.HeaderAccessControlRequestHeaders, fiber.HeaderAuthorization)
 
 	// Act
-	response, err := app.Test(request)
+	response, err := app.Test(request, -1)
 	if err != nil {
 		t.Fatalf("CORS preflight returned an unexpected error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestCORS_DoesNotAllowUnconfiguredOrigin(t *testing.T) {
 	request.Header.Set(fiber.HeaderOrigin, "http://untrusted.example:5173")
 
 	// Act
-	response, err := app.Test(request)
+	response, err := app.Test(request, -1)
 	if err != nil {
 		t.Fatalf("request returned an unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		strings.NewReader(setupBody),
 	)
 	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	response, err := app.Test(request)
+	response, err := app.Test(request, -1)
 	if err != nil {
 		t.Fatalf("POST setup error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		strings.NewReader(`{"username":"admin","password":"SecureP@ss123"}`),
 	)
 	loginRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	loginResponse, err := app.Test(loginRequest)
+	loginResponse, err := app.Test(loginRequest, -1)
 	if err != nil {
 		t.Fatalf("POST login error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		fiber.HeaderAuthorization,
 		"Bearer "+loginBody.AccessToken,
 	)
-	meResponse, err := app.Test(meRequest)
+	meResponse, err := app.Test(meRequest, -1)
 	if err != nil {
 		t.Fatalf("GET me error: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		Name:  "refresh_token",
 		Value: refreshToken,
 	})
-	refreshResponse, err := app.Test(refreshRequest)
+	refreshResponse, err := app.Test(refreshRequest, -1)
 	if err != nil {
 		t.Fatalf("POST refresh error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		Name:  "refresh_token",
 		Value: refreshToken,
 	})
-	logoutResponse, err := app.Test(logoutRequest)
+	logoutResponse, err := app.Test(logoutRequest, -1)
 	if err != nil {
 		t.Fatalf("POST logout error: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		Name:  "refresh_token",
 		Value: refreshToken,
 	})
-	revokedRefreshResponse, err := app.Test(revokedRefreshRequest)
+	revokedRefreshResponse, err := app.Test(revokedRefreshRequest, -1)
 	if err != nil {
 		t.Fatalf("POST refresh after logout error: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 	}
 
 	statusRequest := httptest.NewRequest(http.MethodGet, "/api/auth/setup/status", nil)
-	statusResponse, err := app.Test(statusRequest)
+	statusResponse, err := app.Test(statusRequest, -1)
 	if err != nil {
 		t.Fatalf("GET setup status error: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestInitialSetup_Integration(t *testing.T) {
 		strings.NewReader(setupBody),
 	)
 	secondRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-	secondResponse, err := app.Test(secondRequest)
+	secondResponse, err := app.Test(secondRequest, -1)
 	if err != nil {
 		t.Fatalf("second POST setup error: %v", err)
 	}

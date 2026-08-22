@@ -3,6 +3,7 @@ package devicepostgres
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -67,6 +68,49 @@ func (r *repository) ListDevices(ctx context.Context, gatewayID uuid.UUID) ([]de
 		Where("devices.vgateway_id = ?", gatewayID).
 		Order("devices.created_at ASC, devices.id ASC").Scan(&views).Error
 	return views, err
+}
+
+func (r *repository) ListDeviceInventory(ctx context.Context, input device.DeviceInventoryInput) (*device.DeviceInventoryResult, error) {
+	query := r.db.WithContext(ctx).Table("devices").
+		Joins("JOIN vgateways ON vgateways.id = devices.vgateway_id")
+	if input.VGatewayID != nil {
+		query = query.Where("devices.vgateway_id = ?", *input.VGatewayID)
+	}
+	if input.Type != nil {
+		query = query.Where("devices.type = ?", *input.Type)
+	}
+	if input.Enabled != nil {
+		query = query.Where("devices.enabled = ?", *input.Enabled)
+	}
+	if search := strings.TrimSpace(input.Search); search != "" {
+		pattern := "%" + escapeLike(strings.ToLower(search)) + "%"
+		query = query.Where(`(LOWER(devices.name) LIKE ? ESCAPE '\' OR LOWER(vgateways.name) LIKE ? ESCAPE '\')`, pattern, pattern)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	items := make([]device.DeviceInventoryItem, 0)
+	if err := query.Select(`devices.*,
+		vgateways.name AS vgateway_name,
+		vgateways.type AS vgateway_type,
+		vgateways.enabled AS vgateway_enabled,
+		(SELECT COUNT(*) FROM datasources WHERE datasources.device_id = devices.id) AS datasource_count,
+		(SELECT COUNT(*) FROM tags JOIN datasources tag_sources ON tag_sources.id = tags.datasource_id WHERE tag_sources.device_id = devices.id) AS tag_count`).
+		Order("LOWER(devices.name) ASC, devices.id ASC").
+		Offset((input.Page - 1) * input.PerPage).
+		Limit(input.PerPage).
+		Scan(&items).Error; err != nil {
+		return nil, err
+	}
+
+	totalPages := 0
+	if total > 0 {
+		totalPages = int((total + int64(input.PerPage) - 1) / int64(input.PerPage))
+	}
+	return &device.DeviceInventoryResult{Data: items, Page: input.Page, PerPage: input.PerPage, Total: total, TotalPages: totalPages}, nil
 }
 
 func (r *repository) UpdateDevice(ctx context.Context, entity *device.Device) error {
@@ -156,6 +200,11 @@ func mapError(err error) error {
 		}
 	}
 	return err
+}
+
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 var _ device.Repository = (*repository)(nil)

@@ -47,12 +47,6 @@ export interface VGatewayListItem
   last_activity?: string | null;
 }
 
-export interface VGatewayDeviceSummary {
-  id: string;
-  name: string;
-  unit_id: number;
-}
-
 export interface VGatewayStatistics {
   request_count: number;
   error_count: number;
@@ -60,22 +54,10 @@ export interface VGatewayStatistics {
   avg_latency_ms: number | null;
 }
 
-export interface VGatewayDetailStatistics {
-  connected_at: string | null;
-  request_count: number;
-  error_count: number;
-  avg_latency_ms: number | null;
-}
-
 export interface VGatewayHealth {
   status: VGatewayHealthStatus;
   last_check: string | null;
   latency_ms: number | null;
-}
-
-export interface VGatewayDetail extends VGateway {
-  devices: VGatewayDeviceSummary[];
-  statistics: VGatewayDetailStatistics;
 }
 
 export interface CreateVGatewayRequest {
