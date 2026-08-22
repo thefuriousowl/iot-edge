@@ -40,6 +40,13 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	if err := repository.Create(ctx, &schedule, []uuid.UUID{tags[0]}); err != nil {
 		t.Fatalf("Create(schedule with shared Tag) error = %v", err)
 	}
+	runtimeLoggers, err := repository.ListEnabledLoggers(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledLoggers() error = %v", err)
+	}
+	if len(runtimeLoggers) != 1 || runtimeLoggers[0].ID != interval.ID || runtimeLoggers[0].TagCount != 2 || len(runtimeLoggers[0].Tags) != 2 || runtimeLoggers[0].Tags[0].ID != tags[1] || runtimeLoggers[0].Tags[1].ID != tags[0] {
+		t.Errorf("ListEnabledLoggers() = %#v", runtimeLoggers)
+	}
 	assertList(t, repository, datalogger.ListInput{Mode: modePointer(datalogger.ModeInterval), Page: 1, PerPage: 20}, 1, interval.ID, 2)
 	assertList(t, repository, datalogger.ListInput{Enabled: boolPointer(false), Page: 1, PerPage: 20}, 1, schedule.ID, 1)
 	assertList(t, repository, datalogger.ListInput{Search: "PLANT", Page: 1, PerPage: 20}, 1, interval.ID, 2)
@@ -70,6 +77,10 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	}
 	if updated.Name != "Updated" || updated.Description != nil || updated.Enabled || updated.Timezone != "Asia/Bangkok" || updated.Mode != datalogger.ModeSchedule || updated.EndAt == nil || !updated.EndAt.Equal(endAt) || len(updated.Tags) != 2 || updated.Tags[0].ID != tags[2] {
 		t.Errorf("updated = %#v", updated)
+	}
+	runtimeLoggers, err = repository.ListEnabledLoggers(ctx)
+	if err != nil || len(runtimeLoggers) != 0 {
+		t.Errorf("ListEnabledLoggers(disabled) = %#v, error = %v", runtimeLoggers, err)
 	}
 
 	interval.Name = "Must roll back"

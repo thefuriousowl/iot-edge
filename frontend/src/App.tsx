@@ -9,6 +9,8 @@ import AuthRoute from "./components/common/AuthRoute";
 import ProtectedRoute from "./components/common/ProtectedRoute";
 import LoginPage from "./features/auth/pages/LoginPage";
 import SetupPage from "./features/auth/pages/SetupPage";
+import DataLoggerListPage from "./features/datalogger/pages/DataLoggerListPage";
+import DataLoggerWizardPage from "./features/datalogger/pages/DataLoggerWizardPage";
 import DeviceListPage from "./features/device/pages/DeviceListPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
 import TagListPage from "./features/tag/pages/TagListPage";
@@ -94,6 +96,30 @@ function App() {
           element={
             <ProtectedRoute>
               <TagWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-loggers"
+          element={
+            <ProtectedRoute>
+              <DataLoggerListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-loggers/new"
+          element={
+            <ProtectedRoute>
+              <DataLoggerWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-loggers/:id/edit"
+          element={
+            <ProtectedRoute>
+              <DataLoggerWizardPage />
             </ProtectedRoute>
           }
         />

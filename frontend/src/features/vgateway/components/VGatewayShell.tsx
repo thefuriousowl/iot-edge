@@ -4,6 +4,7 @@ import {
   Boxes,
   ChevronRight,
   Cpu,
+  DatabaseZap,
   LayoutDashboard,
   Menu,
   Puzzle,
@@ -64,6 +65,10 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
           <NavLink to="/tags">
             <Tags aria-hidden="true" size={21} />
             Tags
+          </NavLink>
+          <NavLink to="/data-loggers">
+            <DatabaseZap aria-hidden="true" size={21} />
+            Data Loggers
           </NavLink>
           <span aria-disabled="true">
             <Puzzle aria-hidden="true" size={21} />

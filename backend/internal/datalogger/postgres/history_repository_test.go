@@ -115,6 +115,54 @@ func TestCalendarSchedulerUsesPersistedDefinitionAndWritesRawHistory_Integration
 	}
 }
 
+func TestRuntimeAutoStartsPersistedLoggerAndWritesRawHistory_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitionRepository := NewRepository(db)
+	history := NewHistoryRepository(db)
+	startAt := time.Now().UTC().Add(150 * time.Millisecond)
+	endAt := startAt.Add(100 * time.Millisecond)
+	logger := datalogger.Logger{Name: "Auto-start Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, EndAt: &endAt, Config: []byte(`{"interval_seconds":1}`)}
+	if err := definitionRepository.Create(context.Background(), &logger, tagIDs); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	values := tag.NewMemoryValueStore()
+	for index, tagID := range tagIDs {
+		if _, err := values.Put(tag.TagValue{TagID: tagID, ObservedAt: startAt.Add(-time.Second), DataType: tag.DataTypeFloat64, Value: float64(index) + 10.5, Quality: tag.ValueQualityGood}); err != nil {
+			t.Fatalf("Put(%d) error = %v", index, err)
+		}
+	}
+	reader, err := tagsnapshot.NewReader(values)
+	if err != nil {
+		t.Fatalf("NewReader() error = %v", err)
+	}
+	runtime, err := datalogger.NewRuntime(definitionRepository, reader, history, datalogger.WithRuntimeReconcileInterval(0))
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(runtime.Stop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		result, listErr := history.ListValues(context.Background(), datalogger.RawValueListInput{LoggerID: logger.ID})
+		if listErr != nil {
+			t.Fatalf("ListValues() error = %v", listErr)
+		}
+		if result.Total == int64(len(tagIDs)) {
+			for _, value := range result.Data {
+				if value.Quality != datalogger.RawQualityGood || !value.BatchAt.Equal(result.Data[0].BatchAt) {
+					t.Errorf("runtime history value = %#v", value)
+				}
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("runtime did not persist the scheduled batch")
+}
+
 func TestHistoryRepositoryWritesPartitionsAndQueriesTypedBatches_Integration(t *testing.T) {
 	db, _ := newRepositoryDatabase(t)
 	tagIDs := insertHistoryTags(t, db)

@@ -11,9 +11,14 @@ import (
 	"gorm.io/gorm"
 )
 
+type Repository interface {
+	datalogger.Repository
+	datalogger.RuntimeRepository
+}
+
 type repository struct{ db *gorm.DB }
 
-func NewRepository(db *gorm.DB) datalogger.Repository { return &repository{db: db} }
+func NewRepository(db *gorm.DB) Repository { return &repository{db: db} }
 
 func (repository *repository) Create(ctx context.Context, entity *datalogger.Logger, tagIDs []uuid.UUID) error {
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -74,6 +79,44 @@ func (repository *repository) List(ctx context.Context, input datalogger.ListInp
 		totalPages = int((total + int64(input.PerPage) - 1) / int64(input.PerPage))
 	}
 	return &datalogger.ListResult{Data: entities, Page: input.Page, PerPage: input.PerPage, Total: total, TotalPages: totalPages}, nil
+}
+
+func (repository *repository) ListEnabledLoggers(ctx context.Context) ([]datalogger.Logger, error) {
+	entities := make([]datalogger.Logger, 0)
+	err := repository.db.WithContext(ctx).
+		Where("enabled = ?", true).
+		Order("created_at ASC, id ASC").
+		Find(&entities).Error
+	if err != nil || len(entities) == 0 {
+		return entities, err
+	}
+
+	type selectedTag struct {
+		LoggerID uuid.UUID `gorm:"column:logger_id"`
+		datalogger.TagReference
+	}
+	loggerIDs := make([]uuid.UUID, 0, len(entities))
+	byID := make(map[uuid.UUID]*datalogger.Logger, len(entities))
+	for index := range entities {
+		loggerIDs = append(loggerIDs, entities[index].ID)
+		byID[entities[index].ID] = &entities[index]
+	}
+	selections := make([]selectedTag, 0)
+	err = repository.db.WithContext(ctx).Table("data_logger_tags AS selections").
+		Select("selections.logger_id, tags.id, tags.name, tags.type, tags.data_type, tags.enabled, selections.position").
+		Joins("JOIN tags ON tags.id = selections.tag_id").
+		Where("selections.logger_id IN ?", loggerIDs).
+		Order("selections.logger_id ASC, selections.position ASC").
+		Scan(&selections).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, selection := range selections {
+		entity := byID[selection.LoggerID]
+		entity.Tags = append(entity.Tags, selection.TagReference)
+		entity.TagCount++
+	}
+	return entities, nil
 }
 
 func (repository *repository) Update(ctx context.Context, entity *datalogger.Logger, tagIDs []uuid.UUID) error {
@@ -145,3 +188,4 @@ func mapError(err error) error {
 }
 
 var _ datalogger.Repository = (*repository)(nil)
+var _ datalogger.RuntimeRepository = (*repository)(nil)

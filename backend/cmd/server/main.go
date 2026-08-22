@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -15,6 +18,7 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/datalogger"
 	dataloggerhttp "github.com/thefuriousowl/iot-edge/internal/datalogger/http"
 	dataloggerpostgres "github.com/thefuriousowl/iot-edge/internal/datalogger/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/datalogger/tagsnapshot"
 	"github.com/thefuriousowl/iot-edge/internal/device"
 	devicehttp "github.com/thefuriousowl/iot-edge/internal/device/http"
 	devicepostgres "github.com/thefuriousowl/iot-edge/internal/device/postgres"
@@ -106,7 +110,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize persistent Tag value store: %v", err)
 	}
-	runtimeContext := context.Background()
+	runtimeContext, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignal()
 	if err := tagValues.Start(runtimeContext); err != nil {
 		log.Fatalf("failed to hydrate persistent Tag values: %v", err)
 	}
@@ -119,25 +124,50 @@ func main() {
 		tagValues.Stop()
 		log.Fatalf("failed to start acquisition runtime: %v", err)
 	}
+	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
+	dataLoggerRepository := dataloggerpostgres.NewRepository(db)
+	dataLoggerService, err := datalogger.NewService(dataLoggerRepository)
+	if err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize Data Logger service: %v", err)
+	}
+	dataLoggerSnapshots, err := tagsnapshot.NewReader(tagValues)
+	if err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize Data Logger snapshots: %v", err)
+	}
+	dataLoggerRuntime, err := datalogger.NewRuntime(dataLoggerRepository, dataLoggerSnapshots, dataloggerpostgres.NewHistoryRepository(db))
+	if err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize Data Logger runtime: %v", err)
+	}
+	if err := dataLoggerRuntime.Start(runtimeContext); err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to start Data Logger runtime: %v", err)
+	}
 	defer func() {
+		dataLoggerRuntime.Stop()
 		acquisitionRuntime.Stop()
 		tagValues.Stop()
 	}()
 	go func() {
 		for {
 			select {
+			case <-runtimeContext.Done():
+				return
 			case runtimeError := <-acquisitionRuntime.Errors():
 				log.Printf("acquisition runtime: %v", runtimeError)
 			case persistenceError := <-tagValues.Errors():
 				log.Printf("Tag value persistence: %v", persistenceError)
+			case loggerError := <-dataLoggerRuntime.Errors():
+				log.Printf("Data Logger runtime: %v", loggerError)
 			}
 		}
 	}()
-	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
-	dataLoggerService, err := datalogger.NewService(dataloggerpostgres.NewRepository(db))
-	if err != nil {
-		log.Fatalf("failed to initialize Data Logger service: %v", err)
-	}
 	dataLoggerHandler := dataloggerhttp.NewHandler(dataLoggerService)
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
@@ -165,10 +195,17 @@ func main() {
 	// Start HTTP server
 	address := ":" + cfg.Port
 	log.Printf("server listening on %s", address)
+	go func() {
+		<-runtimeContext.Done()
+		if err := app.Shutdown(); err != nil {
+			log.Printf("failed to shut down server: %v", err)
+		}
+	}()
 
 	if err := app.Listen(address); err != nil {
-		log.Fatalf("failed to start server: %v", err)
+		log.Printf("failed to start server: %v", err)
 	}
+	stopSignal()
 }
 
 func newApp(corsAllowOrigins string) *fiber.App {

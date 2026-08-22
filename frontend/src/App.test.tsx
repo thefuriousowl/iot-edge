@@ -41,6 +41,14 @@ vi.mock("./features/device/pages/DeviceListPage", () => ({
   default: () => <h1>Global Device Inventory</h1>,
 }));
 
+vi.mock("./features/datalogger/pages/DataLoggerListPage", () => ({
+  default: () => <h1>Data Logger Inventory</h1>,
+}));
+
+vi.mock("./features/datalogger/pages/DataLoggerWizardPage", () => ({
+  default: () => <h1>Data Logger Wizard</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedCheckSetupStatus = vi.mocked(checkSetupStatus);
 const mockedGetMe = vi.mocked(getMe);
@@ -260,4 +268,21 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Global Device Inventory" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/devices");
   });
+
+  it("protects and renders the Data Logger inventory route", () => {
+    renderAuthenticatedApp("/data-loggers");
+
+    expect(screen.getByRole("heading", { name: "Data Logger Inventory" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/data-loggers");
+  });
+
+  it.each(["/data-loggers/new", "/data-loggers/logger-id/edit"])(
+    "protects and renders the Data Logger wizard route at %s",
+    (path) => {
+      renderAuthenticatedApp(path);
+
+      expect(screen.getByRole("heading", { name: "Data Logger Wizard" })).toBeInTheDocument();
+      expect(window.location.pathname).toBe(path);
+    },
+  );
 });
