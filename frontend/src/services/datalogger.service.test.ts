@@ -1,9 +1,9 @@
 import type { AxiosResponse } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DataLogger, DataLoggerHistoryResponse, DataLoggerListResponse, SaveDataLoggerRequest } from "../types/datalogger";
+import type { DataLogger, DataLoggerHistoryResponse, DataLoggerListResponse, DataLoggerQueryResponse, SaveDataLoggerRequest } from "../types/datalogger";
 import api from "./api";
-import { createDataLogger, deleteDataLogger, getDataLogger, getDataLoggerHistory, listDataLoggers, updateDataLogger } from "./datalogger.service";
+import { createDataLogger, deleteDataLogger, getDataLogger, getDataLoggerHistory, listDataLoggers, queryDataLogger, updateDataLogger } from "./datalogger.service";
 
 vi.mock("./api", () => ({
   default: {
@@ -101,5 +101,21 @@ describe("Data Logger service", () => {
 
     await expect(getDataLoggerHistory("logger with/slash", params, controller.signal)).resolves.toEqual(expected);
     expect(mockedGet).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash/history", { params, signal: controller.signal });
+  });
+
+  it("queries raw or aggregated rows through the encoded logger path", async () => {
+    const controller = new AbortController();
+    const params = { mode: "aggregate" as const, tag_ids: "tag-1,tag-2", from: "2026-08-22T00:00:00Z", to: "2026-08-23T00:00:00Z", bucket: "5m" as const, aggregate: "avg" as const, page: 2, per_page: 100 };
+    const expected: DataLoggerQueryResponse = {
+      data: [{ at: "2026-08-22T01:00:00Z", values: { "tag-1": { tag_id: "tag-1", data_type: "float64", value: 230.5, good_count: 5, total_count: 5, supported: true } } }],
+      mode: "aggregate",
+      bucket: "5m",
+      aggregate: "avg",
+      pagination: { page: 2, per_page: 100, total: 101, total_pages: 2 },
+    };
+    mockedGet.mockResolvedValue(responseWith(expected));
+
+    await expect(queryDataLogger("logger with/slash", params, controller.signal)).resolves.toEqual(expected);
+    expect(mockedGet).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash/query", { params, signal: controller.signal });
   });
 });

@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   Pencil,
   RefreshCw,
+  TableProperties,
   Tags,
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
@@ -180,7 +181,7 @@ function DataLoggerDetailPage() {
     <div className="datalogger-detail-content">
       <header className="datalogger-detail-heading">
         <div><Link to="/data-loggers"><ArrowLeft size={17} /> Back to Data Loggers</Link><h1>{logger?.name ?? "Data Logger history"}</h1><p>{logger?.description ?? "Definition, schedule, and durable synchronized Tag history."}</p></div>
-        {logger && <div className="datalogger-detail-actions"><button type="button" disabled={history.data.length === 0} onClick={exportCurrentPage}><Download size={17} /> Export page CSV</button><Link to={`/data-loggers/${logger.id}/edit`}><Pencil size={17} /> Edit</Link></div>}
+        {logger && <div className="datalogger-detail-actions"><Link to={`/data-loggers/${logger.id}/query`}><TableProperties size={17} /> Query data</Link><button type="button" disabled={history.data.length === 0} onClick={exportCurrentPage}><Download size={17} /> Export page CSV</button><Link to={`/data-loggers/${logger.id}/edit`}><Pencil size={17} /> Edit</Link></div>}
       </header>
 
       {loadState === "loading" && <section className="datalogger-detail-state" role="status"><LoaderCircle className="is-spinning" /><strong>Loading Data Logger history…</strong></section>}

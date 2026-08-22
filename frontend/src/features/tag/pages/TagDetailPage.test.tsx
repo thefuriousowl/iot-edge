@@ -6,15 +6,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getTag, getTagValues, monitorTagValues } from "../../../services/tag.service";
+import { getTag, getTagValues } from "../../../services/tag.service";
 import type { ReadingTag, TagRuntimeValue } from "../../../types/tag";
+import { useTagLiveStore } from "../stores/tagLive.store";
 import TagDetailPage from "./TagDetailPage";
 
-vi.mock("../../../services/tag.service", () => ({ getTag: vi.fn(), getTagValues: vi.fn(), monitorTagValues: vi.fn() }));
+vi.mock("../../../services/tag.service", () => ({ getTag: vi.fn(), getTagValues: vi.fn() }));
 
 const mockedGetTag = vi.mocked(getTag);
 const mockedGetTagValues = vi.mocked(getTagValues);
-const mockedMonitor = vi.mocked(monitorTagValues);
 const tagID = "11111111-1111-4111-8111-111111111111";
 const tag: ReadingTag = {
   id: tagID,
@@ -38,20 +38,13 @@ function renderPage() {
 }
 
 describe("TagDetailPage", () => {
-  let publish: ((value: TagRuntimeValue) => void) | undefined;
-
   beforeEach(() => {
     mockedGetTag.mockReset();
     mockedGetTagValues.mockReset();
-    mockedMonitor.mockReset();
+    useTagLiveStore.getState().reset();
     mockedGetTag.mockResolvedValue(tag);
     const history = Array.from({ length: 10 }, (_, index) => runtimeValue(index + 1));
     mockedGetTagValues.mockResolvedValue({ latest: history[9], history, latest_retention: "persistent", history_retention: "runtime_memory" });
-    mockedMonitor.mockImplementation(async (_id, onValue, _signal, onOpen) => {
-      publish = onValue;
-      onOpen?.();
-      await new Promise(() => {});
-    });
   });
 
   afterEach(cleanup);
@@ -67,19 +60,28 @@ describe("TagDetailPage", () => {
     const historySection = screen.getByRole("heading", { name: "Latest 10 runtime values" }).closest("section")!;
     expect(within(historySection).getAllByRole("row")).toHaveLength(11);
     expect(mockedGetTagValues).toHaveBeenCalledWith(tagID, 10, expect.any(AbortSignal));
-    expect(mockedMonitor).toHaveBeenCalledWith(tagID, expect.any(Function), expect.any(AbortSignal), expect.any(Function));
   });
 
   it("merges live values by sequence, trims old samples, and exposes errors", async () => {
     renderPage();
     await screen.findByRole("heading", { name: "Line pressure" });
-    publish?.(runtimeValue(11, "bad"));
+    useTagLiveStore.getState().setConnectionState("live");
+    useTagLiveStore.getState().ingest(runtimeValue(11, "bad"));
 
     await waitFor(() => expect(screen.getByLabelText("Current Tag value")).toHaveTextContent("illegal data address"));
     expect(screen.getByLabelText("Current Tag value")).toHaveTextContent("bad");
     const historySection = screen.getByRole("heading", { name: "Latest 10 runtime values" }).closest("section")!;
     expect(within(historySection).getAllByRole("row")).toHaveLength(11);
     expect(within(historySection).queryByText("10", { selector: "td:first-child" })).not.toBeInTheDocument();
+  });
+
+  it("reconnects the shared stream instead of opening a per-Tag connection", async () => {
+    useTagLiveStore.getState().setConnectionState("disconnected");
+    renderPage();
+    await screen.findByRole("heading", { name: "Line pressure" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(useTagLiveStore.getState().reconnectKey).toBe(1);
   });
 
   it("shows load failures and retries both definition and history", async () => {

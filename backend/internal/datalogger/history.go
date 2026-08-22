@@ -66,6 +66,7 @@ type RawValueListResult struct {
 type HistoryRepository interface {
 	WriteBatch(context.Context, RawBatch) error
 	ListValues(context.Context, RawValueListInput) (*RawValueListResult, error)
+	Query(context.Context, QueryInput) (*QueryResult, error)
 }
 
 func validHistoryDataType(value string) bool {

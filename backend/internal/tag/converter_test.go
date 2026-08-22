@@ -46,10 +46,10 @@ func TestConvertBinaryDecodesIndustrialFloat32ByteOrders(t *testing.T) {
 		byteOrder ByteOrder
 		want      float32
 	}{
-		{name: "ABCD big endian", raw: []byte{0x41, 0x32, 0x14, 0x7B}, byteOrder: ByteOrderBigEndian, want: 11.13},
-		{name: "CDAB word swap", raw: []byte{0x0D, 0x05, 0x42, 0x05}, byteOrder: ByteOrderWordSwap, want: 33.262714},
-		{name: "BADC byte swap", raw: []byte{0x32, 0x42, 0x46, 0xB6}, byteOrder: ByteOrderByteSwap, want: 44.678},
-		{name: "DCBA little endian", raw: []byte{0x5A, 0xE4, 0x5C, 0x42}, byteOrder: ByteOrderLittleEndian, want: 55.223},
+		{name: "ABCD big endian registers 40001-40002", raw: []byte{0x46, 0x22, 0x9C, 0x85}, byteOrder: ByteOrderBigEndian, want: 10407.1298828125},
+		{name: "CDAB word swap registers 40003-40004", raw: []byte{0xA5, 0x0D, 0x46, 0x22}, byteOrder: ByteOrderWordSwap, want: 10409.2626953125},
+		{name: "BADC byte swap registers 40005-40006", raw: []byte{0x22, 0x46, 0xB6, 0xB6}, byteOrder: ByteOrderByteSwap, want: 10413.677734375},
+		{name: "DCBA little endian registers 40007-40008", raw: []byte{0xE4, 0xC0, 0x22, 0x46}, byteOrder: ByteOrderLittleEndian, want: 10416.22265625},
 	}
 
 	for _, test := range tests {

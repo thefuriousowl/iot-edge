@@ -86,6 +86,47 @@ export interface DataLoggerHistoryResponse {
   pagination: DataLoggerPagination;
 }
 
+export type DataLoggerQueryMode = "raw" | "aggregate";
+export type DataLoggerQueryBucket = "1m" | "5m" | "15m" | "1h" | "6h" | "1d" | "1w";
+export type DataLoggerAggregate = "min" | "max" | "avg" | "sum" | "count" | "first" | "last";
+
+export interface DataLoggerQueryValue {
+  tag_id: string;
+  data_type: TagDataType | "mixed";
+  value: boolean | number | null;
+  quality?: "good" | "bad";
+  error?: string;
+  observed_at?: string;
+  good_count?: number;
+  bad_count?: number;
+  total_count?: number;
+  supported?: boolean;
+}
+
+export interface DataLoggerQueryRow {
+  at: string;
+  values: Record<string, DataLoggerQueryValue>;
+}
+
+export interface DataLoggerQueryParams {
+  mode: DataLoggerQueryMode;
+  tag_ids?: string;
+  from: string;
+  to: string;
+  bucket?: DataLoggerQueryBucket;
+  aggregate?: DataLoggerAggregate;
+  page?: number;
+  per_page?: number;
+}
+
+export interface DataLoggerQueryResponse {
+  data: DataLoggerQueryRow[];
+  mode: DataLoggerQueryMode;
+  bucket?: DataLoggerQueryBucket;
+  aggregate?: DataLoggerAggregate;
+  pagination: DataLoggerPagination;
+}
+
 export interface SaveDataLoggerRequest {
   name: string;
   description: string | null;

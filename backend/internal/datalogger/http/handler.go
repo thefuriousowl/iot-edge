@@ -20,6 +20,7 @@ type Service interface {
 	Get(context.Context, uuid.UUID) (*datalogger.Logger, error)
 	List(context.Context, datalogger.ListInput) (*datalogger.ListResult, error)
 	ListHistory(context.Context, uuid.UUID, datalogger.RawValueListInput) (*datalogger.RawValueListResult, error)
+	QueryHistory(context.Context, uuid.UUID, datalogger.QueryInput) (*datalogger.QueryResult, error)
 	Update(context.Context, uuid.UUID, datalogger.UpdateInput) (*datalogger.Logger, error)
 	Delete(context.Context, uuid.UUID) error
 }
@@ -110,6 +111,28 @@ func (handler *Handler) History(c *fiber.Ctx) error {
 		"data":          result.Data,
 		"last_batch_at": result.LastBatchAt,
 		"pagination":    fiber.Map{"page": result.Page, "per_page": result.PerPage, "total": result.Total, "total_pages": result.TotalPages},
+	})
+}
+
+func (handler *Handler) Query(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Logger ID")
+	}
+	input, err := parseQueryInput(c)
+	if err != nil {
+		return validation(c, "Invalid Data Logger query parameters")
+	}
+	result, err := handler.service.QueryHistory(c.UserContext(), id, input)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(fiber.Map{
+		"data":       result.Data,
+		"mode":       result.Mode,
+		"bucket":     result.Bucket,
+		"aggregate":  result.Aggregate,
+		"pagination": fiber.Map{"page": result.Page, "per_page": result.PerPage, "total": result.Total, "total_pages": result.TotalPages},
 	})
 }
 
@@ -211,6 +234,44 @@ func parseHistoryInput(c *fiber.Ctx) (datalogger.RawValueListInput, error) {
 	return input, err
 }
 
+func parseQueryInput(c *fiber.Ctx) (datalogger.QueryInput, error) {
+	input := datalogger.QueryInput{Mode: datalogger.QueryModeRaw}
+	if raw := c.Query("mode"); raw != "" {
+		input.Mode = datalogger.QueryMode(raw)
+	}
+	if raw := c.Query("tag_ids"); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			tagID, err := parseID(strings.TrimSpace(part))
+			if err != nil {
+				return input, err
+			}
+			input.TagIDs = append(input.TagIDs, tagID)
+		}
+	}
+	for name, target := range map[string]*time.Time{"from": &input.From, "to": &input.To} {
+		raw := c.Query(name)
+		if raw == "" {
+			return input, errors.New("query range is required")
+		}
+		value, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return input, err
+		}
+		*target = value.UTC()
+	}
+	if input.Mode == datalogger.QueryModeAggregate {
+		input.Bucket = datalogger.QueryBucket(c.Query("bucket", string(datalogger.QueryBucket1Hour)))
+		input.Aggregate = datalogger.AggregateFunction(c.Query("aggregate", string(datalogger.AggregateAvg)))
+	}
+	var err error
+	input.Page, err = positiveQuery(c, "page", 1)
+	if err != nil {
+		return input, err
+	}
+	input.PerPage, err = positiveQuery(c, "per_page", 100)
+	return input, err
+}
+
 func positiveQuery(c *fiber.Ctx, name string, fallback int) (int, error) {
 	raw := c.Query(name)
 	if raw == "" {
@@ -255,7 +316,7 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusConflict, "DLG002", "Data Logger name already exists")
 	case errors.Is(err, datalogger.ErrLoggerTagNotFound):
 		return apiError(c, fiber.StatusBadRequest, "DLG003", "Selected Tag not found")
-	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag), errors.Is(err, datalogger.ErrInvalidRawBatch):
+	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag), errors.Is(err, datalogger.ErrInvalidRawBatch), errors.Is(err, datalogger.ErrInvalidQuery), errors.Is(err, datalogger.ErrRawTagNotSelected):
 		return validation(c, "Invalid Data Logger configuration")
 	default:
 		return apiError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")

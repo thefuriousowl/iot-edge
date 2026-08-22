@@ -28,6 +28,7 @@ func TestHandlerContracts(t *testing.T) {
 		entity:        &entity,
 		listResult:    &datalogger.ListResult{Data: []datalogger.Logger{entity}, Page: 2, PerPage: 5, Total: 6, TotalPages: 2},
 		historyResult: &datalogger.RawValueListResult{Data: []datalogger.RawValue{{LoggerID: loggerID, TagID: tagA, BatchAt: lastBatchAt, ObservedAt: lastBatchAt, DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood, PersistedAt: lastBatchAt}}, Page: 2, PerPage: 25, Total: 26, TotalPages: 2, LastBatchAt: &lastBatchAt},
+		queryResult:   &datalogger.QueryResult{Data: []datalogger.QueryRow{{At: lastBatchAt, Values: map[string]datalogger.QueryValue{tagA.String(): {TagID: tagA, DataType: "float64", Value: 42.5, GoodCount: 3, TotalCount: 3}}}}, Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket5Minutes, Aggregate: datalogger.AggregateAvg, Page: 2, PerPage: 25, Total: 26, TotalPages: 2},
 	}
 	app := newHandlerApp(service)
 
@@ -80,6 +81,26 @@ func TestHandlerContracts(t *testing.T) {
 		t.Errorf("history response/input = %#v / %#v", historyBody, service.historyInput)
 	}
 
+	dataQuery := url.Values{"mode": {"aggregate"}, "tag_ids": {tagA.String() + "," + tagB.String()}, "from": {startAt.Format(time.RFC3339)}, "to": {endAt.Format(time.RFC3339)}, "bucket": {"5m"}, "aggregate": {"avg"}, "page": {"2"}, "per_page": {"25"}}
+	response = request(t, app, http.MethodGet, "/api/data-loggers/"+loggerID.String()+"/query?"+dataQuery.Encode(), "")
+	assertStatus(t, response, fiber.StatusOK)
+	var queryBody struct {
+		Data       []datalogger.QueryRow        `json:"data"`
+		Mode       datalogger.QueryMode         `json:"mode"`
+		Bucket     datalogger.QueryBucket       `json:"bucket"`
+		Aggregate  datalogger.AggregateFunction `json:"aggregate"`
+		Pagination struct {
+			Total int64 `json:"total"`
+		} `json:"pagination"`
+	}
+	decodeResponse(t, response, &queryBody)
+	if service.queryID != loggerID || len(service.queryInput.TagIDs) != 2 || service.queryInput.TagIDs[0] != tagA || service.queryInput.TagIDs[1] != tagB || !service.queryInput.From.Equal(startAt) || !service.queryInput.To.Equal(endAt) || service.queryInput.Mode != datalogger.QueryModeAggregate || service.queryInput.Bucket != datalogger.QueryBucket5Minutes || service.queryInput.Aggregate != datalogger.AggregateAvg || service.queryInput.Page != 2 || service.queryInput.PerPage != 25 {
+		t.Errorf("Query() input = %#v", service.queryInput)
+	}
+	if len(queryBody.Data) != 1 || queryBody.Mode != datalogger.QueryModeAggregate || queryBody.Bucket != datalogger.QueryBucket5Minutes || queryBody.Aggregate != datalogger.AggregateAvg || queryBody.Pagination.Total != 26 {
+		t.Errorf("query response = %#v", queryBody)
+	}
+
 	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
 	assertStatus(t, response, fiber.StatusOK)
 	closeBody(t, response)
@@ -120,6 +141,12 @@ func TestHandlerRejectsMalformedRequests(t *testing.T) {
 		{name: "invalid history from", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?from=today"},
 		{name: "invalid history to", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?to=tomorrow"},
 		{name: "invalid history page", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?page=0"},
+		{name: "invalid query logger", method: http.MethodGet, path: "/api/data-loggers/invalid/query?from=2026-08-23T00:00:00Z&to=2026-08-24T00:00:00Z"},
+		{name: "missing query range", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query"},
+		{name: "invalid query tag", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?tag_ids=invalid&from=2026-08-23T00:00:00Z&to=2026-08-24T00:00:00Z"},
+		{name: "invalid query from", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=today&to=2026-08-24T00:00:00Z"},
+		{name: "invalid query to", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=2026-08-23T00:00:00Z&to=tomorrow"},
+		{name: "invalid query page", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=2026-08-23T00:00:00Z&to=2026-08-24T00:00:00Z&page=0"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -144,6 +171,7 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 		{name: "invalid logger", err: datalogger.ErrInvalidLogger, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid tag", err: datalogger.ErrInvalidLoggerTag, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid history", err: datalogger.ErrInvalidRawBatch, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
+		{name: "invalid query", err: datalogger.ErrInvalidQuery, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "unexpected", err: errors.New("password=secret"), status: fiber.StatusInternalServerError, code: "INTERNAL_ERROR"},
 	}
 	for _, test := range tests {
@@ -177,6 +205,9 @@ type handlerService struct {
 	historyID     uuid.UUID
 	historyInput  datalogger.RawValueListInput
 	historyResult *datalogger.RawValueListResult
+	queryID       uuid.UUID
+	queryInput    datalogger.QueryInput
+	queryResult   *datalogger.QueryResult
 }
 
 func (service *handlerService) Create(_ context.Context, input datalogger.CreateInput) (*datalogger.Logger, error) {
@@ -209,6 +240,17 @@ func (service *handlerService) ListHistory(_ context.Context, id uuid.UUID, inpu
 		return &datalogger.RawValueListResult{}, nil
 	}
 	return service.historyResult, nil
+}
+
+func (service *handlerService) QueryHistory(_ context.Context, id uuid.UUID, input datalogger.QueryInput) (*datalogger.QueryResult, error) {
+	service.queryID, service.queryInput = id, input
+	if service.err != nil {
+		return nil, service.err
+	}
+	if service.queryResult == nil {
+		return &datalogger.QueryResult{}, nil
+	}
+	return service.queryResult, nil
 }
 
 func (service *handlerService) Update(_ context.Context, id uuid.UUID, input datalogger.UpdateInput) (*datalogger.Logger, error) {

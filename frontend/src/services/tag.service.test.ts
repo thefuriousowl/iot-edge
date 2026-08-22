@@ -18,7 +18,7 @@ import {
   getTag,
   getTagValues,
   listTags,
-  monitorTagValues,
+  monitorAllTagValues,
   previewSavedTag,
   previewTag,
   updateTag,
@@ -111,7 +111,7 @@ describe("Tag service", () => {
     });
   });
 
-  it("loads bounded runtime history and parses fragmented Tag SSE values", async () => {
+  it("loads bounded runtime history", async () => {
     const value: TagRuntimeValue = { tag_id: tag.id, sequence: 7, observed_at: "2026-08-22T01:00:00Z", stored_at: "2026-08-22T01:00:00Z", quality: "good", data_type: "float64", value: 230.5 };
     const expected: TagValuesResponse = { latest: value, history: [value], latest_retention: "persistent", history_retention: "runtime_memory" };
     mockedGet.mockResolvedValue(responseWith(expected));
@@ -119,14 +119,43 @@ describe("Tag service", () => {
     await expect(getTagValues(tag.id, 10, controller.signal)).resolves.toEqual(expected);
     expect(mockedGet).toHaveBeenCalledWith(`/tags/${tag.id}/values`, { params: { limit: 10 }, signal: controller.signal });
 
-    const encoded = new TextEncoder().encode(`: connected\n\nevent: tag_value\ndata: ${JSON.stringify(value)}\n\n`);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(stream) { stream.enqueue(encoded.slice(0, 15)); stream.enqueue(encoded.slice(15)); stream.close(); } }), { status: 200 })));
-    const received: TagRuntimeValue[] = [];
+  });
+
+  it("resumes the global Tag stream and parses retry, CRLF, fragmented, and malformed events", async () => {
+    const value: TagRuntimeValue = { tag_id: tag.id, sequence: 12, observed_at: "2026-08-22T01:00:00Z", stored_at: "2026-08-22T01:00:00Z", quality: "bad", data_type: "float64", value: null, error: "Modbus exception 0x02" };
+    const payload = `retry: 4500\r\n: connected\r\n\r\nevent: tag_value\r\ndata: not-json\r\n\r\nid: 12\r\nevent: tag_value\r\ndata: ${JSON.stringify(value)}\r\n\r\n`;
+    const encoded = new TextEncoder().encode(payload);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(stream) { stream.enqueue(encoded.slice(0, 9)); stream.enqueue(encoded.slice(9, 41)); stream.enqueue(encoded.slice(41)); stream.close(); } }), { status: 200 })));
+    const controller = new AbortController();
     const onOpen = vi.fn();
-    await monitorTagValues(tag.id, (next) => received.push(next), new AbortController().signal, onOpen);
+    const onMessage = vi.fn();
+    const onRetry = vi.fn();
+
+    await monitorAllTagValues({ signal: controller.signal, lastEventId: 9, onOpen, onMessage, onRetry });
+
     expect(onOpen).toHaveBeenCalledOnce();
-    expect(received).toEqual([value]);
-    expect(fetch).toHaveBeenCalledWith(`/api/tags/${tag.id}/stream`, expect.objectContaining({ headers: { Authorization: "Bearer access-token" }, credentials: "include" }));
+    expect(onRetry).toHaveBeenCalledWith(4500);
+    expect(onMessage).toHaveBeenCalledOnce();
+    expect(onMessage).toHaveBeenCalledWith(value);
+    expect(fetch).toHaveBeenCalledWith("/api/sse/tags", {
+      headers: { Authorization: "Bearer access-token", "Last-Event-ID": "9" },
+      credentials: "include",
+      signal: controller.signal,
+    });
+  });
+
+  it("rejects unavailable global Tag streams without reporting them open", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
+    const onOpen = vi.fn();
+
+    await expect(monitorAllTagValues({
+      signal: new AbortController().signal,
+      lastEventId: null,
+      onOpen,
+      onMessage: vi.fn(),
+      onRetry: vi.fn(),
+    })).rejects.toThrow("Tag live stream failed with status 503");
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
   it("updates nullable fields and deletes through an encoded resource path", async () => {

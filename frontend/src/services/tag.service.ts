@@ -11,6 +11,7 @@ import type {
   ValidateTagExpressionRequest,
   ValidateTagExpressionResponse,
 } from "../types/tag";
+import type { SSEStreamContext } from "../types/sse";
 import api, { getAccessToken } from "./api";
 
 function tagPath(id: string): string {
@@ -56,38 +57,91 @@ export async function getTagValues(
   return response.data;
 }
 
-export async function monitorTagValues(
-  id: string,
+interface PendingSSEEvent {
+  data: string[];
+  event: string;
+}
+
+function dispatchTagValueEvent(
+  pending: PendingSSEEvent,
   onValue: (value: TagRuntimeValue) => void,
-  signal: AbortSignal,
-  onOpen?: () => void,
+): void {
+  if (pending.event !== "tag_value" || pending.data.length === 0) return;
+
+  try {
+    onValue(JSON.parse(pending.data.join("\n")) as TagRuntimeValue);
+  } catch {
+    return;
+  }
+}
+
+async function consumeTagValueStream(
+  response: Response,
+  context: SSEStreamContext<TagRuntimeValue>,
+): Promise<void> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let pending: PendingSSEEvent = { data: [], event: "" };
+
+  const processLine = (line: string) => {
+    if (line === "") {
+      dispatchTagValueEvent(pending, context.onMessage);
+      pending = { data: [], event: "" };
+      return;
+    }
+    if (line.startsWith(":")) return;
+
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    let value = separator === -1 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+
+    if (field === "event") pending.event = value;
+    if (field === "data") pending.data.push(value);
+    if (field === "retry" && /^\d+$/.test(value)) context.onRetry(Number(value));
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+
+    let newline = buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).replace(/\r$/, "");
+      buffer = buffer.slice(newline + 1);
+      processLine(line);
+      newline = buffer.indexOf("\n");
+    }
+
+    if (done) {
+      if (buffer) processLine(buffer.replace(/\r$/, ""));
+      dispatchTagValueEvent(pending, context.onMessage);
+      return;
+    }
+  }
+}
+
+export async function monitorAllTagValues(
+  context: SSEStreamContext<TagRuntimeValue>,
 ): Promise<void> {
   const baseURL = import.meta.env.VITE_API_URL || "/api";
   const token = getAccessToken();
-  const response = await fetch(`${baseURL}${tagPath(id)}/stream`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (context.lastEventId !== null) headers["Last-Event-ID"] = String(context.lastEventId);
+
+  const response = await fetch(`${baseURL}/sse/tags`, {
+    headers,
     credentials: "include",
-    signal,
+    signal: context.signal,
   });
   if (!response.ok || !response.body) {
-    throw new Error(`Tag value stream failed with status ${response.status}`);
+    throw new Error(`Tag live stream failed with status ${response.status}`);
   }
-  onOpen?.();
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-    for (const event of events) {
-      const dataLine = event.split("\n").find((line) => line.startsWith("data: "));
-      if (dataLine) onValue(JSON.parse(dataLine.slice(6)) as TagRuntimeValue);
-    }
-  }
+  context.onOpen();
+  await consumeTagValueStream(response, context);
 }
 
 export async function updateTag(

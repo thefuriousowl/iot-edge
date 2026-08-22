@@ -5,6 +5,8 @@ import type {
   DataLoggerHistoryResponse,
   DataLoggerListParams,
   DataLoggerListResponse,
+  DataLoggerQueryParams,
+  DataLoggerQueryResponse,
   UpdateDataLoggerRequest,
 } from "../types/datalogger";
 import api from "./api";
@@ -37,6 +39,15 @@ export async function getDataLoggerHistory(
   signal?: AbortSignal,
 ): Promise<DataLoggerHistoryResponse> {
   const response = await api.get<DataLoggerHistoryResponse>(`${dataLoggerPath(id)}/history`, { params, signal });
+  return response.data;
+}
+
+export async function queryDataLogger(
+  id: string,
+  params: DataLoggerQueryParams,
+  signal?: AbortSignal,
+): Promise<DataLoggerQueryResponse> {
+  const response = await api.get<DataLoggerQueryResponse>(`${dataLoggerPath(id)}/query`, { params, signal });
   return response.data;
 }
 

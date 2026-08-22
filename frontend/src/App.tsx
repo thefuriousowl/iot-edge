@@ -11,12 +11,14 @@ import LoginPage from "./features/auth/pages/LoginPage";
 import SetupPage from "./features/auth/pages/SetupPage";
 import DataLoggerListPage from "./features/datalogger/pages/DataLoggerListPage";
 import DataLoggerDetailPage from "./features/datalogger/pages/DataLoggerDetailPage";
+import DataLoggerQueryPage from "./features/datalogger/pages/DataLoggerQueryPage";
 import DataLoggerWizardPage from "./features/datalogger/pages/DataLoggerWizardPage";
 import DeviceListPage from "./features/device/pages/DeviceListPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
+import TagLiveStream from "./features/tag/components/TagLiveStream";
 import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
@@ -25,6 +27,7 @@ function App() {
   return (
     <BrowserRouter>
       <AuthInitializer />
+      <TagLiveStream />
 
       <Routes>
         <Route path="/" element={<AuthRoute mode="entry" />} />
@@ -121,6 +124,14 @@ function App() {
           element={
             <ProtectedRoute>
               <DataLoggerWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-loggers/:id/query"
+          element={
+            <ProtectedRoute>
+              <DataLoggerQueryPage />
             </ProtectedRoute>
           }
         />

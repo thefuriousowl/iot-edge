@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Search,
   Tags,
+  WifiOff,
 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -21,9 +22,11 @@ import type {
   Tag,
   TagDataType,
   TagPagination,
+  TagRuntimeValue,
   TagType,
 } from "../../../types/tag";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
+import { useTagLiveStore } from "../stores/tagLive.store";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./TagListPage.css";
 
@@ -51,6 +54,12 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
+const runtimeDateFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "medium",
+});
+
+type TagRuntimeState = "live" | "error" | "stale" | "syncing" | "waiting" | "paused";
 
 function isTagType(value: string | null): value is TagType {
   return value !== null && tagTypes.includes(value as TagType);
@@ -81,27 +90,70 @@ function tagDefinition(entity: Tag): string {
     case "reading": {
       const decoder = entity.config.decoder;
       const offset = decoder.config.byte_offset;
-      return `${byteOrderLabel(decoder.config.byte_order)} · offset ${offset}`;
+      const scaling = entity.config.transform
+        ? `scale × ${entity.config.transform.config.gain} ${entity.config.transform.config.offset < 0 ? "−" : "+"} ${Math.abs(entity.config.transform.config.offset)}`
+        : "no scaling";
+      return `${byteOrderLabel(decoder.config.byte_order)} · offset ${offset} · ${scaling}`;
     }
     case "constant":
       return String(entity.config.value);
     case "calculated":
-      return entity.config.expression;
+      return `${entity.config.expression} · trigger ${entity.config.trigger ? abbreviatedID(entity.config.trigger.tag_id) : "not configured"}`;
   }
+}
+
+function abbreviatedID(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
 }
 
 function sourceLabel(entity: Tag): string {
   if (entity.type !== "reading") {
     return "—";
   }
-  return entity.datasource_id.length > 12
-    ? `${entity.datasource_id.slice(0, 8)}…`
-    : entity.datasource_id;
+  return abbreviatedID(entity.datasource_id);
 }
 
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unknown" : dateFormatter.format(date);
+}
+
+function formatRuntimeTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown source time" : runtimeDateFormatter.format(date);
+}
+
+function formatRuntimeValue(value: TagRuntimeValue["value"]): string {
+  if (value === null) return "—";
+  if (typeof value === "boolean") return String(value);
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 8, useGrouping: false }).format(value);
+}
+
+function runtimeState(entity: Tag, value: TagRuntimeValue | null, connectionState: string): TagRuntimeState {
+  if (!entity.enabled) return "paused";
+  if (!value) return "waiting";
+  if (value.quality === "bad") return "error";
+  if (connectionState === "disconnected") return "stale";
+  if (connectionState === "live") return "live";
+  return "syncing";
+}
+
+function TagLiveCells({ entity }: { entity: Tag }) {
+  const entry = useTagLiveStore((state) => state.entries[entity.id]);
+  const connectionState = useTagLiveStore((state) => state.connectionState);
+  const latest = entry?.value ?? null;
+  const state = runtimeState(entity, latest, connectionState);
+  return <>
+    <td data-label="Live value" className={`tag-live-value tag-live-value--${state}`}>
+      <strong>{latest ? formatRuntimeValue(latest.value) : "No sample"}</strong>
+      <small>{latest ? `${latest.data_type} · sequence ${latest.sequence}` : entity.data_type}</small>
+    </td>
+    <td data-label="Runtime" className="tag-runtime-cell">
+      <span className={`tag-runtime-state tag-runtime-state--${state}`}><i />{state}</span>
+      <small title={latest?.observed_at}>{latest ? `Source ${formatRuntimeTime(latest.observed_at)}` : entity.enabled ? "Waiting for runtime publication" : "Tag is disabled"}</small>
+      {latest?.error && <small className="tag-runtime-error">{latest.error}</small>}
+    </td>
+  </>;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -149,6 +201,9 @@ function TagListPage() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const streamState = useTagLiveStore((state) => state.connectionState);
+  const streamError = useTagLiveStore((state) => state.connectionError);
+  const requestReconnect = useTagLiveStore((state) => state.requestReconnect);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -242,10 +297,7 @@ function TagListPage() {
             <p>Browse normalized values and calculation definitions across every datasource.</p>
           </div>
           <div className="tag-heading-actions">
-            <span className="tag-heading-status">
-              <DatabaseZap aria-hidden="true" size={18} />
-              Global namespace
-            </span>
+            {streamState === "disconnected" ? <button className="tag-heading-status tag-heading-status--disconnected" type="button" title={streamError ?? undefined} onClick={requestReconnect}><WifiOff aria-hidden="true" size={18} />Tag stream disconnected · reconnect</button> : <span className={`tag-heading-status tag-heading-status--${streamState}`}><DatabaseZap aria-hidden="true" size={18} />Tag stream {streamState === "live" ? "live" : "syncing"}</span>}
             <Link className="tag-add-link" to="/tags/new">
               <Plus aria-hidden="true" size={18} />
               Add Tag
@@ -396,10 +448,10 @@ function TagListPage() {
                     <tr>
                       <th>Name</th>
                       <th>Type</th>
-                      <th>Data type</th>
                       <th>Source</th>
                       <th>Definition</th>
-                      <th>Status</th>
+                      <th>Live value</th>
+                      <th>Runtime</th>
                       <th>Updated</th>
                     </tr>
                   </thead>
@@ -417,16 +469,11 @@ function TagListPage() {
                         </td>
                         <td data-label="Type">
                           <span className={`tag-type is-${entity.type}`}>{tagTypeLabel(entity.type)}</span>
+                          <code>{entity.data_type}</code>
                         </td>
-                        <td data-label="Data type"><code>{entity.data_type}</code></td>
                         <td data-label="Source" title={entity.datasource_id ?? undefined}>{sourceLabel(entity)}</td>
-                        <td data-label="Definition"><span className="tag-definition">{tagDefinition(entity)}</span></td>
-                        <td data-label="Status">
-                          <span className={entity.enabled ? "tag-enabled is-enabled" : "tag-enabled"}>
-                            <span />
-                            {entity.enabled ? "Enabled" : "Disabled"}
-                          </span>
-                        </td>
+                        <td data-label="Definition" title={tagDefinition(entity)}><span className="tag-definition">{tagDefinition(entity)}</span></td>
+                        <TagLiveCells entity={entity} />
                         <td data-label="Updated">{formatUpdatedAt(entity.updated_at)}</td>
                       </tr>
                     ))}

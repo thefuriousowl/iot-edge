@@ -37,6 +37,10 @@ vi.mock("./features/tag/pages/TagDetailPage", () => ({
   default: () => <h1>Real-time Tag Monitor</h1>,
 }));
 
+vi.mock("./features/tag/components/TagLiveStream", () => ({
+  default: () => null,
+}));
+
 vi.mock("./features/device/pages/DeviceListPage", () => ({
   default: () => <h1>Global Device Inventory</h1>,
 }));
@@ -51,6 +55,10 @@ vi.mock("./features/datalogger/pages/DataLoggerWizardPage", () => ({
 
 vi.mock("./features/datalogger/pages/DataLoggerDetailPage", () => ({
   default: () => <h1>Data Logger History</h1>,
+}));
+
+vi.mock("./features/datalogger/pages/DataLoggerQueryPage", () => ({
+  default: () => <h1>Data Logger Query</h1>,
 }));
 
 const mockedGetHealth = vi.mocked(getHealth);
@@ -295,5 +303,12 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "Data Logger History" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/data-loggers/logger-id");
+  });
+
+  it("protects and renders the Data Logger query route", () => {
+    renderAuthenticatedApp("/data-loggers/logger-id/query");
+
+    expect(screen.getByRole("heading", { name: "Data Logger Query" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/data-loggers/logger-id/query");
   });
 });

@@ -226,6 +226,47 @@ func TestServiceListsHistoryForExistingLogger(t *testing.T) {
 	}
 }
 
+func TestServiceQueriesSelectedLoggerTagsAndNormalizesDefaults(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	first := repository.addTag("Power")
+	second := repository.addTag("Running")
+	history := &memoryHistoryRepository{queryResult: &QueryResult{Total: 2}}
+	service, err := NewService(repository, history)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	entity, err := service.Create(context.Background(), withTags(validCreate(first.ID, time.Now(), `{}`), []uuid.UUID{first.ID, second.ID}))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	from := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.FixedZone("ICT", 7*60*60))
+	to := from.Add(24 * time.Hour)
+	result, err := service.QueryHistory(context.Background(), entity.ID, QueryInput{From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket5Minutes, Aggregate: AggregateAvg})
+	if err != nil || result.Total != 2 {
+		t.Fatalf("QueryHistory() = %#v, %v", result, err)
+	}
+	if history.queryInput.LoggerID != entity.ID || history.queryInput.Page != 1 || history.queryInput.PerPage != 100 || len(history.queryInput.TagIDs) != 2 || history.queryInput.TagIDs[0] != first.ID || !history.queryInput.From.Equal(from.UTC()) {
+		t.Errorf("query input = %#v", history.queryInput)
+	}
+	if _, err := service.QueryHistory(context.Background(), entity.ID, QueryInput{TagIDs: []uuid.UUID{uuid.New()}, From: from, To: to}); !errors.Is(err, ErrRawTagNotSelected) {
+		t.Errorf("QueryHistory(unselected Tag) error = %v", err)
+	}
+	invalid := []QueryInput{
+		{From: from, To: from},
+		{From: from, To: from.AddDate(1, 0, 2)},
+		{From: from, To: to, Mode: "invalid"},
+		{From: from, To: to, Mode: QueryModeAggregate, Bucket: "2m", Aggregate: AggregateAvg},
+		{From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket1Hour, Aggregate: "median"},
+		{From: from, To: to, PerPage: 501},
+	}
+	for _, input := range invalid {
+		if _, err := service.QueryHistory(context.Background(), entity.ID, input); !errors.Is(err, ErrInvalidQuery) {
+			t.Errorf("QueryHistory(%#v) error = %v", input, err)
+		}
+	}
+}
+
 type memoryRepository struct {
 	loggers  map[uuid.UUID]Logger
 	tags     map[uuid.UUID]TagReference
@@ -234,9 +275,11 @@ type memoryRepository struct {
 }
 
 type memoryHistoryRepository struct {
-	input  RawValueListInput
-	result *RawValueListResult
-	err    error
+	input       RawValueListInput
+	result      *RawValueListResult
+	queryInput  QueryInput
+	queryResult *QueryResult
+	err         error
 }
 
 func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch) error {
@@ -246,6 +289,14 @@ func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch)
 func (repository *memoryHistoryRepository) ListValues(_ context.Context, input RawValueListInput) (*RawValueListResult, error) {
 	repository.input = input
 	return repository.result, repository.err
+}
+
+func (repository *memoryHistoryRepository) Query(_ context.Context, input QueryInput) (*QueryResult, error) {
+	repository.queryInput = input
+	if repository.queryResult == nil {
+		return &QueryResult{Mode: input.Mode, Bucket: input.Bucket, Aggregate: input.Aggregate, Page: input.Page, PerPage: input.PerPage}, repository.err
+	}
+	return repository.queryResult, repository.err
 }
 
 func newMemoryRepository() *memoryRepository {

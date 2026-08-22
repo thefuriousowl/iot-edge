@@ -3,9 +3,10 @@ import { ArrowLeft, CircleAlert, Clock3, DatabaseZap, LoaderCircle, RadioTower, 
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { getTag, getTagValues, monitorTagValues } from "../../../services/tag.service";
+import { getTag, getTagValues } from "../../../services/tag.service";
 import type { Tag, TagRuntimeValue } from "../../../types/tag";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
+import { useTagLiveHistory, useTagLiveStore } from "../stores/tagLive.store";
 import "./TagDetailPage.css";
 
 type LoadState = "loading" | "ready" | "error";
@@ -67,8 +68,9 @@ function TagDetailPage() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
-  const [streamVersion, setStreamVersion] = useState(0);
-  const [streamState, setStreamState] = useState<StreamState>("connecting");
+  const liveHistory = useTagLiveHistory(id);
+  const connectionState = useTagLiveStore((state) => state.connectionState);
+  const requestReconnect = useTagLiveStore((state) => state.requestReconnect);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,26 +91,17 @@ function TagDetailPage() {
     return () => controller.abort();
   }, [id, loadVersion]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    monitorTagValues(
-      id,
-      (value) => {
-        setHistory((current) => mergeHistory(current, [value]));
-        setStreamState("live");
-      },
-      controller.signal,
-      () => setStreamState("live"),
-    ).then(() => {
-      if (!controller.signal.aborted) setStreamState("disconnected");
-    }).catch(() => {
-      if (!controller.signal.aborted) setStreamState("disconnected");
-    });
-    return () => controller.abort();
-  }, [id, streamVersion]);
-
-  const latest = history.at(-1) ?? null;
-  const newestFirst = useMemo(() => [...history].reverse(), [history]);
+  const currentHistory = useMemo(
+    () => mergeHistory(history, liveHistory),
+    [history, liveHistory],
+  );
+  const latest = currentHistory.at(-1) ?? null;
+  const newestFirst = useMemo(() => [...currentHistory].reverse(), [currentHistory]);
+  const streamState: StreamState = connectionState === "live"
+    ? "live"
+    : connectionState === "disconnected"
+      ? "disconnected"
+      : "connecting";
 
   return <VGatewayShell breadcrumb={<>Dashboard <span>/</span> Tags <span>/</span> <strong>{entity?.name ?? "Monitor"}</strong></>}>
     <div className="tag-detail-content">
@@ -134,7 +127,7 @@ function TagDetailPage() {
           </section>
         </div>
 
-        <footer className="tag-detail-note"><DatabaseZap /><span>The latest value survives server restarts. This 10-sample memory window restarts from that persisted value; persistent history remains owned by Data Logger.</span>{streamState === "disconnected" && <button type="button" onClick={() => { setStreamState("connecting"); setStreamVersion((value) => value + 1); }}><RefreshCw size={15} /> Reconnect</button>}</footer>
+        <footer className="tag-detail-note"><DatabaseZap /><span>The latest value survives server restarts. This 10-sample memory window restarts from that persisted value; persistent history remains owned by Data Logger.</span>{streamState === "disconnected" && <button type="button" onClick={requestReconnect}><RefreshCw size={15} /> Reconnect</button>}</footer>
       </>}
     </div>
   </VGatewayShell>;

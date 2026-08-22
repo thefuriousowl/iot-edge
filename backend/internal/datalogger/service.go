@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	defaultPerPage = 20
-	maxPerPage     = 100
+	defaultPerPage      = 20
+	maxPerPage          = 100
+	defaultQueryPerPage = 100
+	maxQueryPerPage     = 500
+	maxQueryTags        = 100
 )
 
 var (
@@ -135,6 +138,67 @@ func (service *Service) ListHistory(ctx context.Context, id uuid.UUID, input Raw
 	}
 	input.LoggerID = id
 	return service.history.ListValues(ctx, input)
+}
+
+func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input QueryInput) (*QueryResult, error) {
+	if id == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.To.Sub(input.From) > 366*24*time.Hour {
+		return nil, ErrInvalidQuery
+	}
+	if service.history == nil {
+		return nil, ErrHistoryRepositoryRequired
+	}
+	entity, err := service.repository.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if input.Mode == "" {
+		input.Mode = QueryModeRaw
+	}
+	if input.Mode != QueryModeRaw && input.Mode != QueryModeAggregate {
+		return nil, ErrInvalidQuery
+	}
+	if input.Mode == QueryModeAggregate && (input.Bucket.Seconds() == 0 || !input.Aggregate.Valid()) {
+		return nil, ErrInvalidQuery
+	}
+	if input.Page < 1 {
+		input.Page = 1
+	}
+	if input.PerPage < 1 {
+		input.PerPage = defaultQueryPerPage
+	}
+	if input.PerPage > maxQueryPerPage {
+		return nil, ErrInvalidQuery
+	}
+	selected := make(map[uuid.UUID]struct{}, len(entity.Tags))
+	for _, tag := range entity.Tags {
+		selected[tag.ID] = struct{}{}
+	}
+	if len(input.TagIDs) == 0 {
+		input.TagIDs = make([]uuid.UUID, 0, len(entity.Tags))
+		for _, tag := range entity.Tags {
+			input.TagIDs = append(input.TagIDs, tag.ID)
+		}
+	}
+	if len(input.TagIDs) == 0 || len(input.TagIDs) > maxQueryTags {
+		return nil, ErrInvalidQuery
+	}
+	seen := make(map[uuid.UUID]struct{}, len(input.TagIDs))
+	for _, tagID := range input.TagIDs {
+		if tagID == uuid.Nil {
+			return nil, ErrInvalidQuery
+		}
+		if _, exists := selected[tagID]; !exists {
+			return nil, ErrRawTagNotSelected
+		}
+		if _, duplicate := seen[tagID]; duplicate {
+			return nil, ErrInvalidQuery
+		}
+		seen[tagID] = struct{}{}
+	}
+	input.LoggerID = id
+	input.From = input.From.UTC()
+	input.To = input.To.UTC()
+	return service.history.Query(ctx, input)
 }
 
 func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (*Logger, error) {

@@ -14,7 +14,8 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTags } from "../../../services/tag.service";
-import type { Tag, TagListResponse } from "../../../types/tag";
+import type { Tag, TagListResponse, TagRuntimeValue } from "../../../types/tag";
+import { useTagLiveStore } from "../stores/tagLive.store";
 import TagListPage from "./TagListPage";
 
 vi.mock("../../../services/tag.service", () => ({
@@ -45,6 +46,7 @@ const tags: Tag[] = [
           bit_offset: 0,
         },
       },
+      transform: { type: "linear", config: { gain: 0.1, offset: -5 } },
     },
     created_at: "2026-08-22T01:00:00Z",
     updated_at: "2026-08-22T02:00:00Z",
@@ -109,12 +111,27 @@ function currentSearchParams(): URLSearchParams {
   return new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
 }
 
+function runtimeValue(tagID: string, sequence: number, overrides: Partial<TagRuntimeValue> = {}): TagRuntimeValue {
+  return {
+    tag_id: tagID,
+    sequence,
+    observed_at: "2026-08-22T11:30:00Z",
+    stored_at: "2026-08-22T11:30:00Z",
+    quality: "good",
+    data_type: "float64",
+    value: 10407.1298828125,
+    ...overrides,
+  };
+}
+
 describe("TagListPage", () => {
   beforeEach(() => {
     mockedListTags.mockReset();
+    useTagLiveStore.getState().reset();
   });
 
   afterEach(() => {
+    useTagLiveStore.getState().reset();
     cleanup();
   });
 
@@ -134,11 +151,15 @@ describe("TagListPage", () => {
     expect(await screen.findByText("Line voltage")).toBeInTheDocument();
     expect(screen.getByText("Nominal voltage")).toBeInTheDocument();
     expect(screen.getByText("Voltage delta")).toBeInTheDocument();
-    expect(screen.getByText("Little Endian · offset 0")).toBeInTheDocument();
+    expect(screen.getByText("Little Endian · offset 0 · scale × 0.1 − 5")).toBeInTheDocument();
     expect(screen.getByText("230.5")).toBeInTheDocument();
     expect(
-      screen.getByText("${11111111-1111-4111-8111-111111111111} - 230.5"),
+      screen.getByText("${11111111-1111-4111-8111-111111111111} - 230.5 · trigger 11111111…"),
     ).toBeInTheDocument();
+    expect(screen.getByText("Tag stream syncing")).toBeInTheDocument();
+    expect(screen.getAllByText("No sample")).toHaveLength(3);
+    expect(screen.getAllByText("waiting")).toHaveLength(2);
+    expect(screen.getByText("paused")).toBeInTheDocument();
     expect(screen.getByText("aaaaaaaa…")).toHaveAttribute(
       "title",
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -164,6 +185,48 @@ describe("TagListPage", () => {
       },
       expect.any(AbortSignal),
     );
+  });
+
+  it("shows live, paused, and explicit error values and updates without refetching definitions", async () => {
+    useTagLiveStore.getState().setConnectionState("live");
+    useTagLiveStore.getState().ingest(runtimeValue(tags[0].id, 1));
+    useTagLiveStore.getState().ingest(runtimeValue(tags[1].id, 2, { value: 230.5 }));
+    useTagLiveStore.getState().ingest(runtimeValue(tags[2].id, 3, { quality: "bad", value: null, error: "Illegal Data Address" }));
+    mockedListTags.mockResolvedValue(response());
+
+    renderPage();
+    const readingRow = (await screen.findByRole("link", { name: /Line voltage/ })).closest("tr")!;
+    const constantRow = screen.getByRole("link", { name: /Nominal voltage/ }).closest("tr")!;
+    const calculatedRow = screen.getByRole("link", { name: /Voltage delta/ }).closest("tr")!;
+    expect(within(readingRow).getByText("10407.12988281")).toBeInTheDocument();
+    expect(within(readingRow).getByText("live")).toBeInTheDocument();
+    expect(within(readingRow).getByText(/Source/)).toHaveAttribute("title", "2026-08-22T11:30:00Z");
+    expect(within(constantRow).getAllByText("230.5")).toHaveLength(2);
+    expect(within(constantRow).getByText("paused")).toBeInTheDocument();
+    expect(within(calculatedRow).getByText("error")).toBeInTheDocument();
+    expect(within(calculatedRow).getByText("Illegal Data Address")).toBeInTheDocument();
+    expect(screen.getByText("Tag stream live")).toBeInTheDocument();
+
+    useTagLiveStore.getState().ingest(runtimeValue(tags[0].id, 4, { value: 10409.2626953125 }));
+    await waitFor(() => expect(within(readingRow).getByText("10409.26269531")).toBeInTheDocument());
+    expect(mockedListTags).toHaveBeenCalledOnce();
+  });
+
+  it("marks cached good values stale when the stream disconnects and requests reconnect", async () => {
+    useTagLiveStore.getState().setConnectionState("live");
+    useTagLiveStore.getState().ingest(runtimeValue(tags[0].id, 1));
+    mockedListTags.mockResolvedValue(response([tags[0]]));
+    renderPage();
+    const readingRow = (await screen.findByRole("link", { name: /Line voltage/ })).closest("tr")!;
+    expect(within(readingRow).getByText("live")).toBeInTheDocument();
+
+    useTagLiveStore.getState().setConnectionError("network down");
+    useTagLiveStore.getState().setConnectionState("disconnected");
+    await waitFor(() => expect(within(readingRow).getByText("stale")).toBeInTheDocument());
+    const reconnect = screen.getByRole("button", { name: /Tag stream disconnected/ });
+    expect(reconnect).toHaveAttribute("title", "network down");
+    fireEvent.click(reconnect);
+    expect(useTagLiveStore.getState().reconnectKey).toBe(1);
   });
 
   it("applies all server-side filters and keeps them in the URL", async () => {
