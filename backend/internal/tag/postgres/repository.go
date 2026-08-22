@@ -117,6 +117,18 @@ func (r *repository) ListDependencies(ctx context.Context) ([]tag.Dependency, er
 	return dependencies, err
 }
 
+func (r *repository) ListEnabledReadingTags(ctx context.Context) ([]tag.Tag, error) {
+	entities := make([]tag.Tag, 0)
+	err := r.db.WithContext(ctx).Where("type = ? AND enabled = ?", tag.TypeReading, true).Order("datasource_id ASC, created_at ASC, id ASC").Find(&entities).Error
+	return entities, err
+}
+
+func (r *repository) ListEnabledTags(ctx context.Context) ([]tag.Tag, error) {
+	entities := make([]tag.Tag, 0)
+	err := r.db.WithContext(ctx).Where("enabled = ?", true).Order("created_at ASC, id ASC").Find(&entities).Error
+	return entities, err
+}
+
 func createDependencies(tx *gorm.DB, tagID uuid.UUID, dependencyIDs []uuid.UUID) error {
 	if len(dependencyIDs) == 0 {
 		return nil

@@ -5,11 +5,13 @@ import type {
   TagListParams,
   TagListResponse,
   TagPreviewResult,
+  TagRuntimeValue,
+  TagValuesResponse,
   UpdateTagRequest,
   ValidateTagExpressionRequest,
   ValidateTagExpressionResponse,
 } from "../types/tag";
-import api from "./api";
+import api, { getAccessToken } from "./api";
 
 function tagPath(id: string): string {
   return `/tags/${encodeURIComponent(id)}`;
@@ -40,6 +42,52 @@ export async function getTag(
   const response = await api.get<Tag>(tagPath(id), { signal });
 
   return response.data;
+}
+
+export async function getTagValues(
+  id: string,
+  limit = 10,
+  signal?: AbortSignal,
+): Promise<TagValuesResponse> {
+  const response = await api.get<TagValuesResponse>(`${tagPath(id)}/values`, {
+    params: { limit },
+    signal,
+  });
+  return response.data;
+}
+
+export async function monitorTagValues(
+  id: string,
+  onValue: (value: TagRuntimeValue) => void,
+  signal: AbortSignal,
+  onOpen?: () => void,
+): Promise<void> {
+  const baseURL = import.meta.env.VITE_API_URL || "/api";
+  const token = getAccessToken();
+  const response = await fetch(`${baseURL}${tagPath(id)}/stream`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Tag value stream failed with status ${response.status}`);
+  }
+  onOpen?.();
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const dataLine = event.split("\n").find((line) => line.startsWith("data: "));
+      if (dataLine) onValue(JSON.parse(dataLine.slice(6)) as TagRuntimeValue);
+    }
+  }
 }
 
 export async function updateTag(

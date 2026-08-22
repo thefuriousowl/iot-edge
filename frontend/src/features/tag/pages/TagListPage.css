@@ -485,3 +485,14 @@
   .tag-search button { min-height: 2.7rem; border: 1px solid var(--vgateway-border); border-top: 0; border-radius: 0 0 0.45rem 0.45rem; }
   .tag-pagination p { max-width: 9rem; }
 }
+.tag-name-link {
+  color: inherit;
+  display: grid;
+  min-width: 0;
+  text-decoration: none;
+}
+
+.tag-name-link:hover strong,
+.tag-name-link:focus-visible strong {
+  color: #72e2b4;
+}

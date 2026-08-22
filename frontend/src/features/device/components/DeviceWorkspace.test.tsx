@@ -37,8 +37,8 @@ const mockedDeleteDevice = vi.mocked(deleteDevice);
 const mockedUpdateDatasource = vi.mocked(updateDatasource);
 const mockedUpdateDevice = vi.mocked(updateDevice);
 
-const device: Device = { id: "device-1", vgateway_id: "gateway-1", name: "Power meter", type: "modbus_device", description: null, enabled: true, config: { unit_id: 7, poll_interval_ms: 1000, request_timeout_ms: null }, datasource_count: 1, tag_count: 0, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
-const datasource: Datasource = { id: "source-1", device_id: device.id, name: "Voltage registers", type: "modbus_read", description: null, enabled: true, status: "idle", config: { function_code: 3, start_address: 10, quantity: 2, poll_interval_ms: null }, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
+const device: Device = { id: "device-1", vgateway_id: "gateway-1", name: "Power meter", type: "modbus_device", description: null, enabled: true, config: { unit_id: 7, request_timeout_ms: null }, datasource_count: 1, tag_count: 0, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
+const datasource: Datasource = { id: "source-1", device_id: device.id, name: "Voltage registers", type: "modbus_read", description: null, enabled: true, status: "idle", config: { function_code: 3, start_address: 10, quantity: 2, poll_interval_ms: 60000 }, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
 
 describe("DeviceWorkspace", () => {
   beforeEach(() => {
@@ -55,7 +55,7 @@ describe("DeviceWorkspace", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Power meter" } });
     fireEvent.change(screen.getByLabelText("Unit ID"), { target: { value: "7" } });
     fireEvent.click(screen.getByRole("button", { name: "Save device" }));
-    await waitFor(() => expect(mockedCreateDevice).toHaveBeenCalledWith("gateway-1", expect.objectContaining({ name: "Power meter", type: "modbus_device", enabled: true, config: { unit_id: 7, poll_interval_ms: 1000 } })));
+    await waitFor(() => expect(mockedCreateDevice).toHaveBeenCalledWith("gateway-1", expect.objectContaining({ name: "Power meter", type: "modbus_device", enabled: true, config: { unit_id: 7 } })));
     expect(await screen.findByText("Power meter")).toBeInTheDocument();
   });
 
@@ -73,7 +73,7 @@ describe("DeviceWorkspace", () => {
       name: "Paused meter",
       description: null,
       enabled: false,
-      config: { unit_id: 7, poll_interval_ms: 1000 },
+      config: { unit_id: 7 },
     }));
     expect(await screen.findByText("Paused meter")).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();
@@ -112,7 +112,7 @@ describe("DeviceWorkspace", () => {
       name: "Voltage paused",
       description: null,
       enabled: false,
-      config: { function_code: 3, start_address: 10, quantity: 2 },
+      config: { function_code: 3, start_address: 10, quantity: 2, poll_interval_ms: 60000 },
     }));
     expect(await screen.findByText("Voltage paused")).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();

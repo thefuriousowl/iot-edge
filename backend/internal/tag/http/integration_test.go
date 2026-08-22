@@ -63,7 +63,7 @@ func TestTagCRUDPreviewAndValidation_EndToEnd(t *testing.T) {
 	}
 
 	var calculated tag.Tag
-	response = performRequest(t, app, http.MethodPost, "/api/tags/", fmt.Sprintf(`{"name":"Sum","type":"calculated","data_type":"uint16","description":"Input plus base","config":{"expression":%q}}`, expression))
+	response = performRequest(t, app, http.MethodPost, "/api/tags/", fmt.Sprintf(`{"name":"Sum","type":"calculated","data_type":"uint16","description":"Input plus base","config":{"expression":%q,"trigger":{"tag_id":"%s","mode":"on_sample"}}}`, expression, reading.ID))
 	assertStatus(t, response, fiber.StatusCreated)
 	decodeResponse(t, response, &calculated)
 	if calculated.ID == uuid.Nil || calculated.Description == nil || *calculated.Description != "Input plus base" {
@@ -71,11 +71,9 @@ func TestTagCRUDPreviewAndValidation_EndToEnd(t *testing.T) {
 	}
 
 	response = performRequest(t, app, http.MethodPost, "/api/tags/"+calculated.ID.String()+"/preview", "")
-	assertStatus(t, response, fiber.StatusOK)
-	var preview tag.PreviewResult
-	decodeResponse(t, response, &preview)
-	if preview.TagID != calculated.ID || preview.DataType != tag.DataTypeUInt16 || preview.Quality != "good" || preview.Value != float64(52) || source.calls[datasourceID] != 1 {
-		t.Errorf("calculated preview/calls = %#v / %d", preview, source.calls[datasourceID])
+	assertAPIError(t, response, fiber.StatusConflict, "TAG008")
+	if source.calls[datasourceID] != 0 {
+		t.Errorf("calculated preview datasource calls = %d, want 0", source.calls[datasourceID])
 	}
 
 	response = performRequest(t, app, http.MethodPost, "/api/tags/preview", `{"type":"constant","data_type":"bool","config":{"value":true}}`)
@@ -109,16 +107,12 @@ func TestTagCRUDPreviewAndValidation_EndToEnd(t *testing.T) {
 	}
 
 	response = performRequest(t, app, http.MethodPost, "/api/tags/"+calculated.ID.String()+"/preview", "")
-	assertStatus(t, response, fiber.StatusOK)
-	decodeResponse(t, response, &preview)
-	if preview.Value != float64(54) {
-		t.Errorf("updated calculated preview = %#v", preview)
-	}
+	assertAPIError(t, response, fiber.StatusConflict, "TAG008")
 
 	response = performRequest(t, app, http.MethodPost, "/api/tags/", `{"name":"Base","type":"constant","data_type":"uint16","config":{"value":1}}`)
 	assertAPIError(t, response, fiber.StatusConflict, "TAG001")
 
-	response = performRequest(t, app, http.MethodPut, "/api/tags/"+calculated.ID.String(), fmt.Sprintf(`{"config":{"expression":"${%s}"}}`, calculated.ID))
+	response = performRequest(t, app, http.MethodPut, "/api/tags/"+calculated.ID.String(), fmt.Sprintf(`{"config":{"expression":"${%s}","trigger":{"tag_id":"%s","mode":"on_sample"}}}`, calculated.ID, reading.ID))
 	assertAPIError(t, response, fiber.StatusBadRequest, "VALIDATION_ERROR")
 
 	response = performRequest(t, app, http.MethodPut, "/api/tags/"+calculated.ID.String(), `{"enabled":false}`)

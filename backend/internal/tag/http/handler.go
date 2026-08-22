@@ -1,12 +1,15 @@
 package taghttp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -25,7 +28,24 @@ type Service interface {
 	ValidateCalculatedExpression(context.Context, uuid.UUID, string) ([]uuid.UUID, error)
 }
 
-type Handler struct{ service Service }
+type ValueMonitor interface {
+	Latest(uuid.UUID) (tag.TagValue, bool)
+	History(uuid.UUID, int) []tag.TagValue
+	Subscribe(context.Context, []uuid.UUID) (<-chan tag.TagValue, func())
+}
+
+type Handler struct {
+	service Service
+	values  ValueMonitor
+}
+
+const tagValueStreamHeartbeatInterval = 15 * time.Second
+
+type HandlerOption func(*Handler)
+
+func WithValueMonitor(values ValueMonitor) HandlerOption {
+	return func(handler *Handler) { handler.values = values }
+}
 
 type createRequest struct {
 	DatasourceID *uuid.UUID      `json:"datasource_id"`
@@ -58,7 +78,15 @@ type validateExpressionRequest struct {
 	Expression string     `json:"expression"`
 }
 
-func NewHandler(service Service) *Handler { return &Handler{service: service} }
+func NewHandler(service Service, options ...HandlerOption) *Handler {
+	handler := &Handler{service: service}
+	for _, option := range options {
+		if option != nil {
+			option(handler)
+		}
+	}
+	return handler
+}
 
 func (h *Handler) List(c *fiber.Ctx) error {
 	input, err := parseListInput(c)
@@ -78,6 +106,87 @@ func (h *Handler) List(c *fiber.Ctx) error {
 			"total_pages": result.TotalPages,
 		},
 	})
+}
+
+func (h *Handler) Values(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Tag ID")
+	}
+	if _, err := h.service.Get(c.UserContext(), id); err != nil {
+		return handleError(c, err)
+	}
+	if h.values == nil {
+		return apiError(c, fiber.StatusServiceUnavailable, "TAG009", "Tag value monitoring is unavailable")
+	}
+	limit := tag.DefaultTagValueHistoryLimit
+	if raw := c.Query("limit"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > tag.DefaultTagValueHistoryLimit {
+			return validation(c, "limit must be between 1 and 10")
+		}
+		limit = parsed
+	}
+	history := h.values.History(id, limit)
+	if history == nil {
+		history = []tag.TagValue{}
+	}
+	var latest *tag.TagValue
+	if value, exists := h.values.Latest(id); exists {
+		latest = &value
+	}
+	return c.JSON(fiber.Map{"latest": latest, "history": history, "latest_retention": "persistent", "history_retention": "runtime_memory"})
+}
+
+func (h *Handler) StreamValues(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Tag ID")
+	}
+	if _, err := h.service.Get(c.UserContext(), id); err != nil {
+		return handleError(c, err)
+	}
+	if h.values == nil {
+		return apiError(c, fiber.StatusServiceUnavailable, "TAG009", "Tag value monitoring is unavailable")
+	}
+	stream, unsubscribe := h.values.Subscribe(c.UserContext(), []uuid.UUID{id})
+	c.Set(fiber.HeaderContentType, "text/event-stream")
+	c.Set(fiber.HeaderCacheControl, "no-cache, no-transform")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+	c.Context().SetBodyStreamWriter(func(writer *bufio.Writer) {
+		defer unsubscribe()
+		if _, err := writer.WriteString(": connected\n\n"); err != nil {
+			return
+		}
+		if err := writer.Flush(); err != nil {
+			return
+		}
+		heartbeat := time.NewTicker(tagValueStreamHeartbeatInterval)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case value, open := <-stream:
+				if !open {
+					return
+				}
+				payload, err := json.Marshal(value)
+				if err != nil {
+					continue
+				}
+				if _, err := fmt.Fprintf(writer, "event: tag_value\ndata: %s\n\n", payload); err != nil {
+					return
+				}
+			case <-heartbeat.C:
+				if _, err := writer.WriteString(": keep-alive\n\n"); err != nil {
+					return
+				}
+			}
+			if err := writer.Flush(); err != nil {
+				return
+			}
+		}
+	})
+	return nil
 }
 
 func (h *Handler) Create(c *fiber.Ctx) error {
@@ -309,6 +418,8 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusConflict, "TAG001", "Tag name already exists")
 	case errors.Is(err, tag.ErrTagDisabled):
 		return apiError(c, fiber.StatusConflict, "TAG006", "Enable the tag before previewing")
+	case errors.Is(err, tag.ErrCalculatedSnapshotRequired):
+		return apiError(c, fiber.StatusConflict, "TAG008", "Calculated Tags require a runtime value snapshot")
 	case errors.Is(err, tag.ErrTagSourceReadFailed):
 		return requestAPIError(c, fiber.StatusBadGateway, "TAG007", "Tag datasource read failed", err)
 	case errors.Is(err, tag.ErrInvalidTagInput),
@@ -316,6 +427,9 @@ func handleError(c *fiber.Ctx, err error) error {
 		errors.Is(err, tag.ErrUnsupportedTagDataType),
 		errors.Is(err, tag.ErrUnsupportedDecoder),
 		errors.Is(err, tag.ErrInvalidDecoderConfig),
+		errors.Is(err, tag.ErrInvalidTransformConfig),
+		errors.Is(err, tag.ErrUnsupportedTransform),
+		errors.Is(err, tag.ErrCalculatedTriggerInvalid),
 		errors.Is(err, tag.ErrCalculatedDependencyMissing),
 		errors.Is(err, tag.ErrCircularTagDependency),
 		errors.Is(err, tag.ErrTagDependencyTooDeep),

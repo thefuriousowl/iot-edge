@@ -54,7 +54,7 @@ const device: Device = {
   type: "modbus_device",
   description: null,
   enabled: true,
-  config: { unit_id: 1, poll_interval_ms: 1000, request_timeout_ms: null },
+  config: { unit_id: 1, request_timeout_ms: null },
   created_at: "2026-08-22T00:00:00Z",
   updated_at: "2026-08-22T00:00:00Z",
 };
@@ -67,7 +67,7 @@ const datasource: Datasource = {
   description: null,
   enabled: true,
   status: "idle",
-  config: { function_code: 3, start_address: 0, quantity: 10, poll_interval_ms: null },
+  config: { function_code: 3, start_address: 0, quantity: 10, poll_interval_ms: 60000 },
   created_at: "2026-08-22T00:00:00Z",
   updated_at: "2026-08-22T00:00:00Z",
 };
@@ -159,7 +159,7 @@ describe("ReadingTagForm", () => {
       datasource_id: datasource.id,
       description: "Line voltage",
       enabled: true,
-      config: { decoder: { type: "binary_numeric", config: { byte_offset: 2, byte_order: "little_endian" } } },
+      config: { decoder: { type: "binary_numeric", data_type: "uint16", config: { byte_offset: 2, byte_order: "little_endian" } } },
     }));
     expect(onCreated).toHaveBeenCalledOnce();
     expect(mockedListGateways).toHaveBeenCalledWith({ page: 1, per_page: 100 }, expect.any(AbortSignal));
@@ -179,9 +179,9 @@ describe("ReadingTagForm", () => {
 
     await waitFor(() => expect(mockedCreateTag).toHaveBeenCalledWith(expect.objectContaining({
       data_type: "bool",
-      config: { decoder: { type: "binary_numeric", config: { byte_offset: 0, byte_order: "big_endian", bit_offset: 3 } } },
+      config: { decoder: { type: "binary_numeric", data_type: "bool", config: { byte_offset: 0, byte_order: "big_endian", bit_offset: 3 } } },
     })));
-    fireEvent.change(screen.getByLabelText(/Data type/), { target: { value: "uint16" } });
+    fireEvent.change(screen.getByLabelText(/Raw data type/), { target: { value: "uint16" } });
     expect(screen.queryByLabelText(/Bit offset/)).not.toBeInTheDocument();
   });
 
@@ -208,12 +208,43 @@ describe("ReadingTagForm", () => {
       type: "reading",
       datasource_id: datasource.id,
       data_type: "uint16",
-      config: { decoder: { type: "binary_numeric", config: { byte_offset: 2, byte_order: "little_endian" } } },
+      config: { decoder: { type: "binary_numeric", data_type: "uint16", config: { byte_offset: 2, byte_order: "little_endian" } } },
     }));
     const result = await screen.findByLabelText("Tag preview result");
     expect(result).toHaveTextContent("1111");
     expect(result).toHaveTextContent("uint16 · good");
     expect(mockedCreateTag).not.toHaveBeenCalled();
+  });
+
+  it("previews and creates the exact raw-to-engineering scaling contract", async () => {
+    mockedPreviewTag.mockResolvedValue({ ...previewResult, data_type: "float64", value: 50.000762951094835 });
+    mockedCreateTag.mockResolvedValue({
+      ...createdTag,
+      data_type: "float64",
+      config: {
+        decoder: { type: "binary_numeric", data_type: "uint16", config: { byte_offset: 0, byte_order: "big_endian", bit_offset: 0 } },
+        transform: { type: "linear", config: { gain: 0.0015259021896696422, offset: 0 } },
+      },
+    });
+    renderForm();
+    await selectDatasourceHierarchy();
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "pressure" } });
+    fireEvent.change(screen.getByLabelText(/Data type/), { target: { value: "float64" } });
+    fireEvent.click(screen.getByLabelText(/Enable linear scaling/));
+    fireEvent.change(screen.getByLabelText(/Gain/), { target: { value: "0.0015259021896696422" } });
+    fireEvent.change(screen.getByLabelText(/Offset/), { target: { value: "0" } });
+
+    const config = {
+      decoder: { type: "binary_numeric" as const, data_type: "uint16" as const, config: { byte_offset: 0, byte_order: "big_endian" as const } },
+      transform: { type: "linear" as const, config: { gain: 0.0015259021896696422, offset: 0 } },
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Preview value" }));
+    await waitFor(() => expect(mockedPreviewTag).toHaveBeenCalledWith({ type: "reading", datasource_id: datasource.id, data_type: "float64", config }));
+    expect(await screen.findByText("50.00076295")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Reading Tag" }));
+    await waitFor(() => expect(mockedCreateTag).toHaveBeenCalledWith(expect.objectContaining({ name: "pressure", data_type: "float64", config })));
   });
 
   it("clears stale preview state and blocks invalid decoder ranges", async () => {

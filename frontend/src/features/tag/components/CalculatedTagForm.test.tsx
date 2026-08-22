@@ -5,20 +5,18 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createTag, listTags, previewTag, validateTagExpression } from "../../../services/tag.service";
-import type { CalculatedTag, Tag, TagListResponse, TagPreviewResult } from "../../../types/tag";
+import { createTag, listTags, validateTagExpression } from "../../../services/tag.service";
+import type { CalculatedTag, Tag, TagListResponse } from "../../../types/tag";
 import CalculatedTagForm from "./CalculatedTagForm";
 
 vi.mock("../../../services/tag.service", () => ({
   createTag: vi.fn(),
   listTags: vi.fn(),
-  previewTag: vi.fn(),
   validateTagExpression: vi.fn(),
 }));
 
 const mockedCreateTag = vi.mocked(createTag);
 const mockedListTags = vi.mocked(listTags);
-const mockedPreviewTag = vi.mocked(previewTag);
 const mockedValidate = vi.mocked(validateTagExpression);
 
 const reading: Tag = {
@@ -61,7 +59,6 @@ describe("CalculatedTagForm", () => {
   beforeEach(() => {
     mockedCreateTag.mockReset();
     mockedListTags.mockReset();
-    mockedPreviewTag.mockReset();
     mockedValidate.mockReset();
     mockedListTags.mockResolvedValue(listResponse());
     mockedValidate.mockResolvedValue({ valid: true, dependencies: [reading.id, constant.id] });
@@ -72,7 +69,7 @@ describe("CalculatedTagForm", () => {
   it("inserts immutable Tag references and creates an exact Calculated Tag", async () => {
     const onCreated = vi.fn();
     const expression = `\${${reading.id}} + \${${constant.id}}`;
-    const created: CalculatedTag = { id: "calculated-1", datasource_id: null, name: "Adjusted voltage", type: "calculated", data_type: "float64", description: "Reading plus nominal", enabled: true, config: { expression }, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" };
+    const created: CalculatedTag = { id: "calculated-1", datasource_id: null, name: "Adjusted voltage", type: "calculated", data_type: "float64", description: "Reading plus nominal", enabled: true, config: { expression, trigger: { tag_id: reading.id, mode: "on_sample" } }, created_at: "2026-08-22T00:00:00Z", updated_at: "2026-08-22T00:00:00Z" };
     mockedCreateTag.mockResolvedValue(created);
     renderForm({ onCreated });
 
@@ -87,10 +84,11 @@ describe("CalculatedTagForm", () => {
     expect(screen.getAllByText("Nominal Voltage")).toHaveLength(2);
 
     fireEvent.change(screen.getByLabelText(/Name/), { target: { value: " Adjusted voltage " } });
+    fireEvent.change(screen.getByRole("combobox", { name: /Trigger Tag/ }), { target: { value: reading.id } });
     fireEvent.change(screen.getByLabelText("Description"), { target: { value: " Reading plus nominal " } });
     fireEvent.click(screen.getByRole("button", { name: "Create Calculated Tag" }));
 
-    await waitFor(() => expect(mockedCreateTag).toHaveBeenCalledWith({ name: "Adjusted voltage", type: "calculated", data_type: "float64", description: "Reading plus nominal", enabled: true, config: { expression } }));
+    await waitFor(() => expect(mockedCreateTag).toHaveBeenCalledWith({ name: "Adjusted voltage", type: "calculated", data_type: "float64", description: "Reading plus nominal", enabled: true, config: { expression, trigger: { tag_id: reading.id, mode: "on_sample" } } }));
     expect(onCreated).toHaveBeenCalledOnce();
     expect(mockedListTags).toHaveBeenCalledWith({ page: 1, per_page: 100 }, expect.any(AbortSignal));
   });
@@ -109,23 +107,17 @@ describe("CalculatedTagForm", () => {
     expect(mockedValidate).toHaveBeenLastCalledWith({ expression: "2 + 2" }, expect.any(AbortSignal));
   });
 
-  it("previews a valid unsaved calculation without requiring a name and clears stale output", async () => {
+  it("requires a Trigger Tag and never exposes an external-read preview", async () => {
     const expression = `\${${reading.id}} + 1`;
-    const result: TagPreviewResult = { tag_id: "00000000-0000-0000-0000-000000000000", observed_at: "2026-08-22T00:00:00Z", quality: "good", data_type: "float64", value: 16920.5 };
     mockedValidate.mockResolvedValue({ valid: true, dependencies: [reading.id] });
-    mockedPreviewTag.mockResolvedValue(result);
     renderForm();
 
     fireEvent.change(screen.getByLabelText(/Expression/), { target: { value: expression } });
     await screen.findByText("Valid expression · 1 dependency", {}, { timeout: 1200 });
-    fireEvent.click(screen.getByRole("button", { name: "Preview value" }));
-    await waitFor(() => expect(mockedPreviewTag).toHaveBeenCalledWith({ type: "calculated", data_type: "float64", config: { expression } }));
-    expect(await screen.findByLabelText("Tag preview result")).toHaveTextContent("16920.5");
-    expect(mockedCreateTag).not.toHaveBeenCalled();
-
-    fireEvent.change(screen.getByLabelText(/Expression/), { target: { value: `${expression} + 1` } });
-    expect(screen.queryByLabelText("Tag preview result")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Preview value" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create Calculated Tag" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: /Trigger Tag/ }), { target: { value: reading.id } });
+    expect(screen.getByRole("button", { name: "Create Calculated Tag" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Preview value" })).not.toBeInTheDocument();
   });
 
   it("shows sanitized validation failures and retries the current expression", async () => {

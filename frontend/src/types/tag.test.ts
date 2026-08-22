@@ -70,7 +70,7 @@ describe("Tag types", () => {
         name: "Delta",
         type: "calculated",
         data_type: "float64",
-        config: { expression: "${tag-reading} - 230" },
+        config: { expression: "${tag-reading} - 230", trigger: { tag_id: "tag-reading", mode: "on_sample" } },
       },
     ] satisfies CreateTagRequest[];
 
@@ -107,8 +107,8 @@ describe("Tag types", () => {
       boolean | number
     >();
     expectTypeOf<ValidateTagExpressionResponse["dependencies"]>().toBeArray();
-    const code: TagErrorCode = "TAG007";
+    const code: TagErrorCode = "TAG008";
 
-    expect(code).toBe("TAG007");
+    expect(code).toBe("TAG008");
   });
 });

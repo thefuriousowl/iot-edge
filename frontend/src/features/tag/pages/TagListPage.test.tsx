@@ -69,7 +69,7 @@ const tags: Tag[] = [
     data_type: "float64",
     description: "Deviation from nominal",
     enabled: true,
-    config: { expression: "${11111111-1111-4111-8111-111111111111} - 230.5" },
+    config: { expression: "${11111111-1111-4111-8111-111111111111} - 230.5", trigger: { tag_id: "11111111-1111-4111-8111-111111111111", mode: "on_sample" } },
     created_at: "2026-08-22T01:00:00Z",
     updated_at: "2026-08-22T02:00:00Z",
   },
@@ -148,6 +148,7 @@ describe("TagListPage", () => {
       "href",
       "/tags/new",
     );
+    expect(screen.getByRole("link", { name: /Line voltage/ })).toHaveAttribute("href", "/tags/11111111-1111-4111-8111-111111111111");
 
     const summary = screen.getByRole("region", { name: "Tag summary" });
     expect(within(summary).getByText("3")).toBeInTheDocument();

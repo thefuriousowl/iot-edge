@@ -17,8 +17,8 @@ const mockedDelete = vi.mocked(api.delete);
 const mockedGetAccessToken = vi.mocked(getAccessToken);
 function responseWith<T>(data: T): AxiosResponse<T> { return { data } as AxiosResponse<T>; }
 
-const device: Device = { id: "device-1", vgateway_id: "gateway-1", name: "Meter", type: "modbus_device", description: null, enabled: true, config: { unit_id: 7, poll_interval_ms: 1000, request_timeout_ms: null }, datasource_count: 0, tag_count: 0, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
-const datasource: Datasource = { id: "source-1", device_id: device.id, name: "Registers", type: "modbus_read", description: null, enabled: true, status: "idle", config: { function_code: 3, start_address: 10, quantity: 2, poll_interval_ms: null }, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
+const device: Device = { id: "device-1", vgateway_id: "gateway-1", name: "Meter", type: "modbus_device", description: null, enabled: true, config: { unit_id: 7, request_timeout_ms: null }, datasource_count: 0, tag_count: 0, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
+const datasource: Datasource = { id: "source-1", device_id: device.id, name: "Registers", type: "modbus_read", description: null, enabled: true, status: "idle", config: { function_code: 3, start_address: 10, quantity: 2, poll_interval_ms: 60000 }, created_at: "2026-08-21T00:00:00Z", updated_at: "2026-08-21T00:00:00Z" };
 const request: CreateDatasourceRequest = { name: datasource.name, type: "modbus_read", config: { function_code: 3, start_address: 10, quantity: 2 } };
 
 describe("device service", () => {

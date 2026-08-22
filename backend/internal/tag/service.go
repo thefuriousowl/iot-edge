@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/thefuriousowl/iot-edge/internal/protocol"
 )
 
 const (
@@ -31,7 +32,9 @@ var (
 	ErrUnsupportedTagDataType      = errors.New("unsupported tag data type")
 	ErrTagDisabled                 = errors.New("tag is disabled")
 	ErrTagSourceReadFailed         = errors.New("tag datasource read failed")
+	ErrCalculatedSnapshotRequired  = errors.New("calculated tag requires a value snapshot")
 	ErrCalculatedDependencyMissing = errors.New("calculated tag dependency not found")
+	ErrCalculatedTriggerInvalid    = errors.New("calculated tag trigger is invalid")
 	ErrCircularTagDependency       = errors.New("circular tag dependency")
 	ErrTagDependencyTooDeep        = errors.New("tag dependency graph is too deep")
 )
@@ -80,6 +83,8 @@ type PreviewResult struct {
 	Value      any       `json:"value"`
 }
 
+type ValueResolver func(context.Context, uuid.UUID) (any, error)
+
 type Service struct {
 	repository Repository
 	source     DatasourceReader
@@ -126,6 +131,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Tag, error) {
 		return nil, err
 	}
 	entity := &Tag{ID: uuid.New(), DatasourceID: cloneUUIDPointer(input.DatasourceID), Name: name, Type: input.Type, DataType: input.DataType, Description: normalizeTagDescription(input.Description), Enabled: defaultTagEnabled(input.Enabled), Config: config}
+	if err := s.validateCalculatedTrigger(ctx, entity); err != nil {
+		return nil, err
+	}
 	if err := s.validateDependencyGraph(ctx, entity.ID, dependencies); err != nil {
 		return nil, err
 	}
@@ -192,6 +200,9 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (
 		return nil, err
 	}
 	entity.Config = normalizedConfig
+	if err := s.validateCalculatedTrigger(ctx, entity); err != nil {
+		return nil, err
+	}
 	if err := s.validateDependencyGraph(ctx, entity.ID, dependencies); err != nil {
 		return nil, err
 	}
@@ -234,22 +245,105 @@ func (s *Service) ValidateCalculatedExpression(ctx context.Context, tagID uuid.U
 	return dependencies, nil
 }
 
+func (s *Service) EvaluateCalculated(ctx context.Context, dataType DataType, raw Config, resolve ValueResolver) (any, error) {
+	if resolve == nil {
+		return nil, ErrCalculatedSnapshotRequired
+	}
+	config, _, err := s.normalizeConfig(TypeCalculated, dataType, raw)
+	if err != nil {
+		return nil, err
+	}
+	var calculated calculatedConfigInput
+	if err := json.Unmarshal(config, &calculated); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
+	}
+	expression, err := ParseExpression(calculated.Expression)
+	if err != nil {
+		return nil, err
+	}
+	value, err := expression.Evaluate(ctx, ReferenceResolver(resolve))
+	if err != nil {
+		return nil, err
+	}
+	return coerceTagValue(dataType, value)
+}
+
+func (s *Service) ProcessReadingSample(dataType DataType, raw Config, sample protocol.DatasourceSample) (any, error) {
+	config, _, err := s.normalizeConfig(TypeReading, dataType, raw)
+	if err != nil {
+		return nil, err
+	}
+	return s.processNormalizedReadingSample(dataType, config, sample)
+}
+
+func (s *Service) processNormalizedReadingSample(dataType DataType, config Config, sample protocol.DatasourceSample) (any, error) {
+	var reading readingConfig
+	if err := json.Unmarshal(config, &reading); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
+	}
+	if sample.Quality != "" && sample.Quality != "good" {
+		message := strings.TrimSpace(sample.Error)
+		if message == "" {
+			message = "datasource sample quality is " + sample.Quality
+		}
+		return nil, fmt.Errorf("%w: %s", ErrTagSourceReadFailed, message)
+	}
+	sourceDataType := dataType
+	if reading.Decoder.DataType != nil {
+		sourceDataType = *reading.Decoder.DataType
+	}
+	value, err := s.decoders[reading.Decoder.Type].Decode(sample, sourceDataType, reading.Decoder.Config)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrTagSourceReadFailed, err)
+	}
+	if reading.Transform != nil {
+		switch reading.Transform.Type {
+		case LinearTransformType:
+			value, err = applyLinearTransform(value, reading.Transform.Config)
+		default:
+			err = fmt.Errorf("%w: %q", ErrUnsupportedTransform, reading.Transform.Type)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrTagSourceReadFailed, err)
+		}
+	}
+	value, err = coerceTagValue(dataType, value)
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
 type decoderEnvelopeInput struct {
-	Type   string `json:"type"`
-	Config Config `json:"config"`
+	Type     string    `json:"type"`
+	DataType *DataType `json:"data_type"`
+	Config   Config    `json:"config"`
 }
 
 type readingConfigInput struct {
-	Decoder *decoderEnvelopeInput `json:"decoder"`
+	Decoder   *decoderEnvelopeInput   `json:"decoder"`
+	Transform *transformEnvelopeInput `json:"transform"`
 }
 
 type decoderEnvelope struct {
+	Type     string    `json:"type"`
+	DataType *DataType `json:"data_type,omitempty"`
+	Config   Config    `json:"config"`
+}
+
+type readingConfig struct {
+	Decoder   decoderEnvelope    `json:"decoder"`
+	Transform *transformEnvelope `json:"transform,omitempty"`
+}
+
+type transformEnvelopeInput struct {
 	Type   string `json:"type"`
 	Config Config `json:"config"`
 }
 
-type readingConfig struct {
-	Decoder decoderEnvelope `json:"decoder"`
+type transformEnvelope struct {
+	Type   string `json:"type"`
+	Config Config `json:"config"`
 }
 
 type constantConfigInput struct {
@@ -257,7 +351,13 @@ type constantConfigInput struct {
 }
 
 type calculatedConfigInput struct {
-	Expression string `json:"expression"`
+	Expression string                  `json:"expression"`
+	Trigger    *calculatedTriggerInput `json:"trigger"`
+}
+
+type calculatedTriggerInput struct {
+	TagID uuid.UUID `json:"tag_id"`
+	Mode  string    `json:"mode"`
 }
 
 func (s *Service) normalizeConfig(tagType Type, dataType DataType, raw Config) (Config, []uuid.UUID, error) {
@@ -275,11 +375,37 @@ func (s *Service) normalizeConfig(tagType Type, dataType DataType, raw Config) (
 		if !ok {
 			return nil, nil, fmt.Errorf("%w: %q", ErrUnsupportedDecoder, decoderType)
 		}
-		decoderConfig, err := decoder.NormalizeConfig(dataType, input.Decoder.Config)
+		sourceDataType := dataType
+		if input.Decoder.DataType != nil {
+			sourceDataType = *input.Decoder.DataType
+		}
+		if !validTagDataType(sourceDataType) {
+			return nil, nil, fmt.Errorf("%w: decoder data type %q", ErrUnsupportedTagDataType, sourceDataType)
+		}
+		decoderConfig, err := decoder.NormalizeConfig(sourceDataType, input.Decoder.Config)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: %w", ErrInvalidTagInput, err)
 		}
-		canonical, err := json.Marshal(readingConfig{Decoder: decoderEnvelope{Type: decoderType, Config: decoderConfig}})
+		var normalizedTransform *transformEnvelope
+		if input.Transform != nil {
+			if sourceDataType == DataTypeBool || dataType == DataTypeBool {
+				return nil, nil, fmt.Errorf("%w: linear transform requires numeric source and output types", ErrInvalidTransformConfig)
+			}
+			transformType := strings.TrimSpace(input.Transform.Type)
+			if transformType != LinearTransformType {
+				return nil, nil, fmt.Errorf("%w: %q", ErrUnsupportedTransform, transformType)
+			}
+			transformConfig, transformErr := normalizeLinearTransform(input.Transform.Config)
+			if transformErr != nil {
+				return nil, nil, fmt.Errorf("%w: %w", ErrInvalidTagInput, transformErr)
+			}
+			normalizedTransform = &transformEnvelope{Type: transformType, Config: transformConfig}
+		}
+		var canonicalSourceType *DataType
+		if sourceDataType != dataType {
+			canonicalSourceType = &sourceDataType
+		}
+		canonical, err := json.Marshal(readingConfig{Decoder: decoderEnvelope{Type: decoderType, DataType: canonicalSourceType, Config: decoderConfig}, Transform: normalizedTransform})
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
 		}
@@ -293,6 +419,16 @@ func (s *Service) normalizeConfig(tagType Type, dataType DataType, raw Config) (
 			return nil, nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
 		}
 		input.Expression = strings.TrimSpace(input.Expression)
+		if input.Trigger == nil || input.Trigger.TagID == uuid.Nil {
+			return nil, nil, fmt.Errorf("%w: trigger.tag_id is required", ErrCalculatedTriggerInvalid)
+		}
+		input.Trigger.Mode = strings.TrimSpace(input.Trigger.Mode)
+		if input.Trigger.Mode == "" {
+			input.Trigger.Mode = "on_sample"
+		}
+		if input.Trigger.Mode != "on_sample" {
+			return nil, nil, fmt.Errorf("%w: unsupported trigger mode %q", ErrCalculatedTriggerInvalid, input.Trigger.Mode)
+		}
 		expression, err := ParseExpression(input.Expression)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: %w", ErrInvalidTagInput, err)
@@ -301,7 +437,18 @@ func (s *Service) normalizeConfig(tagType Type, dataType DataType, raw Config) (
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
 		}
-		return canonical, expression.Dependencies(), nil
+		dependencies := expression.Dependencies()
+		triggerFound := false
+		for _, dependencyID := range dependencies {
+			if dependencyID == input.Trigger.TagID {
+				triggerFound = true
+				break
+			}
+		}
+		if !triggerFound {
+			dependencies = append(dependencies, input.Trigger.TagID)
+		}
+		return canonical, dependencies, nil
 	default:
 		return nil, nil, fmt.Errorf("%w: %q", ErrUnsupportedTagType, tagType)
 	}
@@ -483,6 +630,30 @@ func (s *Service) validateDependencyGraph(ctx context.Context, tagID uuid.UUID, 
 	return nil
 }
 
+func (s *Service) validateCalculatedTrigger(ctx context.Context, entity *Tag) error {
+	if entity.Type != TypeCalculated {
+		return nil
+	}
+	var config calculatedConfigInput
+	if err := json.Unmarshal(entity.Config, &config); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
+	}
+	if config.Trigger == nil || config.Trigger.TagID == uuid.Nil || config.Trigger.TagID == entity.ID {
+		return ErrCalculatedTriggerInvalid
+	}
+	trigger, err := s.repository.Find(ctx, config.Trigger.TagID)
+	if err != nil {
+		if errors.Is(err, ErrTagNotFound) {
+			return fmt.Errorf("%w: %s", ErrCalculatedDependencyMissing, config.Trigger.TagID)
+		}
+		return err
+	}
+	if trigger.Type == TypeConstant {
+		return fmt.Errorf("%w: constant tags cannot trigger calculations", ErrCalculatedTriggerInvalid)
+	}
+	return nil
+}
+
 func graphCycleState(id uuid.UUID, graph map[uuid.UUID][]uuid.UUID, state map[uuid.UUID]uint8, depth int) (bool, bool) {
 	if state[id] == 1 {
 		return true, false
@@ -556,23 +727,11 @@ func (state *previewState) evaluateEntity(entity *Tag) (*PreviewResult, error) {
 	var value any
 	switch entity.Type {
 	case TypeReading:
-		var reading readingConfig
-		if err := json.Unmarshal(config, &reading); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
-		}
-		decoder := state.service.decoders[reading.Decoder.Type]
 		sample, err := state.service.source.ReadDatasourceForTag(state.ctx, *entity.DatasourceID)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrTagSourceReadFailed, err)
 		}
-		if sample.Quality != "" && sample.Quality != "good" {
-			return nil, fmt.Errorf("%w: %s", ErrTagSourceReadFailed, sample.Error)
-		}
-		value, err = decoder.Decode(sample, entity.DataType, reading.Decoder.Config)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrTagSourceReadFailed, err)
-		}
-		value, err = coerceTagValue(entity.DataType, value)
+		value, err = state.service.processNormalizedReadingSample(entity.DataType, config, sample)
 		if err != nil {
 			return nil, err
 		}
@@ -585,28 +744,7 @@ func (state *previewState) evaluateEntity(entity *Tag) (*PreviewResult, error) {
 			return nil, err
 		}
 	case TypeCalculated:
-		var calculated calculatedConfigInput
-		if err := json.Unmarshal(config, &calculated); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidTagInput, err)
-		}
-		expression, err := ParseExpression(calculated.Expression)
-		if err != nil {
-			return nil, err
-		}
-		value, err = expression.Evaluate(state.ctx, func(_ context.Context, dependencyID uuid.UUID) (any, error) {
-			dependency, dependencyErr := state.evaluateSaved(dependencyID, true)
-			if dependencyErr != nil {
-				return nil, dependencyErr
-			}
-			return dependency.Value, nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		value, err = coerceTagValue(entity.DataType, value)
-		if err != nil {
-			return nil, err
-		}
+		return nil, ErrCalculatedSnapshotRequired
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedTagType, entity.Type)
 	}

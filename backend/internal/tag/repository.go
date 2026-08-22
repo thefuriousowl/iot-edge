@@ -41,4 +41,6 @@ type Repository interface {
 	Update(context.Context, *Tag, []uuid.UUID) error
 	Delete(context.Context, uuid.UUID) error
 	ListDependencies(context.Context) ([]Dependency, error)
+	ListEnabledReadingTags(context.Context) ([]Tag, error)
+	ListEnabledTags(context.Context) ([]Tag, error)
 }

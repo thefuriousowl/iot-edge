@@ -19,7 +19,7 @@ func TestDatasourceDriverNormalizesProtocolOwnedConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NormalizeDeviceConfig() error = %v", err)
 	}
-	if string(deviceConfig) != `{"unit_id":7,"poll_interval_ms":1000,"request_timeout_ms":null}` {
+	if string(deviceConfig) != `{"unit_id":7,"request_timeout_ms":null}` {
 		t.Errorf("device config = %s", deviceConfig)
 	}
 
@@ -27,7 +27,7 @@ func TestDatasourceDriverNormalizesProtocolOwnedConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NormalizeDatasourceConfig() error = %v", err)
 	}
-	if string(datasourceConfig) != `{"function_code":3,"start_address":10,"quantity":2,"poll_interval_ms":null}` {
+	if string(datasourceConfig) != `{"function_code":3,"start_address":10,"quantity":2,"poll_interval_ms":60000}` {
 		t.Errorf("datasource config = %s", datasourceConfig)
 	}
 }
@@ -77,8 +77,8 @@ func TestDatasourceDriverPreviewReturnsRegisterEnvelope(t *testing.T) {
 	exclusiveCalls := 0
 	sample, err := driver.Preview(context.Background(), protocol.DatasourceReadRequest{
 		GatewayConfig:    json.RawMessage(`{"host":"plc.local","port":502,"timeout":5000,"retry_count":0,"retry_delay":0,"keep_alive":true,"reconnect_interval":0}`),
-		DeviceConfig:     json.RawMessage(`{"unit_id":7,"poll_interval_ms":1000,"request_timeout_ms":null}`),
-		DatasourceConfig: json.RawMessage(`{"function_code":3,"start_address":10,"quantity":2,"poll_interval_ms":null}`),
+		DeviceConfig:     json.RawMessage(`{"unit_id":7,"request_timeout_ms":null}`),
+		DatasourceConfig: json.RawMessage(`{"function_code":3,"start_address":10,"quantity":2,"poll_interval_ms":60000}`),
 		ExecuteExclusive: func(ctx context.Context, operation func(context.Context) error) error {
 			exclusiveCalls++
 			return operation(ctx)
@@ -159,7 +159,7 @@ func TestFormatModbusDataRejectsShortPayload(t *testing.T) {
 func datasourceReadRequest() protocol.DatasourceReadRequest {
 	return protocol.DatasourceReadRequest{
 		GatewayConfig:    json.RawMessage(`{"host":"plc.local","port":502,"timeout":5000,"retry_count":0,"retry_delay":0,"keep_alive":true,"reconnect_interval":0}`),
-		DeviceConfig:     json.RawMessage(`{"unit_id":7,"poll_interval_ms":1000,"request_timeout_ms":null}`),
-		DatasourceConfig: json.RawMessage(`{"function_code":3,"start_address":96,"quantity":5,"poll_interval_ms":null}`),
+		DeviceConfig:     json.RawMessage(`{"unit_id":7,"request_timeout_ms":null}`),
+		DatasourceConfig: json.RawMessage(`{"function_code":3,"start_address":96,"quantity":5,"poll_interval_ms":60000}`),
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/gofiber/fiber/v2"
@@ -89,15 +90,47 @@ func main() {
 		log.Fatalf("failed to initialize device service: %v", err)
 	}
 	deviceHandler := devicehttp.NewHandler(deviceService)
+	tagRepository := tagpostgres.NewRepository(db)
 	tagService, err := tag.NewService(
-		tagpostgres.NewRepository(db),
+		tagRepository,
 		deviceService,
 		tag.NewBinaryNumericDecoder(),
 	)
 	if err != nil {
 		log.Fatalf("failed to initialize tag service: %v", err)
 	}
-	tagHandler := taghttp.NewHandler(tagService)
+	tagValues, err := tag.NewPersistentValueStore(tagpostgres.NewLatestValueRepository(db))
+	if err != nil {
+		log.Fatalf("failed to initialize persistent Tag value store: %v", err)
+	}
+	runtimeContext := context.Background()
+	if err := tagValues.Start(runtimeContext); err != nil {
+		log.Fatalf("failed to hydrate persistent Tag values: %v", err)
+	}
+	acquisitionRuntime, err := tag.NewAcquisitionRuntime(tagRepository, tagService, deviceService, tagValues)
+	if err != nil {
+		tagValues.Stop()
+		log.Fatalf("failed to initialize acquisition runtime: %v", err)
+	}
+	if err := acquisitionRuntime.Start(runtimeContext); err != nil {
+		tagValues.Stop()
+		log.Fatalf("failed to start acquisition runtime: %v", err)
+	}
+	defer func() {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+	}()
+	go func() {
+		for {
+			select {
+			case runtimeError := <-acquisitionRuntime.Errors():
+				log.Printf("acquisition runtime: %v", runtimeError)
+			case persistenceError := <-tagValues.Errors():
+				log.Printf("Tag value persistence: %v", persistenceError)
+			}
+		}
+	}()
+	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
 	connectivityChecker, err := system.NewConnectivityChecker(
 		cfg.InternetCheckAddress,
 		cfg.InternetCheckTimeout,

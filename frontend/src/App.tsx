@@ -12,6 +12,7 @@ import SetupPage from "./features/auth/pages/SetupPage";
 import DeviceListPage from "./features/device/pages/DeviceListPage";
 import SystemHealthPage from "./features/system/pages/SystemHealthPage";
 import TagListPage from "./features/tag/pages/TagListPage";
+import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
 import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
@@ -77,6 +78,14 @@ function App() {
           element={
             <ProtectedRoute>
               <TagWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tags/:id"
+          element={
+            <ProtectedRoute>
+              <TagDetailPage />
             </ProtectedRoute>
           }
         />

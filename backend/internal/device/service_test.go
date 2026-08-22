@@ -233,6 +233,31 @@ func TestServiceSharesOneMonitorAndFansOutSamples(t *testing.T) {
 	}
 }
 
+func TestServiceAdaptsMonitoredSamplesForTagRuntime(t *testing.T) {
+	repository := newMemoryRepository()
+	parent := repository.addDevice()
+	datasource := repository.addDatasource(parent.ID)
+	driver := &testDatasourceDriver{monitorStarted: make(chan struct{})}
+	service := newTestService(t, repository, driver)
+
+	stream, unsubscribe, err := service.SubscribeDatasourceForTags(context.Background(), datasource.ID)
+	if err != nil {
+		t.Fatalf("SubscribeDatasourceForTags() error = %v", err)
+	}
+	defer unsubscribe()
+	select {
+	case sample := <-stream:
+		if sample.Quality != "good" || string(sample.Raw) != string([]byte{0x12, 0x34}) || string(sample.Data) != `{}` {
+			t.Errorf("sample = %#v", sample)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Tag runtime received no sample")
+	}
+	if driver.monitorCalls.Load() != 1 {
+		t.Errorf("Monitor() calls = %d, want 1", driver.monitorCalls.Load())
+	}
+}
+
 func TestServiceLatestSampleRequiresAnActiveSample(t *testing.T) {
 	t.Parallel()
 	repository := newMemoryRepository()

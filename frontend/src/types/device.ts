@@ -4,7 +4,6 @@ export type DatasourceStatus = "idle" | "monitoring" | "paused" | "error";
 
 export interface ModbusDeviceConfig {
   unit_id: number;
-  poll_interval_ms: number;
   request_timeout_ms: number | null;
 }
 
@@ -12,7 +11,7 @@ export interface ModbusDatasourceConfig {
   function_code: 1 | 2 | 3 | 4;
   start_address: number;
   quantity: number;
-  poll_interval_ms: number | null;
+  poll_interval_ms: number;
 }
 
 export interface Device {
@@ -78,7 +77,6 @@ export interface CreateDeviceRequest {
   enabled?: boolean;
   config: {
     unit_id: number;
-    poll_interval_ms?: number;
     request_timeout_ms?: number;
   };
 }

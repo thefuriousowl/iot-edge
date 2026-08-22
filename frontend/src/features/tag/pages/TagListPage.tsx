@@ -410,10 +410,10 @@ function TagListPage() {
                           <span className={`tag-name-icon is-${entity.type}`}>
                             <TagTypeIcon type={entity.type} />
                           </span>
-                          <span>
+                          <Link className="tag-name-link" to={`/tags/${entity.id}`}>
                             <strong>{entity.name}</strong>
-                            <small>{entity.description ?? "No description"}</small>
-                          </span>
+                            <small>{entity.description ?? "Open real-time monitoring"}</small>
+                          </Link>
                         </td>
                         <td data-label="Type">
                           <span className={`tag-type is-${entity.type}`}>{tagTypeLabel(entity.type)}</span>

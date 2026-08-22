@@ -33,6 +33,10 @@ vi.mock("./features/tag/pages/TagWizardPage", () => ({
   default: () => <h1>Add Tag Wizard</h1>,
 }));
 
+vi.mock("./features/tag/pages/TagDetailPage", () => ({
+  default: () => <h1>Real-time Tag Monitor</h1>,
+}));
+
 vi.mock("./features/device/pages/DeviceListPage", () => ({
   default: () => <h1>Global Device Inventory</h1>,
 }));
@@ -242,6 +246,12 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "Add Tag Wizard" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/tags/new");
+  });
+
+  it("protects and renders the Tag monitoring detail route", () => {
+    renderAuthenticatedApp("/tags/550e8400-e29b-41d4-a716-446655440000");
+
+    expect(screen.getByRole("heading", { name: "Real-time Tag Monitor" })).toBeInTheDocument();
   });
 
   it("protects and renders the global Devices route", () => {

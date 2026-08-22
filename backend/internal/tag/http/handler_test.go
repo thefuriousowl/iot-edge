@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -122,6 +123,67 @@ func TestTagHandlerRejectsMalformedRequests(t *testing.T) {
 	}
 }
 
+func TestTagHandlerReturnsRuntimeHistoryAndStreamsValues(t *testing.T) {
+	t.Parallel()
+	tagID := uuid.New()
+	entity := tag.Tag{ID: tagID, Name: "Pressure", Type: tag.TypeReading, DataType: tag.DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"binary_numeric"}}`)}
+	observedAt := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	first := tag.TagValue{TagID: tagID, Sequence: 10, ObservedAt: observedAt, StoredAt: observedAt, Quality: tag.ValueQualityGood, DataType: tag.DataTypeFloat64, Value: float64(12.5)}
+	second := tag.TagValue{TagID: tagID, Sequence: 11, ObservedAt: observedAt.Add(time.Second), StoredAt: observedAt.Add(time.Second), Quality: tag.ValueQualityBad, DataType: tag.DataTypeFloat64, Error: "connection lost"}
+	monitor := &handlerValueMonitor{latest: second, history: []tag.TagValue{first, second}, stream: make(chan tag.TagValue, 1)}
+	monitor.stream <- second
+	close(monitor.stream)
+	app := newHandlerTestApp(&handlerService{entity: &entity}, WithValueMonitor(monitor))
+
+	response := performRequest(t, app, http.MethodGet, "/api/tags/"+tagID.String()+"/values?limit=2", "")
+	assertStatus(t, response, fiber.StatusOK)
+	var values struct {
+		Latest           *tag.TagValue  `json:"latest"`
+		History          []tag.TagValue `json:"history"`
+		LatestRetention  string         `json:"latest_retention"`
+		HistoryRetention string         `json:"history_retention"`
+	}
+	decodeResponse(t, response, &values)
+	if values.Latest == nil || values.Latest.Sequence != second.Sequence || len(values.History) != 2 || values.LatestRetention != "persistent" || values.HistoryRetention != "runtime_memory" || monitor.limit != 2 {
+		t.Errorf("values = %#v, limit = %d", values, monitor.limit)
+	}
+
+	response = performRequest(t, app, http.MethodGet, "/api/tags/"+tagID.String()+"/stream", "")
+	assertStatus(t, response, fiber.StatusOK)
+	body, err := io.ReadAll(response.Body)
+	closeResponse(t, response)
+	if err != nil {
+		t.Fatalf("reading stream: %v", err)
+	}
+	if !strings.Contains(string(body), "event: tag_value") || !strings.Contains(string(body), `"sequence":11`) {
+		t.Errorf("stream body = %s", body)
+	}
+}
+
+func TestTagHandlerValidatesValueMonitoringAvailabilityAndLimit(t *testing.T) {
+	t.Parallel()
+	tagID := uuid.New()
+	entity := tag.Tag{ID: tagID, Name: "Pressure", Type: tag.TypeReading, DataType: tag.DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"binary_numeric"}}`)}
+	app := newHandlerTestApp(&handlerService{entity: &entity})
+	response := performRequest(t, app, http.MethodGet, "/api/tags/"+tagID.String()+"/values", "")
+	assertAPIError(t, response, fiber.StatusServiceUnavailable, "TAG009")
+
+	app = newHandlerTestApp(&handlerService{entity: &entity}, WithValueMonitor(&handlerValueMonitor{}))
+	response = performRequest(t, app, http.MethodGet, "/api/tags/"+tagID.String()+"/values", "")
+	assertStatus(t, response, fiber.StatusOK)
+	var emptyValues struct {
+		History json.RawMessage `json:"history"`
+	}
+	decodeResponse(t, response, &emptyValues)
+	if string(emptyValues.History) != "[]" {
+		t.Errorf("empty history JSON = %s, want []", emptyValues.History)
+	}
+	for _, limit := range []string{"0", "11", "invalid"} {
+		response = performRequest(t, app, http.MethodGet, "/api/tags/"+tagID.String()+"/values?limit="+limit, "")
+		assertAPIError(t, response, fiber.StatusBadRequest, "VALIDATION_ERROR")
+	}
+}
+
 func TestTagHandlerMapsServiceErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -134,12 +196,16 @@ func TestTagHandlerMapsServiceErrors(t *testing.T) {
 		{name: "datasource missing", err: tag.ErrDatasourceMissing, status: fiber.StatusNotFound, code: "DS008"},
 		{name: "name conflict", err: tag.ErrTagNameExists, status: fiber.StatusConflict, code: "TAG001"},
 		{name: "disabled", err: tag.ErrTagDisabled, status: fiber.StatusConflict, code: "TAG006"},
+		{name: "snapshot required", err: tag.ErrCalculatedSnapshotRequired, status: fiber.StatusConflict, code: "TAG008"},
 		{name: "source failure", err: tag.ErrTagSourceReadFailed, status: fiber.StatusBadGateway, code: "TAG007"},
 		{name: "invalid", err: tag.ErrInvalidTagInput, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "unsupported type", err: tag.ErrUnsupportedTagType, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "unsupported data type", err: tag.ErrUnsupportedTagDataType, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "unsupported decoder", err: tag.ErrUnsupportedDecoder, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "decoder config", err: tag.ErrInvalidDecoderConfig, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
+		{name: "transform config", err: tag.ErrInvalidTransformConfig, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
+		{name: "unsupported transform", err: tag.ErrUnsupportedTransform, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
+		{name: "invalid trigger", err: tag.ErrCalculatedTriggerInvalid, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "missing dependency", err: tag.ErrCalculatedDependencyMissing, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "cycle", err: tag.ErrCircularTagDependency, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "deep graph", err: tag.ErrTagDependencyTooDeep, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
@@ -204,6 +270,30 @@ type handlerService struct {
 	previewSavedID uuid.UUID
 	validateID     uuid.UUID
 	expression     string
+}
+
+type handlerValueMonitor struct {
+	latest  tag.TagValue
+	history []tag.TagValue
+	stream  chan tag.TagValue
+	limit   int
+}
+
+func (monitor *handlerValueMonitor) Latest(uuid.UUID) (tag.TagValue, bool) {
+	return monitor.latest, monitor.latest.TagID != uuid.Nil
+}
+
+func (monitor *handlerValueMonitor) History(_ uuid.UUID, limit int) []tag.TagValue {
+	monitor.limit = limit
+	return append([]tag.TagValue(nil), monitor.history...)
+}
+
+func (monitor *handlerValueMonitor) Subscribe(context.Context, []uuid.UUID) (<-chan tag.TagValue, func()) {
+	if monitor.stream == nil {
+		monitor.stream = make(chan tag.TagValue)
+		close(monitor.stream)
+	}
+	return monitor.stream, func() {}
 }
 
 func (service *handlerService) Create(_ context.Context, input tag.CreateInput) (*tag.Tag, error) {
@@ -275,9 +365,9 @@ func (service *handlerService) result() (*tag.Tag, error) {
 	return service.entity, nil
 }
 
-func newHandlerTestApp(service Service) *fiber.App {
+func newHandlerTestApp(service Service, options ...HandlerOption) *fiber.App {
 	app := fiber.New()
-	RegisterRoutes(app.Group("/api"), NewHandler(service))
+	RegisterRoutes(app.Group("/api"), NewHandler(service, options...))
 	return app
 }
 

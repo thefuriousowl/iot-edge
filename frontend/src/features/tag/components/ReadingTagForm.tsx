@@ -80,9 +80,13 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
   const [deviceID, setDeviceID] = useState("");
   const [datasourceID, setDatasourceID] = useState("");
   const [dataType, setDataType] = useState<TagDataType>("uint16");
+  const [sourceDataType, setSourceDataType] = useState<TagDataType>("uint16");
   const [byteOffset, setByteOffset] = useState("0");
   const [byteOrder, setByteOrder] = useState<TagByteOrder>("big_endian");
   const [bitOffset, setBitOffset] = useState("0");
+  const [scalingEnabled, setScalingEnabled] = useState(false);
+  const [gain, setGain] = useState("1");
+  const [offset, setOffset] = useState("0");
   const [loadingGateways, setLoadingGateways] = useState(true);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingDatasources, setLoadingDatasources] = useState(false);
@@ -209,7 +213,20 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
 
   function changeDataType(nextDataType: TagDataType) {
     setDataType(nextDataType);
+    if (nextDataType === "bool") {
+      setSourceDataType("bool");
+      setScalingEnabled(false);
+    }
+    setPreviewState({ status: "idle" });
+  }
+
+  function changeSourceDataType(nextDataType: TagDataType) {
+    setSourceDataType(nextDataType);
     setBitOffset("0");
+    if (nextDataType === "bool") {
+      setDataType("bool");
+      setScalingEnabled(false);
+    }
     setPreviewState({ status: "idle" });
   }
 
@@ -217,19 +234,23 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
     return {
       decoder: {
         type: "binary_numeric",
+        data_type: sourceDataType,
         config: {
           byte_offset: Number(byteOffset),
           byte_order: byteOrder,
-          ...(dataType === "bool" ? { bit_offset: Number(bitOffset) } : {}),
+          ...(sourceDataType === "bool" ? { bit_offset: Number(bitOffset) } : {}),
         },
       },
+      ...(scalingEnabled ? { transform: { type: "linear" as const, config: { gain: Number(gain), offset: Number(offset) } } } : {}),
     };
   }
 
   async function preview(form: HTMLFormElement) {
     const byteOffsetInput = form.elements.namedItem("byte_offset") as HTMLInputElement | null;
     const bitOffsetInput = form.elements.namedItem("bit_offset") as HTMLInputElement | null;
-    if (!byteOffsetInput?.reportValidity() || (bitOffsetInput && !bitOffsetInput.reportValidity())) {
+    const gainInput = form.elements.namedItem("gain") as HTMLInputElement | null;
+    const offsetInput = form.elements.namedItem("offset") as HTMLInputElement | null;
+    if (!byteOffsetInput?.reportValidity() || (bitOffsetInput && !bitOffsetInput.reportValidity()) || (gainInput && !gainInput.reportValidity()) || (offsetInput && !offsetInput.reportValidity())) {
       return;
     }
 
@@ -380,6 +401,12 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
               </select>
             </label>
             <label className="reading-tag-field">
+              <span>Raw data type <b>*</b></span>
+              <select name="source_data_type" value={sourceDataType} onChange={(event) => changeSourceDataType(event.target.value as TagDataType)}>
+                {dataTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="reading-tag-field">
               <span>Byte offset <b>*</b></span>
               <input name="byte_offset" type="number" min="0" value={byteOffset} required onChange={(event) => { setByteOffset(event.target.value); setPreviewState({ status: "idle" }); }} />
             </label>
@@ -389,7 +416,7 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
                 {byteOrders.map((order) => <option key={order.value} value={order.value}>{order.label}</option>)}
               </select>
             </label>
-            {dataType === "bool" && (
+            {sourceDataType === "bool" && (
               <label className="reading-tag-field">
                 <span>Bit offset <b>*</b></span>
                 <input name="bit_offset" type="number" min="0" max="7" value={bitOffset} required onChange={(event) => { setBitOffset(event.target.value); setPreviewState({ status: "idle" }); }} />
@@ -399,6 +426,21 @@ function ReadingTagForm({ onCancel, onChangeType, onCreated }: ReadingTagFormPro
           <p className="reading-tag-help">
             Byte offset is zero-based in the datasource raw payload, not the protocol address. A 16-bit register uses 2 bytes, so register offsets 0, 2, 4, and 6 map to byte offsets 0, 4, 8, and 12.
           </p>
+        </section>
+
+        <section className="reading-tag-section">
+          <div className="reading-tag-section-title">
+            <RadioTower aria-hidden="true" size={19} />
+            <div><h2>Engineering scaling</h2><p>Apply a linear gain and offset after decoding the raw value.</p></div>
+          </div>
+          <label className="reading-tag-toggle is-wide">
+            <input name="scaling_enabled" type="checkbox" checked={scalingEnabled} disabled={sourceDataType === "bool" || dataType === "bool"} onChange={(event) => { setScalingEnabled(event.target.checked); setPreviewState({ status: "idle" }); }} />
+            <span><i /><strong>Enable linear scaling</strong><small>engineering value = decoded value × gain + offset</small></span>
+          </label>
+          {scalingEnabled && <div className="reading-tag-grid is-two-column">
+            <label className="reading-tag-field"><span>Gain <b>*</b></span><input name="gain" type="number" step="any" value={gain} required onChange={(event) => { setGain(event.target.value); setPreviewState({ status: "idle" }); }} /></label>
+            <label className="reading-tag-field"><span>Offset <b>*</b></span><input name="offset" type="number" step="any" value={offset} required onChange={(event) => { setOffset(event.target.value); setPreviewState({ status: "idle" }); }} /></label>
+          </div>}
         </section>
 
         <TagPreviewPanel state={previewState} />

@@ -47,13 +47,11 @@ type ModbusTCPConnectionTestInput struct {
 
 type ModbusDeviceConfigInput struct {
 	UnitID           *uint8 `json:"unit_id"`
-	PollIntervalMS   *int   `json:"poll_interval_ms"`
 	RequestTimeoutMS *int   `json:"request_timeout_ms"`
 }
 
 type ModbusDeviceConfig struct {
 	UnitID           uint8 `json:"unit_id"`
-	PollIntervalMS   int   `json:"poll_interval_ms"`
 	RequestTimeoutMS *int  `json:"request_timeout_ms"`
 }
 
@@ -68,7 +66,7 @@ type ModbusDatasourceConfig struct {
 	FunctionCode   FunctionCode `json:"function_code"`
 	StartAddress   uint16       `json:"start_address"`
 	Quantity       uint16       `json:"quantity"`
-	PollIntervalMS *int         `json:"poll_interval_ms"`
+	PollIntervalMS int          `json:"poll_interval_ms"`
 }
 
 type ModbusClientFactory func(
@@ -111,11 +109,7 @@ func (d *modbusTCPDriver) NormalizeDeviceConfig(raw json.RawMessage) (json.RawMe
 	}
 	config := ModbusDeviceConfig{
 		UnitID:           *input.UnitID,
-		PollIntervalMS:   valueOrDefault(input.PollIntervalMS, 1000),
 		RequestTimeoutMS: input.RequestTimeoutMS,
-	}
-	if config.PollIntervalMS < 100 || config.PollIntervalMS > 86400000 {
-		return nil, fmt.Errorf("%w: poll_interval_ms must be between 100 and 86400000", protocol.ErrInvalidDeviceConfig)
 	}
 	if config.RequestTimeoutMS != nil && (*config.RequestTimeoutMS < 100 || *config.RequestTimeoutMS > 60000) {
 		return nil, fmt.Errorf("%w: request_timeout_ms must be between 100 and 60000", protocol.ErrInvalidDeviceConfig)
@@ -138,12 +132,12 @@ func (d *modbusTCPDriver) NormalizeDatasourceConfig(datasourceType string, raw j
 		FunctionCode:   *input.FunctionCode,
 		StartAddress:   *input.StartAddress,
 		Quantity:       *input.Quantity,
-		PollIntervalMS: input.PollIntervalMS,
+		PollIntervalMS: valueOrDefault(input.PollIntervalMS, 60000),
 	}
 	if err := validateReadRequest(ReadRequest{FunctionCode: config.FunctionCode, Address: config.StartAddress, Quantity: config.Quantity}); err != nil {
 		return nil, fmt.Errorf("%w: %v", protocol.ErrInvalidDatasourceConfig, err)
 	}
-	if config.PollIntervalMS != nil && (*config.PollIntervalMS < 100 || *config.PollIntervalMS > 86400000) {
+	if config.PollIntervalMS < 100 || config.PollIntervalMS > 86400000 {
 		return nil, fmt.Errorf("%w: poll_interval_ms must be between 100 and 86400000", protocol.ErrInvalidDatasourceConfig)
 	}
 	return marshalCanonical(config, protocol.ErrInvalidDatasourceConfig)

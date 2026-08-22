@@ -7,8 +7,10 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -33,6 +35,20 @@ func TestRepositoryCRUDDependenciesAndFilters_Integration(t *testing.T) {
 	calculated := tag.Tag{Name: "Voltage delta", Type: tag.TypeCalculated, DataType: tag.DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"expression":"reading - constant"}`)}
 	if err := repository.Create(ctx, &calculated, []uuid.UUID{reading.ID, constant.ID}); err != nil {
 		t.Fatalf("Create(calculated) error = %v", err)
+	}
+	runtimeTags, err := repository.ListEnabledReadingTags(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledReadingTags() error = %v", err)
+	}
+	if len(runtimeTags) != 1 || runtimeTags[0].ID != reading.ID {
+		t.Errorf("runtime tags = %#v", runtimeTags)
+	}
+	enabledTags, err := repository.ListEnabledTags(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledTags() error = %v", err)
+	}
+	if len(enabledTags) != 2 || enabledTags[0].ID != reading.ID || enabledTags[1].ID != calculated.ID {
+		t.Errorf("enabled runtime tags = %#v", enabledTags)
 	}
 
 	found, err := repository.Find(ctx, reading.ID)
@@ -148,6 +164,164 @@ func TestRepositoryCRUDDependenciesAndFilters_Integration(t *testing.T) {
 	}
 }
 
+func TestLatestValueRepositoryRoundTripsTypedValuesAndRejectsStaleWrites_Integration(t *testing.T) {
+	db, _ := newRepositoryDatabase(t)
+	repository := NewRepository(db)
+	latestRepository := NewLatestValueRepository(db)
+	ctx := context.Background()
+	observedAt := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		dataType tag.DataType
+		value    any
+		quality  string
+		error    string
+	}{
+		{name: "Bool", dataType: tag.DataTypeBool, value: true, quality: tag.ValueQualityGood},
+		{name: "Int16", dataType: tag.DataTypeInt16, value: int16(-32768), quality: tag.ValueQualityGood},
+		{name: "UInt16", dataType: tag.DataTypeUInt16, value: uint16(65535), quality: tag.ValueQualityGood},
+		{name: "Int32", dataType: tag.DataTypeInt32, value: int32(-2147483648), quality: tag.ValueQualityGood},
+		{name: "UInt32", dataType: tag.DataTypeUInt32, value: uint32(4294967295), quality: tag.ValueQualityGood},
+		{name: "Float32", dataType: tag.DataTypeFloat32, value: float32(12.25), quality: tag.ValueQualityGood},
+		{name: "Float64", dataType: tag.DataTypeFloat64, value: float64(-999.5), quality: tag.ValueQualityGood},
+		{name: "Bad", dataType: tag.DataTypeFloat64, quality: tag.ValueQualityBad, error: "illegal data address"},
+	}
+	want := make(map[uuid.UUID]tag.TagValue, len(tests))
+	for index, test := range tests {
+		entity := tag.Tag{Name: "Latest " + test.name, Type: tag.TypeConstant, DataType: test.dataType, Enabled: true, Config: json.RawMessage(`{}`)}
+		if err := repository.Create(ctx, &entity, nil); err != nil {
+			t.Fatalf("Create(%s) error = %v", test.name, err)
+		}
+		value := tag.TagValue{TagID: entity.ID, Sequence: uint64(index + 1), ObservedAt: observedAt.Add(time.Duration(index) * time.Second), StoredAt: observedAt.Add(time.Duration(index+1) * time.Second), Quality: test.quality, DataType: test.dataType, Value: test.value, Error: test.error}
+		if err := latestRepository.UpsertLatest(ctx, value); err != nil {
+			t.Fatalf("UpsertLatest(%s) error = %v", test.name, err)
+		}
+		want[entity.ID] = value
+	}
+	values, err := latestRepository.ListLatest(ctx)
+	if err != nil {
+		t.Fatalf("ListLatest() error = %v", err)
+	}
+	if len(values) != len(want) {
+		t.Fatalf("ListLatest() count = %d, want %d", len(values), len(want))
+	}
+	for _, value := range values {
+		expected := want[value.TagID]
+		if value.Sequence != expected.Sequence || value.ObservedAt != expected.ObservedAt || value.StoredAt != expected.StoredAt || value.Quality != expected.Quality || value.DataType != expected.DataType || value.Error != expected.Error || !reflect.DeepEqual(value.Value, expected.Value) {
+			t.Errorf("ListLatest(%s) = %#v, want %#v", value.TagID, value, expected)
+		}
+	}
+
+	var boolID uuid.UUID
+	for tagID, value := range want {
+		if value.DataType == tag.DataTypeBool {
+			boolID = tagID
+			break
+		}
+	}
+	newer := tag.TagValue{TagID: boolID, Sequence: 100, ObservedAt: observedAt.Add(time.Hour), StoredAt: observedAt.Add(time.Hour), Quality: tag.ValueQualityGood, DataType: tag.DataTypeBool, Value: false}
+	if err := latestRepository.UpsertLatest(ctx, newer); err != nil {
+		t.Fatalf("UpsertLatest(newer) error = %v", err)
+	}
+	stale := newer
+	stale.Sequence = 99
+	stale.Value = true
+	if err := latestRepository.UpsertLatest(ctx, stale); err != nil {
+		t.Fatalf("UpsertLatest(stale) error = %v", err)
+	}
+	values, err = latestRepository.ListLatest(ctx)
+	if err != nil {
+		t.Fatalf("ListLatest(after stale) error = %v", err)
+	}
+	for _, value := range values {
+		if value.TagID == boolID && (value.Sequence != 100 || value.Value != false) {
+			t.Errorf("bool latest after stale write = %#v", value)
+		}
+	}
+	if err := db.Model(&tag.Tag{}).Where("id = ?", boolID).Update("data_type", tag.DataTypeUInt16).Error; err != nil {
+		t.Fatalf("changing Tag data type: %v", err)
+	}
+	values, err = latestRepository.ListLatest(ctx)
+	if err != nil {
+		t.Fatalf("ListLatest(after type change) error = %v", err)
+	}
+	for _, value := range values {
+		if value.TagID == boolID {
+			t.Errorf("ListLatest() hydrated stale data type value: %#v", value)
+		}
+	}
+	replacement := tag.TagValue{TagID: boolID, Sequence: 101, ObservedAt: observedAt.Add(2 * time.Hour), StoredAt: observedAt.Add(2 * time.Hour), Quality: tag.ValueQualityGood, DataType: tag.DataTypeUInt16, Value: uint16(7)}
+	if err := latestRepository.UpsertLatest(ctx, replacement); err != nil {
+		t.Fatalf("UpsertLatest(reconciled type) error = %v", err)
+	}
+	awaitLatestRepositorySequence(t, latestRepository, boolID, replacement.Sequence)
+}
+
+func TestPersistentValueStoreHydratesAcrossRestart_Integration(t *testing.T) {
+	db, _ := newRepositoryDatabase(t)
+	tagRepository := NewRepository(db)
+	latestRepository := NewLatestValueRepository(db)
+	ctx := context.Background()
+	entity := tag.Tag{Name: "Restart value", Type: tag.TypeConstant, DataType: tag.DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"value":12.5}`)}
+	if err := tagRepository.Create(ctx, &entity, nil); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	firstStore, err := tag.NewPersistentValueStore(latestRepository, tag.WithValuePersistenceRetryInterval(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewPersistentValueStore(first) error = %v", err)
+	}
+	if err := firstStore.Start(ctx); err != nil {
+		t.Fatalf("Start(first) error = %v", err)
+	}
+	observedAt := time.Date(2026, time.August, 22, 11, 0, 0, 0, time.UTC)
+	first, err := firstStore.Put(tag.TagValue{TagID: entity.ID, ObservedAt: observedAt, Quality: tag.ValueQualityGood, DataType: tag.DataTypeFloat64, Value: 12.5})
+	if err != nil {
+		t.Fatalf("Put(first) error = %v", err)
+	}
+	awaitLatestRepositorySequence(t, latestRepository, entity.ID, first.Sequence)
+	firstStore.Stop()
+
+	secondStore, err := tag.NewPersistentValueStore(latestRepository, tag.WithValuePersistenceRetryInterval(5*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewPersistentValueStore(second) error = %v", err)
+	}
+	if err := secondStore.Start(ctx); err != nil {
+		t.Fatalf("Start(second) error = %v", err)
+	}
+	t.Cleanup(secondStore.Stop)
+	hydrated, exists := secondStore.Latest(entity.ID)
+	if !exists || hydrated.Sequence != first.Sequence || hydrated.Value != float64(12.5) || hydrated.ObservedAt != observedAt {
+		t.Errorf("hydrated value = %#v, exists = %t", hydrated, exists)
+	}
+	second, err := secondStore.Put(tag.TagValue{TagID: entity.ID, ObservedAt: observedAt.Add(time.Second), Quality: tag.ValueQualityGood, DataType: tag.DataTypeFloat64, Value: 13.5})
+	if err != nil {
+		t.Fatalf("Put(second) error = %v", err)
+	}
+	if second.Sequence != first.Sequence+1 {
+		t.Errorf("sequence after restart = %d, want %d", second.Sequence, first.Sequence+1)
+	}
+	awaitLatestRepositorySequence(t, latestRepository, entity.ID, second.Sequence)
+}
+
+func awaitLatestRepositorySequence(t *testing.T, repository tag.LatestValueRepository, tagID uuid.UUID, sequence uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		values, err := repository.ListLatest(context.Background())
+		if err != nil {
+			t.Fatalf("ListLatest() error = %v", err)
+		}
+		for _, value := range values {
+			if value.TagID == tagID && value.Sequence == sequence {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("latest value %s did not reach sequence %d", tagID, sequence)
+}
+
 func assertTagList(t *testing.T, repository tag.Repository, input tag.ListInput, wantCount int, wantID uuid.UUID) {
 	t.Helper()
 	result, err := repository.List(context.Background(), input)
@@ -198,7 +372,7 @@ func newRepositoryDatabase(t *testing.T) (*gorm.DB, uuid.UUID) {
 		t.Fatalf("getting SQL DB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql"} {
+	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000005_create_tag_values_latest.up.sql"} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatalf("reading migration: %v", err)

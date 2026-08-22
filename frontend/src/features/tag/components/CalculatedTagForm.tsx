@@ -1,11 +1,10 @@
 import axios from "axios";
-import { CheckCircle2, CircleAlert, Eye, LoaderCircle, Plus, Save } from "lucide-react";
+import { CheckCircle2, CircleAlert, LoaderCircle, Plus, Save } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
-import { createTag, listTags, previewTag, validateTagExpression } from "../../../services/tag.service";
+import { createTag, listTags, validateTagExpression } from "../../../services/tag.service";
 import type { CreateCalculatedTagRequest, Tag, TagDataType } from "../../../types/tag";
 import "./CalculatedTagForm.css";
-import TagPreviewPanel, { type TagPreviewState } from "./TagPreviewPanel";
 
 interface CalculatedTagFormProps {
   onCancel: () => void;
@@ -37,9 +36,9 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
   const [tagLoadVersion, setTagLoadVersion] = useState(0);
   const [dataType, setDataType] = useState<TagDataType>("float64");
   const [expression, setExpression] = useState("");
+  const [triggerTagID, setTriggerTagID] = useState("");
   const [validation, setValidation] = useState<ValidationState>({ status: "idle" });
   const [validationVersion, setValidationVersion] = useState(0);
-  const [previewState, setPreviewState] = useState<TagPreviewState>({ status: "idle" });
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const expressionRef = useRef<HTMLTextAreaElement>(null);
@@ -82,7 +81,6 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
   function changeExpression(nextExpression: string) {
     setExpression(nextExpression);
     setValidation({ status: nextExpression.trim() ? "pending" : "idle" });
-    setPreviewState({ status: "idle" });
   }
 
   function insertTag(tag: Tag) {
@@ -98,22 +96,9 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
     }, 0);
   }
 
-  async function preview() {
-    if (validation.status !== "valid") return;
-    setPreviewState({ status: "loading" });
-    try {
-      setPreviewState({
-        status: "success",
-        result: await previewTag({ type: "calculated", data_type: dataType, config: { expression: expression.trim() } }),
-      });
-    } catch (error) {
-      setPreviewState({ status: "error", message: errorMessage(error, "Unable to preview this Calculated Tag.") });
-    }
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!event.currentTarget.reportValidity() || validation.status !== "valid") return;
+    if (!event.currentTarget.reportValidity() || validation.status !== "valid" || !triggerTagID) return;
     const form = new FormData(event.currentTarget);
     const request: CreateCalculatedTagRequest = {
       name: String(form.get("name")).trim(),
@@ -121,7 +106,7 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
       data_type: dataType,
       description: String(form.get("description")).trim() || null,
       enabled: form.get("enabled") === "on",
-      config: { expression: expression.trim() },
+      config: { expression: expression.trim(), trigger: { tag_id: triggerTagID, mode: "on_sample" } },
     };
     setSubmitting(true);
     setSubmitError(null);
@@ -136,7 +121,8 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
   }
 
   const tagNames = new Map(tags.map((tag) => [tag.id, tag.name]));
-  const ready = validation.status === "valid";
+  const triggerTags = tags.filter((tag) => tag.type !== "constant");
+  const ready = validation.status === "valid" && Boolean(triggerTagID);
 
   return (
     <form className="calculated-tag-form" aria-label="Configure a calculated expression" onSubmit={(event) => void submit(event)}>
@@ -151,9 +137,10 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
         <div><h2>Tag details</h2><p>Name and type the derived value.</p></div>
         <div className="calculated-tag-grid">
           <label><span>Name <b>*</b></span><input name="name" required maxLength={100} placeholder="voltage_delta" /></label>
-          <label><span>Data type <b>*</b></span><select name="data_type" value={dataType} onChange={(event) => { setDataType(event.target.value as TagDataType); setPreviewState({ status: "idle" }); }}>{dataTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+          <label><span>Data type <b>*</b></span><select name="data_type" value={dataType} onChange={(event) => setDataType(event.target.value as TagDataType)}>{dataTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+          <label><span>Trigger Tag <b>*</b></span><select name="trigger_tag_id" required value={triggerTagID} onChange={(event) => setTriggerTagID(event.target.value)}><option value="">Select a Reading or Calculated Tag</option>{triggerTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name} · {tag.type}</option>)}</select></label>
           <label className="is-wide"><span>Description</span><textarea name="description" maxLength={500} placeholder="Optional context for operators" /></label>
-          <label className="calculated-tag-toggle"><input name="enabled" type="checkbox" defaultChecked /><span><i /><strong>Enabled</strong><small>Allow this calculation to be previewed and referenced.</small></span></label>
+          <label className="calculated-tag-toggle"><input name="enabled" type="checkbox" defaultChecked /><span><i /><strong>Enabled</strong><small>Update this value whenever its Trigger Tag publishes a sample.</small></span></label>
         </div>
       </section>
 
@@ -172,11 +159,8 @@ function CalculatedTagForm({ onCancel, onChangeType, onCreated }: CalculatedTagF
         </div>
       </section>
 
-      <TagPreviewPanel state={previewState} />
-
       <footer className="calculated-tag-actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="button" disabled={!ready || submitting || previewState.status === "loading"} onClick={() => void preview()}>{previewState.status === "loading" ? <LoaderCircle className="is-spinning" size={17} /> : <Eye size={17} />}{previewState.status === "loading" ? "Previewing…" : "Preview value"}</button>
         <button className="is-primary" type="submit" disabled={!ready || submitting}>{submitting ? <LoaderCircle className="is-spinning" size={17} /> : <Save size={17} />}{submitting ? "Creating…" : "Create Calculated Tag"}</button>
       </footer>
     </form>

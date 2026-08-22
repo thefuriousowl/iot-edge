@@ -23,6 +23,10 @@ type DatasourceReader interface {
 	ReadDatasourceForTag(context.Context, uuid.UUID) (protocol.DatasourceSample, error)
 }
 
+type DatasourceSubscriber interface {
+	SubscribeDatasourceForTags(context.Context, uuid.UUID) (<-chan protocol.DatasourceSample, func(), error)
+}
+
 type ReadingDecoder interface {
 	Type() string
 	NormalizeConfig(DataType, Config) (Config, error)

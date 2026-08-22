@@ -44,8 +44,8 @@ func TestDeviceDatasourceCRUDAndPreview_EndToEnd(t *testing.T) {
 	app, gatewayID, countDevices, db := newDeviceIntegrationApp(t, host, port)
 
 	var createdDevice device.Device
-	requestJSON(t, app, http.MethodPost, "/api/vgateways/"+gatewayID.String()+"/devices", `{"name":" Meter 7 ","type":"modbus_device","config":{"unit_id":7,"poll_interval_ms":100}}`, fiber.StatusCreated, &createdDevice)
-	if createdDevice.ID == uuid.Nil || createdDevice.Name != "Meter 7" || string(createdDevice.Config) != `{"unit_id":7,"poll_interval_ms":100,"request_timeout_ms":null}` {
+	requestJSON(t, app, http.MethodPost, "/api/vgateways/"+gatewayID.String()+"/devices", `{"name":" Meter 7 ","type":"modbus_device","config":{"unit_id":7}}`, fiber.StatusCreated, &createdDevice)
+	if createdDevice.ID == uuid.Nil || createdDevice.Name != "Meter 7" || string(createdDevice.Config) != `{"unit_id":7,"request_timeout_ms":null}` {
 		t.Errorf("created device = %#v", createdDevice)
 	}
 	counts, err := countDevices(context.Background(), []uuid.UUID{gatewayID})
@@ -61,7 +61,7 @@ func TestDeviceDatasourceCRUDAndPreview_EndToEnd(t *testing.T) {
 		t.Errorf("fetched device = %#v", fetchedDevice)
 	}
 	var updatedDevice device.Device
-	requestJSON(t, app, http.MethodPut, "/api/devices/"+createdDevice.ID.String(), `{"name":"Meter 7 updated","description":"Production meter","enabled":true,"config":{"unit_id":7,"poll_interval_ms":100}}`, fiber.StatusOK, &updatedDevice)
+	requestJSON(t, app, http.MethodPut, "/api/devices/"+createdDevice.ID.String(), `{"name":"Meter 7 updated","description":"Production meter","enabled":true,"config":{"unit_id":7}}`, fiber.StatusOK, &updatedDevice)
 	if updatedDevice.Name != "Meter 7 updated" || updatedDevice.Description == nil || *updatedDevice.Description != "Production meter" || !updatedDevice.Enabled {
 		t.Errorf("updated device = %#v", updatedDevice)
 	}

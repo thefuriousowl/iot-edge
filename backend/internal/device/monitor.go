@@ -2,8 +2,10 @@ package device
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -84,8 +86,57 @@ func (s *Service) Subscribe(ctx context.Context, id uuid.UUID) (<-chan Datasourc
 	return channel, unsubscribe, nil
 }
 
+func (s *Service) SubscribeDatasourceForTags(ctx context.Context, id uuid.UUID) (<-chan protocol.DatasourceSample, func(), error) {
+	stream, unsubscribe, err := s.Subscribe(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	adapterCtx, cancel := context.WithCancel(ctx)
+	output := make(chan protocol.DatasourceSample, 1)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			unsubscribe()
+		})
+	}
+	go func() {
+		defer close(output)
+		defer stop()
+		for {
+			select {
+			case <-adapterCtx.Done():
+				return
+			case sample, open := <-stream:
+				if !open {
+					return
+				}
+				raw, decodeErr := hex.DecodeString(sample.RawHex)
+				adapted := protocol.DatasourceSample{ObservedAt: sample.ObservedAt, Latency: time.Duration(sample.LatencyMS * float64(time.Millisecond)), Quality: sample.Quality, Raw: raw, Data: sample.Data, Error: sample.Error}
+				if decodeErr != nil {
+					adapted.Quality = "bad"
+					adapted.Error = fmt.Sprintf("Invalid datasource raw payload: %v", decodeErr)
+				}
+				select {
+				case output <- adapted:
+				default:
+					select {
+					case <-output:
+					default:
+					}
+					select {
+					case output <- adapted:
+					default:
+					}
+				}
+			}
+		}
+	}()
+	return output, stop, nil
+}
+
 func (s *Service) runMonitor(id uuid.UUID, runtime *monitorRuntime, driver protocol.DatasourceDriver, entity *DatasourceContext) {
-	interval := datasourceInterval(entity.Config, entity.Device.Config)
+	interval := datasourceInterval(entity.Config)
 	err := driver.Monitor(runtime.ctx, s.datasourceReadRequest(&entity.Device, entity.Config), interval, func(sample protocol.DatasourceSample) {
 		s.recordGatewayRequest(entity.Device.Gateway.ID, sample, 0, nil)
 		formatted := s.formatSample(id, sample)
@@ -192,21 +243,14 @@ func (s *Service) monitorStatus(id uuid.UUID, enabled bool) string {
 	return "monitoring"
 }
 
-func datasourceInterval(datasourceConfig, deviceConfig json.RawMessage) time.Duration {
+func datasourceInterval(datasourceConfig json.RawMessage) time.Duration {
 	var datasource struct {
-		PollIntervalMS *int `json:"poll_interval_ms"`
-	}
-	var device struct {
 		PollIntervalMS int `json:"poll_interval_ms"`
 	}
 	_ = json.Unmarshal(datasourceConfig, &datasource)
-	_ = json.Unmarshal(deviceConfig, &device)
-	milliseconds := device.PollIntervalMS
-	if datasource.PollIntervalMS != nil {
-		milliseconds = *datasource.PollIntervalMS
-	}
+	milliseconds := datasource.PollIntervalMS
 	if milliseconds < 100 {
-		milliseconds = 1000
+		milliseconds = 60000
 	}
 	return time.Duration(milliseconds) * time.Millisecond
 }

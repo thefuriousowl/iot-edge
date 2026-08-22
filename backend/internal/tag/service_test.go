@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func TestTagServiceCreatesAndNormalizesAllTagTypes(t *testing.T) {
 	}
 
 	expression := fmt.Sprintf("${%s} - ${%s}", reading.ID, constant.ID)
-	calculated, err := service.Create(context.Background(), CreateInput{Name: "Delta", Type: TypeCalculated, DataType: DataTypeFloat64, Config: json.RawMessage(fmt.Sprintf(`{"expression":%q}`, expression))})
+	calculated, err := service.Create(context.Background(), CreateInput{Name: "Delta", Type: TypeCalculated, DataType: DataTypeFloat64, Config: expressionConfig(expression, reading.ID)})
 	if err != nil {
 		t.Fatalf("Create(calculated) error = %v", err)
 	}
@@ -98,7 +99,8 @@ func TestTagServiceRejectsInvalidTagContracts(t *testing.T) {
 		{name: "constant out of range", input: CreateInput{Name: "Tag", Type: TypeConstant, DataType: DataTypeInt16, Config: json.RawMessage(`{"value":32768}`)}, want: ErrInvalidTagInput},
 		{name: "constant wrong type", input: CreateInput{Name: "Tag", Type: TypeConstant, DataType: DataTypeBool, Config: json.RawMessage(`{"value":1}`)}, want: ErrInvalidTagInput},
 		{name: "constant null", input: CreateInput{Name: "Tag", Type: TypeConstant, DataType: DataTypeBool, Config: json.RawMessage(`{"value":null}`)}, want: ErrInvalidTagInput},
-		{name: "invalid expression", input: CreateInput{Name: "Tag", Type: TypeCalculated, DataType: DataTypeFloat64, Config: json.RawMessage(`{"expression":"1 +"}`)}, want: ErrInvalidTagInput},
+		{name: "invalid expression", input: CreateInput{Name: "Tag", Type: TypeCalculated, DataType: DataTypeFloat64, Config: expressionConfig("1 +", uuid.New())}, want: ErrInvalidTagInput},
+		{name: "missing trigger", input: CreateInput{Name: "Tag", Type: TypeCalculated, DataType: DataTypeFloat64, Config: json.RawMessage(`{"expression":"1"}`)}, want: ErrCalculatedTriggerInvalid},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -119,7 +121,8 @@ func TestTagServiceValidatesMissingAndCircularDependencies(t *testing.T) {
 		t.Fatalf("Create(missing dependency) error = %v", err)
 	}
 
-	first := repository.addTag(Tag{Name: "First", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"expression":"1"}`)})
+	trigger := repository.addTag(Tag{Name: "Trigger", Type: TypeReading, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"binary_numeric"}}`)})
+	first := repository.addTag(Tag{Name: "First", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: expressionConfig("1", trigger.ID)})
 	second := repository.addTag(Tag{Name: "Second", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: calculatedConfig(first.ID)})
 	repository.dependencies[second.ID] = []uuid.UUID{first.ID}
 	if _, err := service.Update(context.Background(), first.ID, UpdateInput{Config: configPointer(calculatedConfig(second.ID))}); !errors.Is(err, ErrCircularTagDependency) {
@@ -131,7 +134,7 @@ func TestTagServiceValidatesMissingAndCircularDependencies(t *testing.T) {
 
 	chain := make([]uuid.UUID, maxTagDependencyDepth+1)
 	for index := range chain {
-		entity := repository.addTag(Tag{Name: fmt.Sprintf("Chain %d", index), Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"expression":"1"}`)})
+		entity := repository.addTag(Tag{Name: fmt.Sprintf("Chain %d", index), Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: expressionConfig("1", trigger.ID)})
 		chain[index] = entity.ID
 		if index > 0 {
 			repository.dependencies[chain[index-1]] = []uuid.UUID{chain[index]}
@@ -139,6 +142,31 @@ func TestTagServiceValidatesMissingAndCircularDependencies(t *testing.T) {
 	}
 	if _, err := service.ValidateCalculatedExpression(context.Background(), uuid.New(), fmt.Sprintf("${%s}", chain[0])); !errors.Is(err, ErrTagDependencyTooDeep) {
 		t.Fatalf("ValidateCalculatedExpression(deep graph) error = %v", err)
+	}
+}
+
+func TestTagServiceValidatesCalculatedTriggerContract(t *testing.T) {
+	t.Parallel()
+	repository := newServiceMemoryRepository()
+	service := newTagTestService(t, repository, newServiceDatasourceReader())
+	reading := repository.addTag(Tag{Name: "Reading trigger", Type: TypeReading, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"binary_numeric"}}`)})
+	constant := repository.addTag(Tag{Name: "Constant trigger", Type: TypeConstant, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"value":1}`)})
+
+	calculated, err := service.Create(context.Background(), CreateInput{Name: "Triggered independently", Type: TypeCalculated, DataType: DataTypeFloat64, Config: expressionConfig("1 + 2", reading.ID)})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	dependencies := repository.dependencies[calculated.ID]
+	if len(dependencies) != 1 || dependencies[0] != reading.ID {
+		t.Errorf("dependencies = %v, want trigger %s", dependencies, reading.ID)
+	}
+
+	if _, err := service.Create(context.Background(), CreateInput{Name: "Constant triggered", Type: TypeCalculated, DataType: DataTypeFloat64, Config: expressionConfig("1", constant.ID)}); !errors.Is(err, ErrCalculatedTriggerInvalid) {
+		t.Fatalf("Create(constant trigger) error = %v", err)
+	}
+	unsupportedMode := json.RawMessage(fmt.Sprintf(`{"expression":"1","trigger":{"tag_id":"%s","mode":"interval"}}`, reading.ID))
+	if _, err := service.Create(context.Background(), CreateInput{Name: "Unsupported trigger", Type: TypeCalculated, DataType: DataTypeFloat64, Config: unsupportedMode}); !errors.Is(err, ErrCalculatedTriggerInvalid) {
+		t.Fatalf("Create(unsupported mode) error = %v", err)
 	}
 }
 
@@ -178,7 +206,7 @@ func TestTagServiceUpdatesListsAndDeletes(t *testing.T) {
 	}
 }
 
-func TestTagServicePreviewsReadingConstantAndMemoizedCalculatedTags(t *testing.T) {
+func TestTagServicePreviewsSourcesAndEvaluatesCalculatedTagsFromSnapshots(t *testing.T) {
 	t.Parallel()
 	repository := newServiceMemoryRepository()
 	source := newServiceDatasourceReader()
@@ -189,8 +217,8 @@ func TestTagServicePreviewsReadingConstantAndMemoizedCalculatedTags(t *testing.T
 
 	reading := repository.addTag(Tag{DatasourceID: &datasourceID, Name: "Reading", Type: TypeReading, DataType: DataTypeUInt16, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"binary_numeric","config":{"byte_order":"little_endian"}}}`)})
 	constant := repository.addTag(Tag{Name: "Constant", Type: TypeConstant, DataType: DataTypeUInt16, Enabled: true, Config: json.RawMessage(`{"value":2}`)})
-	firstCalculated := repository.addTag(Tag{Name: "First calculated", Type: TypeCalculated, DataType: DataTypeUInt16, Enabled: true, Config: expressionConfig(fmt.Sprintf("${%s} + ${%s}", reading.ID, constant.ID))})
-	secondCalculated := repository.addTag(Tag{Name: "Second calculated", Type: TypeCalculated, DataType: DataTypeUInt16, Enabled: true, Config: expressionConfig(fmt.Sprintf("${%s} + ${%s}", firstCalculated.ID, reading.ID))})
+	firstCalculated := repository.addTag(Tag{Name: "First calculated", Type: TypeCalculated, DataType: DataTypeUInt16, Enabled: true, Config: expressionConfig(fmt.Sprintf("${%s} + ${%s}", reading.ID, constant.ID), reading.ID)})
+	secondCalculated := repository.addTag(Tag{Name: "Second calculated", Type: TypeCalculated, DataType: DataTypeUInt16, Enabled: true, Config: expressionConfig(fmt.Sprintf("${%s} + ${%s}", firstCalculated.ID, reading.ID), reading.ID)})
 
 	readingResult, err := service.PreviewSaved(context.Background(), reading.ID)
 	if err != nil {
@@ -200,15 +228,21 @@ func TestTagServicePreviewsReadingConstantAndMemoizedCalculatedTags(t *testing.T
 		t.Errorf("reading preview = %#v", readingResult)
 	}
 	source.calls[datasourceID] = 0
-	calculatedResult, err := service.PreviewSaved(context.Background(), secondCalculated.ID)
-	if err != nil {
+	if _, err := service.PreviewSaved(context.Background(), secondCalculated.ID); !errors.Is(err, ErrCalculatedSnapshotRequired) {
 		t.Fatalf("PreviewSaved(calculated) error = %v", err)
 	}
-	if calculatedResult.Value != uint16(0x246A) {
-		t.Errorf("calculated preview = %#v, want 9322", calculatedResult)
+	values := map[uuid.UUID]any{reading.ID: uint16(0x1234), constant.ID: uint16(2)}
+	firstValue, err := service.EvaluateCalculated(context.Background(), firstCalculated.DataType, firstCalculated.Config, func(_ context.Context, id uuid.UUID) (any, error) { return values[id], nil })
+	if err != nil {
+		t.Fatalf("EvaluateCalculated(first) error = %v", err)
 	}
-	if source.calls[datasourceID] != 1 {
-		t.Errorf("datasource reads = %d, want 1", source.calls[datasourceID])
+	values[firstCalculated.ID] = firstValue
+	secondValue, err := service.EvaluateCalculated(context.Background(), secondCalculated.DataType, secondCalculated.Config, func(_ context.Context, id uuid.UUID) (any, error) { return values[id], nil })
+	if err != nil || secondValue != uint16(0x246A) {
+		t.Fatalf("EvaluateCalculated(second) = %#v, %v", secondValue, err)
+	}
+	if source.calls[datasourceID] != 0 {
+		t.Errorf("datasource reads = %d, want 0", source.calls[datasourceID])
 	}
 
 	unsaved, err := service.Preview(context.Background(), PreviewInput{Type: TypeConstant, DataType: DataTypeBool, Config: json.RawMessage(`{"value":true}`)})
@@ -244,6 +278,34 @@ func TestTagServiceUsesRegisteredProtocolNeutralDecoder(t *testing.T) {
 	}
 }
 
+func TestTagServiceDecodesRawTypeBeforeApplyingEngineeringScaling(t *testing.T) {
+	t.Parallel()
+	repository := newServiceMemoryRepository()
+	source := newServiceDatasourceReader()
+	service := newTagTestService(t, repository, source)
+	datasourceID := uuid.New()
+	source.samples[datasourceID] = protocol.DatasourceSample{Quality: "good", Raw: []byte{0x80, 0x00}}
+	config := json.RawMessage(`{"decoder":{"type":"binary_numeric","data_type":"uint16","config":{"byte_order":"big_endian"}},"transform":{"type":"linear","config":{"gain":0.0015259021896696422,"offset":0}}}`)
+	reading, err := service.Create(context.Background(), CreateInput{DatasourceID: &datasourceID, Name: "Pressure", Type: TypeReading, DataType: DataTypeFloat64, Config: config})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	result, err := service.PreviewSaved(context.Background(), reading.ID)
+	if err != nil {
+		t.Fatalf("PreviewSaved() error = %v", err)
+	}
+	if difference := math.Abs(result.Value.(float64) - 50.000762951094835); difference > 1e-12 {
+		t.Errorf("preview value = %.15f", result.Value)
+	}
+	processed, err := service.ProcessReadingSample(DataTypeFloat64, reading.Config, source.samples[datasourceID])
+	if err != nil {
+		t.Fatalf("ProcessReadingSample() error = %v", err)
+	}
+	if difference := math.Abs(processed.(float64) - result.Value.(float64)); difference > 1e-12 {
+		t.Errorf("processed value = %.15f, preview = %.15f", processed, result.Value)
+	}
+}
+
 func TestTagServicePreviewMapsDisabledMissingSourceAndRuntimeCycleErrors(t *testing.T) {
 	t.Parallel()
 	t.Run("missing root", func(t *testing.T) {
@@ -257,7 +319,7 @@ func TestTagServicePreviewMapsDisabledMissingSourceAndRuntimeCycleErrors(t *test
 		service := newTagTestService(t, repository, newServiceDatasourceReader())
 		dependency := repository.addTag(Tag{Name: "Disabled", Type: TypeConstant, DataType: DataTypeFloat64, Enabled: false, Config: json.RawMessage(`{"value":1}`)})
 		calculated := repository.addTag(Tag{Name: "Calculated", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: calculatedConfig(dependency.ID)})
-		if _, err := service.PreviewSaved(context.Background(), calculated.ID); !errors.Is(err, ErrTagDisabled) || !errors.Is(err, ErrExpressionReference) {
+		if _, err := service.PreviewSaved(context.Background(), calculated.ID); !errors.Is(err, ErrCalculatedSnapshotRequired) {
 			t.Fatalf("PreviewSaved() error = %v", err)
 		}
 	})
@@ -307,35 +369,6 @@ func TestTagServicePreviewMapsDisabledMissingSourceAndRuntimeCycleErrors(t *test
 		source.samples[datasourceID] = protocol.DatasourceSample{Quality: "good"}
 		reading := repository.addTag(Tag{DatasourceID: &datasourceID, Name: "Reading", Type: TypeReading, DataType: DataTypeFloat64, Enabled: true, Config: json.RawMessage(`{"decoder":{"type":"json_value","config":{"field":"temperature"}}}`)})
 		if _, err := service.PreviewSaved(context.Background(), reading.ID); !errors.Is(err, ErrInvalidTagInput) {
-			t.Fatalf("PreviewSaved() error = %v", err)
-		}
-	})
-	t.Run("runtime cycle", func(t *testing.T) {
-		repository := newServiceMemoryRepository()
-		service := newTagTestService(t, repository, newServiceDatasourceReader())
-		firstID := uuid.New()
-		secondID := uuid.New()
-		repository.tags[firstID] = Tag{ID: firstID, Name: "First", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: calculatedConfig(secondID)}
-		repository.tags[secondID] = Tag{ID: secondID, Name: "Second", Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: calculatedConfig(firstID)}
-		if _, err := service.PreviewSaved(context.Background(), firstID); !errors.Is(err, ErrCircularTagDependency) {
-			t.Fatalf("PreviewSaved() error = %v", err)
-		}
-	})
-	t.Run("runtime depth", func(t *testing.T) {
-		repository := newServiceMemoryRepository()
-		service := newTagTestService(t, repository, newServiceDatasourceReader())
-		chain := make([]uuid.UUID, maxTagDependencyDepth+1)
-		for index := range chain {
-			chain[index] = uuid.New()
-		}
-		for index, id := range chain {
-			config := json.RawMessage(`{"expression":"1"}`)
-			if index+1 < len(chain) {
-				config = calculatedConfig(chain[index+1])
-			}
-			repository.tags[id] = Tag{ID: id, Name: fmt.Sprintf("Runtime chain %d", index), Type: TypeCalculated, DataType: DataTypeFloat64, Enabled: true, Config: config}
-		}
-		if _, err := service.PreviewSaved(context.Background(), chain[0]); !errors.Is(err, ErrTagDependencyTooDeep) {
 			t.Fatalf("PreviewSaved() error = %v", err)
 		}
 	})
@@ -431,6 +464,26 @@ func (repository *serviceMemoryRepository) ListDependencies(context.Context) ([]
 	return result, nil
 }
 
+func (repository *serviceMemoryRepository) ListEnabledReadingTags(context.Context) ([]Tag, error) {
+	entities := make([]Tag, 0)
+	for _, entity := range repository.tags {
+		if entity.Type == TypeReading && entity.Enabled {
+			entities = append(entities, entity)
+		}
+	}
+	return entities, nil
+}
+
+func (repository *serviceMemoryRepository) ListEnabledTags(context.Context) ([]Tag, error) {
+	entities := make([]Tag, 0)
+	for _, entity := range repository.tags {
+		if entity.Enabled {
+			entities = append(entities, entity)
+		}
+	}
+	return entities, nil
+}
+
 type serviceDatasourceReader struct {
 	samples map[uuid.UUID]protocol.DatasourceSample
 	calls   map[uuid.UUID]int
@@ -495,10 +548,10 @@ func newTagTestService(t *testing.T, repository Repository, source DatasourceRea
 	return service
 }
 
-func expressionConfig(expression string) Config {
-	encoded, _ := json.Marshal(calculatedConfigInput{Expression: expression})
+func expressionConfig(expression string, triggerID uuid.UUID) Config {
+	encoded, _ := json.Marshal(calculatedConfigInput{Expression: expression, Trigger: &calculatedTriggerInput{TagID: triggerID, Mode: "on_sample"}})
 	return encoded
 }
 
-func calculatedConfig(id uuid.UUID) Config { return expressionConfig(fmt.Sprintf("${%s}", id)) }
+func calculatedConfig(id uuid.UUID) Config { return expressionConfig(fmt.Sprintf("${%s}", id), id) }
 func configPointer(value Config) *Config   { return &value }

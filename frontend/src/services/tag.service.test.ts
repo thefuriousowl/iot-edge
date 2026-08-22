@@ -1,11 +1,13 @@
 import type { AxiosResponse } from "axios";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   CreateTagRequest,
   Tag,
   TagListResponse,
   TagPreviewResult,
+  TagRuntimeValue,
+  TagValuesResponse,
   UpdateTagRequest,
   ValidateTagExpressionResponse,
 } from "../types/tag";
@@ -14,7 +16,9 @@ import {
   createTag,
   deleteTag,
   getTag,
+  getTagValues,
   listTags,
+  monitorTagValues,
   previewSavedTag,
   previewTag,
   updateTag,
@@ -28,6 +32,7 @@ vi.mock("./api", () => ({
     post: vi.fn(),
     put: vi.fn(),
   },
+  getAccessToken: vi.fn(() => "access-token"),
 }));
 
 const mockedDelete = vi.mocked(api.delete);
@@ -59,6 +64,8 @@ describe("Tag service", () => {
     mockedPost.mockReset();
     mockedPut.mockReset();
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it("lists tags with every filter, pagination, and cancellation", async () => {
     const controller = new AbortController();
@@ -102,6 +109,24 @@ describe("Tag service", () => {
     expect(mockedGet).toHaveBeenCalledWith(`/tags/${tag.id}`, {
       signal: controller.signal,
     });
+  });
+
+  it("loads bounded runtime history and parses fragmented Tag SSE values", async () => {
+    const value: TagRuntimeValue = { tag_id: tag.id, sequence: 7, observed_at: "2026-08-22T01:00:00Z", stored_at: "2026-08-22T01:00:00Z", quality: "good", data_type: "float64", value: 230.5 };
+    const expected: TagValuesResponse = { latest: value, history: [value], latest_retention: "persistent", history_retention: "runtime_memory" };
+    mockedGet.mockResolvedValue(responseWith(expected));
+    const controller = new AbortController();
+    await expect(getTagValues(tag.id, 10, controller.signal)).resolves.toEqual(expected);
+    expect(mockedGet).toHaveBeenCalledWith(`/tags/${tag.id}/values`, { params: { limit: 10 }, signal: controller.signal });
+
+    const encoded = new TextEncoder().encode(`: connected\n\nevent: tag_value\ndata: ${JSON.stringify(value)}\n\n`);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(stream) { stream.enqueue(encoded.slice(0, 15)); stream.enqueue(encoded.slice(15)); stream.close(); } }), { status: 200 })));
+    const received: TagRuntimeValue[] = [];
+    const onOpen = vi.fn();
+    await monitorTagValues(tag.id, (next) => received.push(next), new AbortController().signal, onOpen);
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(received).toEqual([value]);
+    expect(fetch).toHaveBeenCalledWith(`/api/tags/${tag.id}/stream`, expect.objectContaining({ headers: { Authorization: "Bearer access-token" }, credentials: "include" }));
   });
 
   it("updates nullable fields and deletes through an encoded resource path", async () => {
