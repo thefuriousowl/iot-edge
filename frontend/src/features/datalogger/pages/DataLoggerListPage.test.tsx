@@ -62,6 +62,7 @@ describe("DataLoggerListPage", () => {
     expect(screen.getByText("Every 1 week · Mon, Fri · 08:00")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Data Loggers" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "New Data Logger" })).toHaveAttribute("href", "/data-loggers/new");
+    expect(screen.getByRole("link", { name: "Fast history" })).toHaveAttribute("href", "/data-loggers/logger-1");
     expect(screen.getByRole("link", { name: "Edit Fast history" })).toHaveAttribute("href", "/data-loggers/logger-1/edit");
     const summary = screen.getByRole("region", { name: "Data Logger summary" });
     expect(within(summary).getByText("2")).toBeInTheDocument();

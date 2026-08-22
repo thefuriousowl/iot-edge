@@ -54,6 +54,9 @@ func TestIntervalSchedulerCapturesTagMemorySnapshotToRawHistory_Integration(t *t
 	if result.Total != 3 || len(result.Data) != 3 {
 		t.Fatalf("history = %#v", result)
 	}
+	if result.LastBatchAt == nil || !result.LastBatchAt.Equal(batchAt) {
+		t.Errorf("last batch at = %v, want %v", result.LastBatchAt, batchAt)
+	}
 	byTag := make(map[uuid.UUID]datalogger.RawValue, len(result.Data))
 	for _, value := range result.Data {
 		byTag[value.TagID] = value

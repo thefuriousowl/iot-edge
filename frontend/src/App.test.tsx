@@ -49,6 +49,10 @@ vi.mock("./features/datalogger/pages/DataLoggerWizardPage", () => ({
   default: () => <h1>Data Logger Wizard</h1>,
 }));
 
+vi.mock("./features/datalogger/pages/DataLoggerDetailPage", () => ({
+  default: () => <h1>Data Logger History</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedCheckSetupStatus = vi.mocked(checkSetupStatus);
 const mockedGetMe = vi.mocked(getMe);
@@ -285,4 +289,11 @@ describe("App", () => {
       expect(window.location.pathname).toBe(path);
     },
   );
+
+  it("protects and renders the Data Logger history route", () => {
+    renderAuthenticatedApp("/data-loggers/logger-id");
+
+    expect(screen.getByRole("heading", { name: "Data Logger History" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/data-loggers/logger-id");
+  });
 });

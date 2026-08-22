@@ -156,7 +156,7 @@ function DataLoggerListPage() {
         {loadState === "ready" && loggers.length === 0 && <div className="datalogger-state"><DatabaseZap /><strong>{activeFilters ? "No matching Data Loggers" : "No Data Loggers yet"}</strong><span>{activeFilters ? "Adjust or clear the filters to broaden the result." : "Create an engine to begin capturing Tag snapshots."}</span>{activeFilters > 0 && <button type="button" onClick={() => setSearchParams({}, { replace: true })}>Clear filters</button>}</div>}
         {loadState === "ready" && loggers.length > 0 && <>
           <div className="datalogger-table-scroll"><table><thead><tr><th>Name</th><th>Mode</th><th>Cadence</th><th>Tags</th><th>Next run</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{loggers.map((logger) => <tr key={logger.id}>
-            <td data-label="Name"><strong>{logger.name}</strong><small>{logger.description ?? logger.timezone}</small></td>
+            <td data-label="Name"><Link className="datalogger-name-link" to={`/data-loggers/${logger.id}`}>{logger.name}</Link><small>{logger.description ?? logger.timezone}</small></td>
             <td data-label="Mode"><span className={`datalogger-mode is-${logger.mode}`}>{logger.mode === "interval" ? <Clock3 size={15} /> : <CalendarClock size={15} />}{logger.mode === "interval" ? "Interval" : "Calendar"}</span></td>
             <td data-label="Cadence">{scheduleSummary(logger.mode, logger.config)}</td>
             <td data-label="Tags"><span className="datalogger-tag-count"><Tags size={15} />{logger.tag_count}</span></td>

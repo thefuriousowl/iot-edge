@@ -60,6 +60,32 @@ export interface DataLoggerListResponse {
   pagination: DataLoggerPagination;
 }
 
+export interface DataLoggerRawValue {
+  logger_id: string;
+  tag_id: string;
+  batch_at: string;
+  observed_at: string;
+  data_type: TagDataType;
+  value: boolean | number | null;
+  quality: "good" | "bad";
+  error?: string;
+  persisted_at: string;
+}
+
+export interface DataLoggerHistoryParams {
+  tag_id?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface DataLoggerHistoryResponse {
+  data: DataLoggerRawValue[];
+  last_batch_at: string | null;
+  pagination: DataLoggerPagination;
+}
+
 export interface SaveDataLoggerRequest {
   name: string;
   description: string | null;

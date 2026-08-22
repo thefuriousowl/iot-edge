@@ -55,11 +55,12 @@ type RawValueListInput struct {
 }
 
 type RawValueListResult struct {
-	Data       []RawValue
-	Page       int
-	PerPage    int
-	Total      int64
-	TotalPages int
+	Data        []RawValue
+	Page        int
+	PerPage     int
+	Total       int64
+	TotalPages  int
+	LastBatchAt *time.Time
 }
 
 type HistoryRepository interface {

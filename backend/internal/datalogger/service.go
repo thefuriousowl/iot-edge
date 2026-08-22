@@ -19,7 +19,10 @@ const (
 	maxPerPage     = 100
 )
 
-var ErrRepositoryRequired = errors.New("data logger repository is required")
+var (
+	ErrRepositoryRequired        = errors.New("data logger repository is required")
+	ErrHistoryRepositoryRequired = errors.New("data logger history repository is required")
+)
 
 type CreateInput struct {
 	Name        string
@@ -55,13 +58,20 @@ type UpdateInput struct {
 	TagIDs      *[]uuid.UUID
 }
 
-type Service struct{ repository Repository }
+type Service struct {
+	repository Repository
+	history    HistoryRepository
+}
 
-func NewService(repository Repository) (*Service, error) {
+func NewService(repository Repository, histories ...HistoryRepository) (*Service, error) {
 	if repository == nil {
 		return nil, ErrRepositoryRequired
 	}
-	return &Service{repository: repository}, nil
+	service := &Service{repository: repository}
+	if len(histories) > 0 {
+		service.history = histories[0]
+	}
+	return service, nil
 }
 
 func (service *Service) Create(ctx context.Context, input CreateInput) (*Logger, error) {
@@ -111,6 +121,20 @@ func (service *Service) List(ctx context.Context, input ListInput) (*ListResult,
 		return nil, ErrInvalidInput
 	}
 	return service.repository.List(ctx, input)
+}
+
+func (service *Service) ListHistory(ctx context.Context, id uuid.UUID, input RawValueListInput) (*RawValueListResult, error) {
+	if id == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
+	if service.history == nil {
+		return nil, ErrHistoryRepositoryRequired
+	}
+	if _, err := service.repository.Find(ctx, id); err != nil {
+		return nil, err
+	}
+	input.LoggerID = id
+	return service.history.ListValues(ctx, input)
 }
 
 func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (*Logger, error) {

@@ -19,6 +19,7 @@ type Service interface {
 	Create(context.Context, datalogger.CreateInput) (*datalogger.Logger, error)
 	Get(context.Context, uuid.UUID) (*datalogger.Logger, error)
 	List(context.Context, datalogger.ListInput) (*datalogger.ListResult, error)
+	ListHistory(context.Context, uuid.UUID, datalogger.RawValueListInput) (*datalogger.RawValueListResult, error)
 	Update(context.Context, uuid.UUID, datalogger.UpdateInput) (*datalogger.Logger, error)
 	Delete(context.Context, uuid.UUID) error
 }
@@ -92,6 +93,26 @@ func (handler *Handler) List(c *fiber.Ctx) error {
 	})
 }
 
+func (handler *Handler) History(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Logger ID")
+	}
+	input, err := parseHistoryInput(c)
+	if err != nil {
+		return validation(c, "Invalid history query parameters")
+	}
+	result, err := handler.service.ListHistory(c.UserContext(), id, input)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(fiber.Map{
+		"data":          result.Data,
+		"last_batch_at": result.LastBatchAt,
+		"pagination":    fiber.Map{"page": result.Page, "per_page": result.PerPage, "total": result.Total, "total_pages": result.TotalPages},
+	})
+}
+
 func (handler *Handler) Update(c *fiber.Ctx) error {
 	id, err := parseID(c.Params("id"))
 	if err != nil {
@@ -162,6 +183,34 @@ func parseListInput(c *fiber.Ctx) (datalogger.ListInput, error) {
 	return input, err
 }
 
+func parseHistoryInput(c *fiber.Ctx) (datalogger.RawValueListInput, error) {
+	var input datalogger.RawValueListInput
+	if raw := c.Query("tag_id"); raw != "" {
+		tagID, err := parseID(raw)
+		if err != nil {
+			return input, err
+		}
+		input.TagID = &tagID
+	}
+	for name, target := range map[string]**time.Time{"from": &input.From, "to": &input.To} {
+		if raw := c.Query(name); raw != "" {
+			value, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return input, err
+			}
+			utc := value.UTC()
+			*target = &utc
+		}
+	}
+	var err error
+	input.Page, err = positiveQuery(c, "page", 1)
+	if err != nil {
+		return input, err
+	}
+	input.PerPage, err = positiveQuery(c, "per_page", 100)
+	return input, err
+}
+
 func positiveQuery(c *fiber.Ctx, name string, fallback int) (int, error) {
 	raw := c.Query(name)
 	if raw == "" {
@@ -206,7 +255,7 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusConflict, "DLG002", "Data Logger name already exists")
 	case errors.Is(err, datalogger.ErrLoggerTagNotFound):
 		return apiError(c, fiber.StatusBadRequest, "DLG003", "Selected Tag not found")
-	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag):
+	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag), errors.Is(err, datalogger.ErrInvalidRawBatch):
 		return validation(c, "Invalid Data Logger configuration")
 	default:
 		return apiError(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -20,7 +21,8 @@ import (
 
 func TestDataLoggerCRUD_EndToEnd(t *testing.T) {
 	db, tags := newHTTPIntegrationDatabase(t)
-	service, err := datalogger.NewService(dataloggerpostgres.NewRepository(db))
+	historyRepository := dataloggerpostgres.NewHistoryRepository(db)
+	service, err := datalogger.NewService(dataloggerpostgres.NewRepository(db), historyRepository)
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
@@ -68,6 +70,25 @@ func TestDataLoggerCRUD_EndToEnd(t *testing.T) {
 		t.Errorf("rolled back = %#v", rolledBack)
 	}
 
+	batchAt := time.Date(2026, time.August, 23, 1, 0, 0, 0, time.UTC)
+	if err := historyRepository.WriteBatch(t.Context(), datalogger.RawBatch{LoggerID: created.ID, BatchAt: batchAt, Samples: []datalogger.RawSample{{TagID: tags[0], ObservedAt: batchAt.Add(-time.Second), DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood}}}); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	historyQuery := url.Values{"tag_id": {tags[0].String()}, "from": {batchAt.Add(-time.Hour).Format(time.RFC3339)}, "to": {batchAt.Add(time.Hour).Format(time.RFC3339)}, "page": {"1"}, "per_page": {"10"}}
+	response = request(t, app, http.MethodGet, "/api/data-loggers/"+created.ID.String()+"/history?"+historyQuery.Encode(), "")
+	assertStatus(t, response, fiber.StatusOK)
+	var history struct {
+		Data        []datalogger.RawValue `json:"data"`
+		LastBatchAt *time.Time            `json:"last_batch_at"`
+		Pagination  struct {
+			Total int64 `json:"total"`
+		} `json:"pagination"`
+	}
+	decodeResponse(t, response, &history)
+	if len(history.Data) != 1 || history.Data[0].Value != 42.5 || history.LastBatchAt == nil || !history.LastBatchAt.Equal(batchAt) || history.Pagination.Total != 1 {
+		t.Errorf("history = %#v", history)
+	}
+
 	response = request(t, app, http.MethodDelete, "/api/data-loggers/"+created.ID.String(), "")
 	assertStatus(t, response, fiber.StatusNoContent)
 	closeBody(t, response)
@@ -111,7 +132,7 @@ func newHTTPIntegrationDatabase(t *testing.T) (*gorm.DB, []uuid.UUID) {
 		t.Fatalf("getting SQL DB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql"} {
+	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql"} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatalf("reading migration: %v", err)

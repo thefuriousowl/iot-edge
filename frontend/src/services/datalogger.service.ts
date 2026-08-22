@@ -1,6 +1,8 @@
 import type {
   CreateDataLoggerRequest,
   DataLogger,
+  DataLoggerHistoryParams,
+  DataLoggerHistoryResponse,
   DataLoggerListParams,
   DataLoggerListResponse,
   UpdateDataLoggerRequest,
@@ -26,6 +28,15 @@ export async function createDataLogger(data: CreateDataLoggerRequest): Promise<D
 
 export async function getDataLogger(id: string, signal?: AbortSignal): Promise<DataLogger> {
   const response = await api.get<DataLogger>(dataLoggerPath(id), { signal });
+  return response.data;
+}
+
+export async function getDataLoggerHistory(
+  id: string,
+  params?: DataLoggerHistoryParams,
+  signal?: AbortSignal,
+): Promise<DataLoggerHistoryResponse> {
+  const response = await api.get<DataLoggerHistoryResponse>(`${dataLoggerPath(id)}/history`, { params, signal });
   return response.data;
 }
 

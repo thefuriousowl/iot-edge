@@ -44,6 +44,10 @@ type normalizedRawSample struct {
 	payload any
 }
 
+type rawHistoryOverview struct {
+	LastBatchAt *time.Time `gorm:"column:last_batch_at"`
+}
+
 func NewHistoryRepository(db *gorm.DB) datalogger.HistoryRepository {
 	return &historyRepository{db: db}
 }
@@ -103,7 +107,12 @@ func (repository *historyRepository) ListValues(ctx context.Context, input datal
 	if input.PerPage > maxHistoryPerPage {
 		return nil, datalogger.ErrInvalidRawBatch
 	}
-	query := repository.db.WithContext(ctx).Table("tag_values_raw").Where("logger_id = ?", input.LoggerID)
+	baseQuery := repository.db.WithContext(ctx).Table("tag_values_raw").Where("logger_id = ?", input.LoggerID)
+	var overview rawHistoryOverview
+	if err := baseQuery.Select("MAX(batch_at) AS last_batch_at").Scan(&overview).Error; err != nil {
+		return nil, err
+	}
+	query := baseQuery
 	if input.TagID != nil {
 		query = query.Where("tag_id = ?", *input.TagID)
 	}
@@ -138,7 +147,7 @@ func (repository *historyRepository) ListValues(ctx context.Context, input datal
 	if total > 0 {
 		totalPages = int((total + int64(input.PerPage) - 1) / int64(input.PerPage))
 	}
-	return &datalogger.RawValueListResult{Data: values, Page: input.Page, PerPage: input.PerPage, Total: total, TotalPages: totalPages}, nil
+	return &datalogger.RawValueListResult{Data: values, Page: input.Page, PerPage: input.PerPage, Total: total, TotalPages: totalPages, LastBatchAt: overview.LastBatchAt}, nil
 }
 
 func normalizeRawSample(sample datalogger.RawSample) (normalizedRawSample, error) {

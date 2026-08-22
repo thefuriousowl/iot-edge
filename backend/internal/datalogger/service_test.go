@@ -193,11 +193,59 @@ func TestServiceUpdatesListsDeletesAndPropagatesErrors(t *testing.T) {
 	}
 }
 
+func TestServiceListsHistoryForExistingLogger(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	tag := repository.addTag("Power")
+	history := &memoryHistoryRepository{result: &RawValueListResult{Page: 2, PerPage: 25, Total: 26, TotalPages: 2}}
+	service, err := NewService(repository, history)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	entity, err := service.Create(context.Background(), withName(validCreate(tag.ID, time.Now(), `{}`), "History"))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	from, to, filterTag := time.Now().Add(-time.Hour), time.Now(), tag.ID
+	result, err := service.ListHistory(context.Background(), entity.ID, RawValueListInput{TagID: &filterTag, From: &from, To: &to, Page: 2, PerPage: 25})
+	if err != nil || result.Total != 26 {
+		t.Fatalf("ListHistory() = %#v, %v", result, err)
+	}
+	if history.input.LoggerID != entity.ID || history.input.TagID == nil || *history.input.TagID != tag.ID || history.input.Page != 2 || history.input.PerPage != 25 {
+		t.Errorf("history input = %#v", history.input)
+	}
+	if _, err := service.ListHistory(context.Background(), uuid.Nil, RawValueListInput{}); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("ListHistory(nil) error = %v", err)
+	}
+	if _, err := service.ListHistory(context.Background(), uuid.New(), RawValueListInput{}); !errors.Is(err, ErrLoggerNotFound) {
+		t.Errorf("ListHistory(missing) error = %v", err)
+	}
+	serviceWithoutHistory := newTestService(t, repository)
+	if _, err := serviceWithoutHistory.ListHistory(context.Background(), entity.ID, RawValueListInput{}); !errors.Is(err, ErrHistoryRepositoryRequired) {
+		t.Errorf("ListHistory(no history repository) error = %v", err)
+	}
+}
+
 type memoryRepository struct {
 	loggers  map[uuid.UUID]Logger
 	tags     map[uuid.UUID]TagReference
 	lastList ListInput
 	err      error
+}
+
+type memoryHistoryRepository struct {
+	input  RawValueListInput
+	result *RawValueListResult
+	err    error
+}
+
+func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch) error {
+	return repository.err
+}
+
+func (repository *memoryHistoryRepository) ListValues(_ context.Context, input RawValueListInput) (*RawValueListResult, error) {
+	repository.input = input
+	return repository.result, repository.err
 }
 
 func newMemoryRepository() *memoryRepository {
@@ -315,3 +363,4 @@ func withEnd(input CreateInput, value *time.Time) CreateInput   { input.EndAt = 
 func withTags(input CreateInput, value []uuid.UUID) CreateInput { input.TagIDs = value; return input }
 
 var _ Repository = (*memoryRepository)(nil)
+var _ HistoryRepository = (*memoryHistoryRepository)(nil)

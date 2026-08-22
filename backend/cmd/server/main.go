@@ -126,7 +126,8 @@ func main() {
 	}
 	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
 	dataLoggerRepository := dataloggerpostgres.NewRepository(db)
-	dataLoggerService, err := datalogger.NewService(dataLoggerRepository)
+	dataLoggerHistory := dataloggerpostgres.NewHistoryRepository(db)
+	dataLoggerService, err := datalogger.NewService(dataLoggerRepository, dataLoggerHistory)
 	if err != nil {
 		acquisitionRuntime.Stop()
 		tagValues.Stop()
@@ -138,7 +139,7 @@ func main() {
 		tagValues.Stop()
 		log.Fatalf("failed to initialize Data Logger snapshots: %v", err)
 	}
-	dataLoggerRuntime, err := datalogger.NewRuntime(dataLoggerRepository, dataLoggerSnapshots, dataloggerpostgres.NewHistoryRepository(db))
+	dataLoggerRuntime, err := datalogger.NewRuntime(dataLoggerRepository, dataLoggerSnapshots, dataLoggerHistory)
 	if err != nil {
 		acquisitionRuntime.Stop()
 		tagValues.Stop()

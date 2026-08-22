@@ -23,7 +23,12 @@ func TestHandlerContracts(t *testing.T) {
 	startAt := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
 	endAt := startAt.Add(24 * time.Hour)
 	entity := datalogger.Logger{ID: loggerID, Name: "Plant", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, Config: json.RawMessage(`{"interval_seconds":60}`)}
-	service := &handlerService{entity: &entity, listResult: &datalogger.ListResult{Data: []datalogger.Logger{entity}, Page: 2, PerPage: 5, Total: 6, TotalPages: 2}}
+	lastBatchAt := startAt.Add(time.Hour)
+	service := &handlerService{
+		entity:        &entity,
+		listResult:    &datalogger.ListResult{Data: []datalogger.Logger{entity}, Page: 2, PerPage: 5, Total: 6, TotalPages: 2},
+		historyResult: &datalogger.RawValueListResult{Data: []datalogger.RawValue{{LoggerID: loggerID, TagID: tagA, BatchAt: lastBatchAt, ObservedAt: lastBatchAt, DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood, PersistedAt: lastBatchAt}}, Page: 2, PerPage: 25, Total: 26, TotalPages: 2, LastBatchAt: &lastBatchAt},
+	}
 	app := newHandlerApp(service)
 
 	query := url.Values{"mode": {"interval"}, "enabled": {"false"}, "search": {"plant"}, "page": {"2"}, "per_page": {"5"}}
@@ -58,6 +63,21 @@ func TestHandlerContracts(t *testing.T) {
 	closeBody(t, response)
 	if service.gotID != loggerID {
 		t.Errorf("Get() ID = %s", service.gotID)
+	}
+
+	historyQuery := url.Values{"tag_id": {tagA.String()}, "from": {startAt.Format(time.RFC3339)}, "to": {endAt.Format(time.RFC3339)}, "page": {"2"}, "per_page": {"25"}}
+	response = request(t, app, http.MethodGet, "/api/data-loggers/"+loggerID.String()+"/history?"+historyQuery.Encode(), "")
+	assertStatus(t, response, fiber.StatusOK)
+	var historyBody struct {
+		Data        []datalogger.RawValue `json:"data"`
+		LastBatchAt *time.Time            `json:"last_batch_at"`
+		Pagination  struct {
+			Total int64 `json:"total"`
+		} `json:"pagination"`
+	}
+	decodeResponse(t, response, &historyBody)
+	if service.historyID != loggerID || service.historyInput.TagID == nil || *service.historyInput.TagID != tagA || service.historyInput.Page != 2 || service.historyInput.PerPage != 25 || len(historyBody.Data) != 1 || historyBody.LastBatchAt == nil || !historyBody.LastBatchAt.Equal(lastBatchAt) || historyBody.Pagination.Total != 26 {
+		t.Errorf("history response/input = %#v / %#v", historyBody, service.historyInput)
 	}
 
 	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
@@ -95,6 +115,11 @@ func TestHandlerRejectsMalformedRequests(t *testing.T) {
 		{name: "invalid enabled", method: http.MethodGet, path: "/api/data-loggers/?enabled=yes"},
 		{name: "zero page", method: http.MethodGet, path: "/api/data-loggers/?page=0"},
 		{name: "negative per page", method: http.MethodGet, path: "/api/data-loggers/?per_page=-1"},
+		{name: "invalid history logger", method: http.MethodGet, path: "/api/data-loggers/invalid/history"},
+		{name: "invalid history tag", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?tag_id=invalid"},
+		{name: "invalid history from", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?from=today"},
+		{name: "invalid history to", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?to=tomorrow"},
+		{name: "invalid history page", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/history?page=0"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -118,6 +143,7 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 		{name: "invalid input", err: datalogger.ErrInvalidInput, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid logger", err: datalogger.ErrInvalidLogger, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid tag", err: datalogger.ErrInvalidLoggerTag, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
+		{name: "invalid history", err: datalogger.ErrInvalidRawBatch, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "unexpected", err: errors.New("password=secret"), status: fiber.StatusInternalServerError, code: "INTERNAL_ERROR"},
 	}
 	for _, test := range tests {
@@ -139,15 +165,18 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 }
 
 type handlerService struct {
-	entity      *datalogger.Logger
-	listResult  *datalogger.ListResult
-	err         error
-	createInput datalogger.CreateInput
-	listInput   datalogger.ListInput
-	gotID       uuid.UUID
-	updatedID   uuid.UUID
-	updateInput datalogger.UpdateInput
-	deletedID   uuid.UUID
+	entity        *datalogger.Logger
+	listResult    *datalogger.ListResult
+	err           error
+	createInput   datalogger.CreateInput
+	listInput     datalogger.ListInput
+	gotID         uuid.UUID
+	updatedID     uuid.UUID
+	updateInput   datalogger.UpdateInput
+	deletedID     uuid.UUID
+	historyID     uuid.UUID
+	historyInput  datalogger.RawValueListInput
+	historyResult *datalogger.RawValueListResult
 }
 
 func (service *handlerService) Create(_ context.Context, input datalogger.CreateInput) (*datalogger.Logger, error) {
@@ -169,6 +198,17 @@ func (service *handlerService) List(_ context.Context, input datalogger.ListInpu
 		return &datalogger.ListResult{}, nil
 	}
 	return service.listResult, nil
+}
+
+func (service *handlerService) ListHistory(_ context.Context, id uuid.UUID, input datalogger.RawValueListInput) (*datalogger.RawValueListResult, error) {
+	service.historyID, service.historyInput = id, input
+	if service.err != nil {
+		return nil, service.err
+	}
+	if service.historyResult == nil {
+		return &datalogger.RawValueListResult{}, nil
+	}
+	return service.historyResult, nil
 }
 
 func (service *handlerService) Update(_ context.Context, id uuid.UUID, input datalogger.UpdateInput) (*datalogger.Logger, error) {

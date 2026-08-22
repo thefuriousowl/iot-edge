@@ -1,9 +1,9 @@
 import type { AxiosResponse } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DataLogger, DataLoggerListResponse, SaveDataLoggerRequest } from "../types/datalogger";
+import type { DataLogger, DataLoggerHistoryResponse, DataLoggerListResponse, SaveDataLoggerRequest } from "../types/datalogger";
 import api from "./api";
-import { createDataLogger, deleteDataLogger, getDataLogger, listDataLoggers, updateDataLogger } from "./datalogger.service";
+import { createDataLogger, deleteDataLogger, getDataLogger, getDataLoggerHistory, listDataLoggers, updateDataLogger } from "./datalogger.service";
 
 vi.mock("./api", () => ({
   default: {
@@ -87,5 +87,19 @@ describe("Data Logger service", () => {
     expect(mockedPut).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash", request);
     await expect(deleteDataLogger("logger with/slash")).resolves.toBeUndefined();
     expect(mockedDelete).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash");
+  });
+
+  it("loads filtered paginated history through the encoded logger path", async () => {
+    const controller = new AbortController();
+    const params = { tag_id: "tag-1", from: "2026-08-22T00:00:00Z", to: "2026-08-23T00:00:00Z", page: 2, per_page: 100 };
+    const expected: DataLoggerHistoryResponse = {
+      data: [{ logger_id: logger.id, tag_id: "tag-1", batch_at: "2026-08-22T01:00:00Z", observed_at: "2026-08-22T00:59:59Z", data_type: "float64", value: 230.5, quality: "good", persisted_at: "2026-08-22T01:00:00Z" }],
+      last_batch_at: "2026-08-22T01:00:00Z",
+      pagination: { page: 2, per_page: 100, total: 101, total_pages: 2 },
+    };
+    mockedGet.mockResolvedValue(responseWith(expected));
+
+    await expect(getDataLoggerHistory("logger with/slash", params, controller.signal)).resolves.toEqual(expected);
+    expect(mockedGet).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash/history", { params, signal: controller.signal });
   });
 });
