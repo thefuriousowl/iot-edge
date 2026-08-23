@@ -5,7 +5,6 @@ import {
   Braces,
   Check,
   CircleAlert,
-  CircleDashed,
   Clock3,
   Copy,
   DatabaseZap,
@@ -15,34 +14,52 @@ import {
   Plus,
   Radio,
   RefreshCw,
-  Send,
   ShieldCheck,
   Trash2,
   Unplug,
   Waypoints,
 } from "lucide-react";
-import { type FormEvent, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import axios from "axios";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
+import {
+  createDataPublisher,
+  getDataPublisher,
+  listPublisherSources,
+  updateDataPublisher,
+  validatePublisherPayload,
+} from "../../../services/publisher.service";
+import { listCredentials } from "../../../services/credential.service";
+import type { CredentialProfile } from "../../../types/credential";
 import type {
+  DataPublisher,
   MQTTPayloadFixture,
-  MQTTPayloadMapping,
   MQTTPublisherDraft,
+  PublisherPayloadValidation,
+  PublisherSourceCatalogEntry,
   PublisherSourceDataType,
   PublisherSourceDraft,
+  PublisherSourceKind,
+  PublisherSourceReference,
+  PublisherSourceSelection,
 } from "../../../types/publisher";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
+import MQTTPublisherOperations from "../components/MQTTPublisherOperations";
 import {
   exportMQTTPublisherConfig,
-  generatePayloadTemplate,
+  buildBrokerURL,
+  importMQTTPublisherDraft,
   initialMQTTPublisherDraft,
   mqttPayloadHelpers,
+  mqttPayloadSourceHelpers,
+  mqttPayloadSourceSyntax,
   previewPayloadTemplate,
   validateBrokerURL,
   validateMQTTPublisherDraft,
-  validateSecretReference,
   validateSourceAliases,
 } from "../utils/mqtt";
+import type { MQTTPayloadSourceHelper } from "../utils/mqtt";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./MQTTPublisherWizardPage.css";
 
@@ -60,17 +77,18 @@ function loadMQTTPublisherDraft(): MQTTPublisherDraft {
     const raw = localStorage.getItem("iot-edge.mqtt-publisher-draft.v1");
     if (!raw) return initial;
     const stored = JSON.parse(raw) as Partial<MQTTPublisherDraft>;
-    if (!stored.trigger || !stored.mqtt || !Array.isArray(stored.sources) || !Array.isArray(stored.mappings) || !Array.isArray(stored.mqtt.diagnostics)) return initial;
+    if (!stored.trigger || !stored.mqtt || !Array.isArray(stored.sources) || !Array.isArray(stored.mqtt.diagnostics)) return initial;
     return {
       ...initial,
-      ...stored,
+      name: stored.name ?? initial.name,
+      enabled: stored.enabled ?? initial.enabled,
+      credential_id: stored.credential_id ?? initial.credential_id,
+      credential_slots: Array.isArray(stored.credential_slots) ? stored.credential_slots : initial.credential_slots,
       trigger: { ...initial.trigger, ...stored.trigger },
       sources: stored.sources,
-      mappings: stored.mappings,
       mqtt: {
         ...initial.mqtt,
         ...stored.mqtt,
-        auth: { ...initial.mqtt.auth, ...stored.mqtt.auth },
         tls: { ...initial.mqtt.tls, ...stored.mqtt.tls },
         publish: { ...initial.mqtt.publish, ...stored.mqtt.publish },
         diagnostics: stored.mqtt.diagnostics,
@@ -85,13 +103,58 @@ function updateAt<T extends { id: string }>(items: T[], id: string, update: Part
   return items.map((item) => item.id === id ? { ...item, ...update } : item);
 }
 
+function referenceKey(reference: PublisherSourceReference): string {
+  return reference.kind === "tag"
+    ? `tag:${reference.tag_id}`
+    : `plugin_output:${reference.plugin_instance_id}:${reference.output_key}`;
+}
+
+function selectedSources(sources: PublisherSourceDraft[]): PublisherSourceSelection[] | null {
+  if (sources.some((source) => !source.reference)) return null;
+  return sources.map((source) => ({ alias: source.alias, reference: source.reference! }));
+}
+
+function sourceAlias(name: string, existing: PublisherSourceDraft[]): string {
+  const base = name.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").replace(/^[^a-z_]+/, "") || "source";
+  let candidate = base.slice(0, 64);
+  let suffix = 2;
+  while (existing.some((source) => source.alias === candidate)) {
+    const ending = `_${suffix}`;
+    candidate = `${base.slice(0, 64 - ending.length)}${ending}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const body = error.response?.data as { error?: { message?: string } } | undefined;
+    return body?.error?.message ?? fallback;
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 function MQTTPublisherWizardPage() {
-  const [draft, setDraft] = useState<MQTTPublisherDraft>(loadMQTTPublisherDraft);
+  const { id: routePublisherID } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [publisher, setPublisher] = useState<DataPublisher | null>(null);
+  const [draft, setDraft] = useState<MQTTPublisherDraft>(() => routePublisherID ? initialMQTTPublisherDraft() : loadMQTTPublisherDraft());
   const [step, setStep] = useState(0);
   const [fixture, setFixture] = useState<MQTTPayloadFixture>("good");
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
-  const secure = draft.mqtt.broker_url.trim().startsWith("mqtts://");
+  const [catalog, setCatalog] = useState<PublisherSourceCatalogEntry[]>([]);
+  const [catalogKind, setCatalogKind] = useState<PublisherSourceKind | "">("");
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
+  const [credentials, setCredentials] = useState<CredentialProfile[]>([]);
+  const [serverValidation, setServerValidation] = useState<PublisherPayloadValidation | null>(null);
+  const [payloadHelper, setPayloadHelper] = useState<MQTTPayloadSourceHelper>("value");
+  const [saving, setSaving] = useState(false);
+  const [detailState, setDetailState] = useState<"ready" | "loading" | "error">(routePublisherID ? "loading" : "ready");
+  const secure = draft.mqtt.use_tls;
+  const configurationLocked = Boolean(publisher?.enabled);
+  const payloadTemplateRef = useRef<HTMLTextAreaElement>(null);
   const preview = useMemo(() => {
     try {
       return { result: previewPayloadTemplate(draft.mqtt.publish.payload_template, draft.sources, fixture), error: "" };
@@ -101,6 +164,57 @@ function MQTTPublisherWizardPage() {
   }, [draft.mqtt.publish.payload_template, draft.sources, fixture]);
   const configJSON = useMemo(() => JSON.stringify(exportMQTTPublisherConfig(draft), null, 2), [draft]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void listPublisherSources({
+        ...(catalogKind ? { kind: catalogKind } : {}),
+        enabled: true,
+        ...(catalogSearch.trim() ? { search: catalogSearch.trim() } : {}),
+      }, controller.signal).then((entries) => {
+        setCatalog(entries);
+        setCatalogState("ready");
+      }).catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setCatalogState("error");
+          setMessage(errorMessage(error, "Unable to load the Publisher source catalog"));
+        }
+      });
+    }, 150);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [catalogKind, catalogSearch]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void listCredentials({ type: "mqtt" }, controller.signal).then((profiles) => {
+      if (!controller.signal.aborted) setCredentials(profiles);
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setMessage(errorMessage(error, "Unable to load Credential Profiles"));
+    });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!routePublisherID) return;
+    const controller = new AbortController();
+    void Promise.all([
+      getDataPublisher(routePublisherID, controller.signal),
+      listPublisherSources(undefined, controller.signal),
+    ]).then(([entity, entries]) => {
+      if (controller.signal.aborted) return;
+      if (entity.type !== "mqtt") throw new Error("This Data Publisher is not an MQTT Publisher");
+      setPublisher(entity);
+      setDraft(importMQTTPublisherDraft(entity, entries));
+      setDetailState("ready");
+      setMessage("");
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      setDetailState("error");
+      setMessage(errorMessage(error, "Unable to load the MQTT Publisher"));
+    });
+    return () => controller.abort();
+  }, [routePublisherID]);
+
   function updateMQTT<Key extends keyof MQTTPublisherDraft["mqtt"]>(key: Key, value: MQTTPublisherDraft["mqtt"][Key]) {
     setDraft((current) => ({ ...current, mqtt: { ...current.mqtt, [key]: value } }));
   }
@@ -108,17 +222,16 @@ function MQTTPublisherWizardPage() {
   function validateStep(): string | null {
     if (step === 0) {
       if (!draft.name.trim()) return "Publisher name is required";
-      const brokerError = validateBrokerURL(draft.mqtt.broker_url.trim());
+      const brokerError = validateBrokerURL(buildBrokerURL(draft.mqtt.broker_host, draft.mqtt.broker_port, secure));
       if (brokerError) return brokerError;
       if (!secure && !draft.mqtt.plaintext_acknowledged) return "Acknowledge the plain MQTT exposure before continuing";
-      if (!validateSecretReference(draft.mqtt.auth.username_ref) || !validateSecretReference(draft.mqtt.auth.password_ref)) return "Authentication secret references are invalid";
-      if (draft.mqtt.auth.password_ref && !draft.mqtt.auth.username_ref) return "Password reference requires a username reference";
-      if (secure && (!validateSecretReference(draft.mqtt.tls.custom_ca_ref) || !validateSecretReference(draft.mqtt.tls.client_identity_ref))) return "TLS secret references are invalid";
+      if (draft.credential_slots.includes("mqtt.password") && !draft.credential_slots.includes("mqtt.username")) return "The selected Credential Profile has a password but no username";
     }
     if (step === 1) {
       const aliasErrors = validateSourceAliases(draft.sources);
       if (draft.sources.length === 0) return "Add at least one source alias";
       if (aliasErrors.length > 0) return aliasErrors[0];
+      if (!selectedSources(draft.sources)) return "Replace draft schemas with sources selected from the Core catalog";
       if (draft.trigger.mode === "interval" && (draft.trigger.interval_ms < 100 || draft.trigger.interval_ms > 86_400_000)) return "Interval must be between 100 ms and 24 hours";
       if (draft.trigger.mode === "on_change" && !draft.sources.some((source) => source.alias === draft.trigger.source_alias)) return "Select a valid on-change source alias";
     }
@@ -142,6 +255,7 @@ function MQTTPublisherWizardPage() {
   }
 
   function updateSource(id: string, update: Partial<PublisherSourceDraft>) {
+    setServerValidation(null);
     setDraft((current) => {
       const previous = current.sources.find((source) => source.id === id);
       const nextSources = updateAt(current.sources, id, update);
@@ -150,27 +264,37 @@ function MQTTPublisherWizardPage() {
         ...current,
         sources: nextSources,
         trigger: nextAlias && previous?.alias === current.trigger.source_alias ? { ...current.trigger, source_alias: nextAlias } : current.trigger,
-        mappings: nextAlias && previous ? current.mappings.map((mapping) => mapping.alias === previous.alias ? { ...mapping, alias: nextAlias } : mapping) : current.mappings,
       };
     });
   }
 
-  function addSource() {
-    const index = draft.sources.length + 1;
-    const source: PublisherSourceDraft = {
-      id: crypto.randomUUID(),
-      alias: `source_${index}`,
-      name: `Source ${index}`,
-      owner_name: "Payload schema draft",
-      kind: "tag",
-      data_type: "float64",
-      unit: "",
-      period_kind: "instantaneous",
-    };
-    setDraft((current) => ({ ...current, sources: [...current.sources, source] }));
+  function addCatalogSource(entry: PublisherSourceCatalogEntry) {
+    setDraft((current) => {
+      const descriptor = entry.descriptor;
+      if (current.sources.some((source) => source.reference && referenceKey(source.reference) === referenceKey(descriptor.reference))) return current;
+      const source: PublisherSourceDraft = {
+        id: crypto.randomUUID(),
+        alias: sourceAlias(descriptor.name, current.sources),
+        name: descriptor.name,
+        owner_name: descriptor.owner_name ?? "Core",
+        kind: descriptor.reference.kind,
+        data_type: descriptor.data_type,
+        unit: descriptor.unit ?? "",
+        period_kind: descriptor.period_kind,
+        reference: descriptor.reference,
+      };
+      const sources = [...current.sources, source];
+      return {
+        ...current,
+        sources,
+        trigger: current.trigger.source_alias ? current.trigger : { ...current.trigger, source_alias: source.alias },
+      };
+    });
+    setServerValidation(null);
   }
 
   function removeSource(id: string) {
+    setServerValidation(null);
     setDraft((current) => {
       const removed = current.sources.find((source) => source.id === id);
       const sources = current.sources.filter((source) => source.id !== id);
@@ -178,139 +302,237 @@ function MQTTPublisherWizardPage() {
         ...current,
         sources,
         trigger: removed?.alias === current.trigger.source_alias ? { ...current.trigger, source_alias: sources[0]?.alias ?? "" } : current.trigger,
-        mappings: removed ? current.mappings.filter((mapping) => mapping.alias !== removed.alias) : current.mappings,
       };
     });
   }
 
-  function addMapping() {
-    const mapping: MQTTPayloadMapping = {
-      id: crypto.randomUUID(),
-      field: `field_${draft.mappings.length + 1}`,
-      alias: draft.sources[0]?.alias ?? "",
-      helper: "value",
-    };
-    setDraft((current) => ({ ...current, mappings: [...current.mappings, mapping] }));
-  }
-
-  function regenerateTemplate() {
-    setDraft((current) => ({
-      ...current,
-      mqtt: {
-        ...current.mqtt,
-        publish: { ...current.mqtt.publish, payload_template: generatePayloadTemplate(current.mappings) },
-      },
-    }));
-    setNotice("Advanced JSON regenerated from the field mapper.");
+  function insertPayloadSyntax(syntax: string) {
+    const editor = payloadTemplateRef.current;
+    const template = draft.mqtt.publish.payload_template;
+    const start = editor?.selectionStart ?? template.length;
+    const end = editor?.selectionEnd ?? start;
+    const next = `${template.slice(0, start)}${syntax}${template.slice(end)}`;
+    updateMQTT("publish", { ...draft.mqtt.publish, payload_template: next });
+    setServerValidation(null);
     setMessage("");
+    setNotice(`Inserted ${syntax}`);
+    window.requestAnimationFrame(() => {
+      const cursor = start + syntax.length;
+      payloadTemplateRef.current?.focus();
+      payloadTemplateRef.current?.setSelectionRange(cursor, cursor);
+    });
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  function saveLocalDraft() {
+    localStorage.setItem("iot-edge.mqtt-publisher-draft.v1", JSON.stringify(draft));
+    setMessage("");
+    setNotice("Draft saved in this browser. Secret values are not stored here.");
+  }
+
+  async function validateOnServer(): Promise<PublisherPayloadValidation | null> {
+    const sources = selectedSources(draft.sources);
+    if (!sources) {
+      setMessage("Replace draft schemas with sources selected from the Core catalog");
+      return null;
+    }
+    try {
+      const result = await validatePublisherPayload(draft.mqtt.publish.payload_template, sources);
+      setServerValidation(result);
+      setMessage("");
+      setNotice(`Core validation passed: ${result.helper_calls} helpers, ${result.referenced_aliases.length} aliases.`);
+      return result;
+    } catch (error) {
+      setServerValidation(null);
+      setMessage(errorMessage(error, "Core rejected the MQTT payload template"));
+      return null;
+    }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (configurationLocked) {
+      setMessage("Disable the MQTT Publisher before changing its configuration");
+      return;
+    }
     const errors = validateMQTTPublisherDraft(draft);
     if (errors.length > 0) {
       setMessage(errors[0]);
       return;
     }
-    localStorage.setItem("iot-edge.mqtt-publisher-draft.v1", JSON.stringify(draft));
-    setMessage("");
-    setNotice("Draft saved in this browser. Server save remains disabled until the Publisher Admin API is available.");
+    const sources = selectedSources(draft.sources);
+    if (!sources) {
+      setMessage("Replace draft schemas with sources selected from the Core catalog");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (!await validateOnServer()) return;
+      const request = {
+        name: draft.name.trim(),
+        description: null,
+        credential_id: draft.credential_id || null,
+        config: exportMQTTPublisherConfig(draft),
+        sources,
+      };
+      const saved = publisher
+        ? await updateDataPublisher(publisher.id, request)
+        : await createDataPublisher({ type: "mqtt", enabled: false, ...request });
+      setPublisher(saved);
+      localStorage.setItem("iot-edge.mqtt-publisher-draft.v1", JSON.stringify(draft));
+      setMessage("");
+      setNotice(publisher ? "Disabled MQTT Publisher configuration updated." : "Disabled MQTT Publisher saved. Test the connection, then enable it.");
+      if (!publisher) navigate(`/data-publishers/${encodeURIComponent(saved.id)}/mqtt`, { replace: true });
+    } catch (error) {
+      setMessage(errorMessage(error, "Unable to save the MQTT Publisher"));
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function copyConfig() {
     try {
       await navigator.clipboard.writeText(configJSON);
-      setNotice("Secret-reference-only MQTT configuration copied.");
+      setNotice("MQTT configuration copied. Secret values are never included.");
       setMessage("");
     } catch {
       setMessage("Clipboard access is unavailable in this browser");
     }
   }
 
+  function selectCredential(id: string) {
+    const selected = credentials.find((profile) => profile.id === id);
+    setDraft((current) => ({
+      ...current,
+      credential_id: id,
+      credential_slots: selected?.secrets.map((secret) => secret.slot) ?? [],
+    }));
+  }
+
+  function setTLS(useTLS: boolean) {
+    setDraft((current) => {
+      const previousDefault = current.mqtt.use_tls ? 8883 : 1883;
+      return {
+        ...current,
+        mqtt: {
+          ...current.mqtt,
+          use_tls: useTLS,
+          broker_port: current.mqtt.broker_port === previousDefault ? (useTLS ? 8883 : 1883) : current.mqtt.broker_port,
+          plaintext_acknowledged: useTLS ? false : current.mqtt.plaintext_acknowledged,
+        },
+      };
+    });
+  }
+
   return (
     <VGatewayShell breadcrumb={<>Dashboard <span>/</span> Data Publishers <span>/</span> <strong>MQTT</strong></>}>
       <div className="mqtt-wizard-content">
         <header className="mqtt-heading">
-          <Link to="/dashboard"><ArrowLeft size={17} /> Dashboard</Link>
+          <Link to="/data-publishers"><ArrowLeft size={17} /> Data Publishers</Link>
           <div className="mqtt-heading-row">
             <div>
               <p>Core Data Publisher</p>
-              <h1>MQTT Publisher</h1>
+              <h1>{publisher ? publisher.name : "MQTT Publisher"}</h1>
               <span>Build verified MQTT/TLS telemetry payloads from Core Tags and typed Plugin outputs—without creating extra acquisition reads.</span>
             </div>
-            <div className="mqtt-contract-badge"><ShieldCheck size={18} /><span><strong>Transport ready</strong><small>Admin API integration pending</small></span></div>
+            <div className="mqtt-contract-badge"><ShieldCheck size={18} /><span><strong>MQTT runtime ready</strong><small>{publisher ? `${publisher.enabled ? "Enabled" : "Disabled"} · Config v${publisher.config_version}` : "Save disabled before connecting"}</small></span></div>
           </div>
         </header>
 
         <div className="mqtt-api-note" role="note">
           <Info size={18} />
-          <span><strong>Frontend-first workspace.</strong> Validation, fixtures, mapping, and local drafts work now. Server save, source catalog, secret upload, connection test, and live status stay intentionally unavailable until BE-9.12 exposes authenticated endpoints.</span>
+          <span><strong>Secure MQTT workflow.</strong> Save while disabled, select an optional Credential Profile, run a non-publishing connection test, then enable delivery. Runtime diagnostics never assume a fixed broker payload schema.</span>
         </div>
+
+        {configurationLocked && <div className="mqtt-lock-note" role="note"><LockKeyhole size={17} /><span><strong>Configuration locked while enabled.</strong> Disable this Publisher from the runtime panel before editing broker, sources, payload, or diagnostic subscriptions.</span></div>}
+        {detailState === "loading" && <div className="mqtt-loading" role="status"><RefreshCw className="is-spinning" size={18} />Loading MQTT Publisher…</div>}
 
         <ol className="mqtt-steps" aria-label="MQTT setup progress">
           {steps.map((label, index) => <li key={label} className={index === step ? "is-current" : index < step ? "is-complete" : ""}><span>{index < step ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></li>)}
         </ol>
 
         <form className="mqtt-wizard-form" onSubmit={submit}>
+          <fieldset className="mqtt-config-fieldset" disabled={configurationLocked || detailState !== "ready"}>
           {step === 0 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Radio /><div><h2>Broker connection</h2><p>Use an explicit port. Credentials are represented only by Publisher-owned secret names and never embedded in this draft.</p></div></div>
+            <div className="mqtt-panel-heading"><Radio /><div><h2>Broker connection</h2><p>Host, port, and TLS are configured independently. Authentication is optional and comes from a reusable Core Credential Profile.</p></div></div>
             <div className="mqtt-form-grid">
               <label><span>Publisher name</span><input autoFocus value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label><span>Broker URL</span><input aria-describedby="mqtt-broker-help" spellCheck={false} value={draft.mqtt.broker_url} onChange={(event) => updateMQTT("broker_url", event.target.value)} /><small id="mqtt-broker-help">Example: mqtts://broker.example.com:8883</small></label>
+              <label><span>Broker host</span><input aria-describedby="mqtt-broker-help" spellCheck={false} value={draft.mqtt.broker_host} onChange={(event) => updateMQTT("broker_host", event.target.value)} /><small id="mqtt-broker-help">Example: mqtt.example.com</small></label>
+              <label><span>Broker port</span><input type="number" min="1" max="65535" value={draft.mqtt.broker_port} onChange={(event) => updateMQTT("broker_port", Number(event.target.value))} /><small>Common defaults: 8883 with TLS, 1883 without TLS.</small></label>
               <label><span>Client ID <i>optional</i></span><input spellCheck={false} value={draft.mqtt.client_id} onChange={(event) => updateMQTT("client_id", event.target.value)} /><small>Leave blank to let Core derive a stable Publisher client ID.</small></label>
-              <label><span>Transport security</span><div className={`mqtt-security-state ${secure ? "is-secure" : "is-plain"}`}>{secure ? <LockKeyhole size={17} /> : <Unplug size={17} />}<strong>{secure ? "TLS with server verification" : "Plain MQTT"}</strong></div></label>
+              <label><span>Transport security</span><select aria-label="Transport security" value={secure ? "tls" : "plain"} onChange={(event) => setTLS(event.target.value === "tls")}><option value="tls">TLS with server verification</option><option value="plain">Plain MQTT</option></select><small>{secure ? <><LockKeyhole size={13} /> Server certificate verification is always enabled.</> : <><Unplug size={13} /> Traffic is not encrypted.</>}</small></label>
             </div>
             {!secure && <label className="mqtt-warning-check"><input type="checkbox" checked={draft.mqtt.plaintext_acknowledged} onChange={(event) => updateMQTT("plaintext_acknowledged", event.target.checked)} /><span><strong>I understand this connection is not encrypted</strong><small>Use only on a trusted isolated network. Authentication values can be exposed in transit.</small></span></label>}
 
-            <div className="mqtt-subsection"><div className="mqtt-subsection-heading"><FileKey2 size={18} /><div><h3>Authentication references</h3><p>Enter secret names, not usernames or passwords. Secret material will be uploaded through the protected API later.</p></div></div><div className="mqtt-form-grid"><label><span>Username secret reference</span><input spellCheck={false} value={draft.mqtt.auth.username_ref} onChange={(event) => updateMQTT("auth", { ...draft.mqtt.auth, username_ref: event.target.value })} /></label><label><span>Password secret reference</span><input spellCheck={false} value={draft.mqtt.auth.password_ref} onChange={(event) => updateMQTT("auth", { ...draft.mqtt.auth, password_ref: event.target.value })} /></label></div></div>
+            <div className="mqtt-subsection"><div className="mqtt-subsection-heading"><FileKey2 size={18} /><div><h3>Credential Profile <i>optional</i></h3><p>Select a reusable encrypted profile, or choose No credentials for brokers that do not require authentication.</p></div></div><div className="mqtt-form-grid"><label><span>Credential Profile</span><select value={draft.credential_id} onChange={(event) => selectCredential(event.target.value)}><option value="">No credentials</option>{credentials.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><small>{draft.credential_id ? `${draft.credential_slots.length} encrypted slot(s) configured` : "No username, password, custom CA, or client certificate will be used."}</small></label><label><span>Manage credentials</span><Link className="mqtt-inline-link" to="/credentials/new">Create Credential Profile</Link><small>Secret values are entered only on the protected Credentials page.</small></label></div></div>
 
-            {secure && <div className="mqtt-subsection"><div className="mqtt-subsection-heading"><ShieldCheck size={18} /><div><h3>TLS verification and optional mTLS</h3><p>System roots and broker hostname verification are always active. There is no insecure skip-verify option.</p></div></div><div className="mqtt-form-grid"><label><span>Server name override <i>optional</i></span><input spellCheck={false} value={draft.mqtt.tls.server_name} onChange={(event) => updateMQTT("tls", { ...draft.mqtt.tls, server_name: event.target.value })} /><small>Usually blank; Core derives it from the broker hostname.</small></label><label><span>Custom CA secret <i>optional</i></span><input spellCheck={false} value={draft.mqtt.tls.custom_ca_ref} onChange={(event) => updateMQTT("tls", { ...draft.mqtt.tls, custom_ca_ref: event.target.value })} /></label><label><span>Client identity secret <i>optional mTLS</i></span><input spellCheck={false} value={draft.mqtt.tls.client_identity_ref} onChange={(event) => updateMQTT("tls", { ...draft.mqtt.tls, client_identity_ref: event.target.value })} /><small>One atomic certificate + private-key identity reference.</small></label></div></div>}
+            {secure && <div className="mqtt-subsection"><div className="mqtt-subsection-heading"><ShieldCheck size={18} /><div><h3>TLS verification and optional mTLS</h3><p>System roots and broker hostname verification are always active. Custom CA and client identity are loaded from the selected Credential Profile.</p></div></div><div className="mqtt-form-grid"><label><span>Server name override <i>optional</i></span><input spellCheck={false} value={draft.mqtt.tls.server_name} onChange={(event) => updateMQTT("tls", { ...draft.mqtt.tls, server_name: event.target.value })} /><small>Usually blank; Core derives it from the broker hostname.</small></label></div></div>}
           </section>}
 
           {step === 1 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><DatabaseZap /><div><h2>Payload source aliases</h2><p>Define the schema used by the editor now. BE-9.12 will replace these draft descriptors with searchable Tag and Plugin-output catalog selections.</p></div></div>
-            <div className="mqtt-source-note"><CircleAlert size={17} /><span>These rows are payload schema drafts, not saved source references. Plugin outputs retain period start/end and Tags remain instantaneous.</span></div>
+            <div className="mqtt-panel-heading"><DatabaseZap /><div><h2>Payload source aliases</h2><p>Select existing Core Tags or typed Plugin outputs. Publishing snapshots their current values and never creates another acquisition read.</p></div></div>
+            <div className="mqtt-source-catalog">
+              <header><div><h3>Core source catalog</h3><p>Descriptors are owned by Core. Only the payload alias is editable after selection.</p></div><span>{catalogState === "loading" ? "Loading…" : `${catalog.length} found`}</span></header>
+              <div className="mqtt-catalog-filters">
+                <label><span>Search</span><input aria-label="Search Publisher sources" value={catalogSearch} onChange={(event) => { setCatalogState("loading"); setCatalogSearch(event.target.value); }} placeholder="Name, owner, unit…" /></label>
+                <label><span>Kind</span><select aria-label="Publisher source kind" value={catalogKind} onChange={(event) => { setCatalogState("loading"); setCatalogKind(event.target.value as PublisherSourceKind | ""); }}><option value="">All sources</option><option value="tag">Core Tags</option><option value="plugin_output">Plugin outputs</option></select></label>
+              </div>
+              {catalogState === "error" ? <div className="mqtt-catalog-empty">Source catalog unavailable. Existing local draft remains untouched.</div> : catalogState === "ready" && catalog.length === 0 ? <div className="mqtt-catalog-empty">No enabled sources match this filter.</div> : <div className="mqtt-catalog-list">{catalog.map((entry) => {
+                const descriptor = entry.descriptor;
+                const selected = draft.sources.some((source) => source.reference && referenceKey(source.reference) === referenceKey(descriptor.reference));
+                return <article key={referenceKey(descriptor.reference)}><div><strong>{descriptor.name}</strong><span>{descriptor.owner_name || "Core"} · {descriptor.reference.kind === "tag" ? "Tag" : "Plugin output"}</span></div><div><strong>{descriptor.data_type}</strong><span>{descriptor.unit || "No unit"} · {descriptor.period_kind}</span></div><div className={`mqtt-source-quality is-${entry.current.quality}`}>{entry.current.quality}</div><button type="button" disabled={selected} onClick={() => addCatalogSource(entry)}>{selected ? <Check size={16} /> : <Plus size={16} />}{selected ? "Selected" : "Add"}</button></article>;
+              })}</div>}
+            </div>
+            {draft.sources.some((source) => !source.reference) && <div className="mqtt-source-note"><CircleAlert size={17} /><span>This browser contains legacy schema-only rows. Remove them and select real Core sources before server validation or save.</span></div>}
             <div className="mqtt-source-list">
               {draft.sources.map((source) => <article key={source.id} className="mqtt-source-row">
                 <label><span>Alias</span><input aria-label={`Alias for ${source.name}`} spellCheck={false} value={source.alias} onChange={(event) => updateSource(source.id, { alias: event.target.value })} /></label>
-                <label><span>Display name</span><input aria-label={`Display name for ${source.alias}`} value={source.name} onChange={(event) => updateSource(source.id, { name: event.target.value })} /></label>
-                <label><span>Kind</span><select aria-label={`Kind for ${source.alias}`} value={source.kind} onChange={(event) => updateSource(source.id, { kind: event.target.value as PublisherSourceDraft["kind"], period_kind: event.target.value === "tag" ? "instantaneous" : source.period_kind })}><option value="tag">Core Tag</option><option value="plugin_output">Plugin output</option></select></label>
-                <label><span>Data type</span><select aria-label={`Data type for ${source.alias}`} value={source.data_type} onChange={(event) => updateSource(source.id, { data_type: event.target.value as PublisherSourceDataType })}>{dataTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
-                <label><span>Unit</span><input aria-label={`Unit for ${source.alias}`} value={source.unit} onChange={(event) => updateSource(source.id, { unit: event.target.value })} /></label>
-                <label><span>Period</span><select aria-label={`Period for ${source.alias}`} disabled={source.kind === "tag"} value={source.kind === "tag" ? "instantaneous" : source.period_kind} onChange={(event) => updateSource(source.id, { period_kind: event.target.value as PublisherSourceDraft["period_kind"] })}><option value="instantaneous">Instantaneous</option><option value="windowed">Windowed</option></select></label>
+                <label><span>Display name</span><input aria-label={`Display name for ${source.alias}`} disabled={Boolean(source.reference)} value={source.name} onChange={(event) => updateSource(source.id, { name: event.target.value })} /></label>
+                <label><span>Kind</span><select aria-label={`Kind for ${source.alias}`} disabled={Boolean(source.reference)} value={source.kind} onChange={(event) => updateSource(source.id, { kind: event.target.value as PublisherSourceDraft["kind"], period_kind: event.target.value === "tag" ? "instantaneous" : source.period_kind })}><option value="tag">Core Tag</option><option value="plugin_output">Plugin output</option></select></label>
+                <label><span>Data type</span><select aria-label={`Data type for ${source.alias}`} disabled={Boolean(source.reference)} value={source.data_type} onChange={(event) => updateSource(source.id, { data_type: event.target.value as PublisherSourceDataType })}>{dataTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
+                <label><span>Unit</span><input aria-label={`Unit for ${source.alias}`} disabled={Boolean(source.reference)} value={source.unit} onChange={(event) => updateSource(source.id, { unit: event.target.value })} /></label>
+                <label><span>Period</span><select aria-label={`Period for ${source.alias}`} disabled={source.kind === "tag" || Boolean(source.reference)} value={source.kind === "tag" ? "instantaneous" : source.period_kind} onChange={(event) => updateSource(source.id, { period_kind: event.target.value as PublisherSourceDraft["period_kind"] })}><option value="instantaneous">Instantaneous</option><option value="windowed">Windowed</option></select></label>
                 <button type="button" aria-label={`Remove source ${source.alias}`} onClick={() => removeSource(source.id)}><Trash2 size={17} /></button>
               </article>)}
             </div>
-            <button className="mqtt-add-button" type="button" onClick={addSource}><Plus size={17} /> Add source schema</button>
 
             <div className="mqtt-subsection"><div className="mqtt-subsection-heading"><Clock3 size={18} /><div><h3>Publish trigger</h3><p>The trigger snapshots already-available source values. It never changes Datasource polling or requests a Device.</p></div></div><div className="mqtt-mode-grid"><button className={draft.trigger.mode === "interval" ? "is-selected" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, trigger: { ...current.trigger, mode: "interval" } }))}><Clock3 /><strong>Fixed interval</strong><small>Publish the latest mixed snapshot on a timer.</small></button><button className={draft.trigger.mode === "on_change" ? "is-selected" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, trigger: { ...current.trigger, mode: "on_change" } }))}><Activity /><strong>On source change</strong><small>Coalesce updates from one selected alias.</small></button></div><div className="mqtt-form-grid">{draft.trigger.mode === "interval" ? <label><span>Publish interval (ms)</span><input type="number" min="100" max="86400000" value={draft.trigger.interval_ms} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, interval_ms: Number(event.target.value) } }))} /></label> : <><label><span>Trigger source</span><select value={draft.trigger.source_alias} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, source_alias: event.target.value } }))}>{draft.sources.map((source) => <option key={source.id} value={source.alias}>{source.alias}</option>)}</select></label><label><span>Coalesce window (ms)</span><input type="number" min="1" max="60000" value={draft.trigger.coalesce_ms} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, coalesce_ms: Number(event.target.value) } }))} /></label></>}</div></div>
           </section>}
 
           {step === 2 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Braces /><div><h2>Custom JSON payload</h2><p>Use the guided mapper for common fields, then refine the generated template. Only the documented helper allowlist is accepted.</p></div></div>
+            <div className="mqtt-panel-heading"><Braces /><div><h2>Custom JSON payload</h2><p>Write the complete payload template yourself. The syntax palette only inserts helpers at the editor cursor and never replaces your JSON.</p></div></div>
             <div className="mqtt-publish-grid"><label><span>Publish topic</span><input spellCheck={false} value={draft.mqtt.publish.topic} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, topic: event.target.value })} /></label><label><span>QoS</span><select value={draft.mqtt.publish.qos} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, qos: Number(event.target.value) as 0 | 1 })}><option value={0}>0 · At most once</option><option value={1}>1 · At least once</option></select></label><label className="mqtt-inline-check"><input type="checkbox" checked={draft.mqtt.publish.retain} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, retain: event.target.checked })} /><span><strong>Retain latest payload</strong><small>Broker stores the last message for new subscribers.</small></span></label></div>
 
-            <div className="mqtt-mapper"><header><div><h3>Guided field mapper</h3><p>Custom column names map to one source alias and one safe helper.</p></div><div><button type="button" onClick={addMapping}><Plus size={16} /> Add field</button><button className="is-emphasis" type="button" onClick={regenerateTemplate}><RefreshCw size={16} /> Generate JSON</button></div></header>{draft.mappings.map((mapping) => <div className="mqtt-mapping-row" key={mapping.id}><label><span>JSON field</span><input aria-label={`JSON field ${mapping.id}`} value={mapping.field} onChange={(event) => setDraft((current) => ({ ...current, mappings: updateAt(current.mappings, mapping.id, { field: event.target.value }) }))} /></label><label><span>Source alias</span><select aria-label={`Source alias for ${mapping.field}`} value={mapping.alias} onChange={(event) => setDraft((current) => ({ ...current, mappings: updateAt(current.mappings, mapping.id, { alias: event.target.value }) }))}>{draft.sources.map((source) => <option key={source.id} value={source.alias}>{source.alias}</option>)}</select></label><label><span>Helper</span><select aria-label={`Helper for ${mapping.field}`} value={mapping.helper} onChange={(event) => setDraft((current) => ({ ...current, mappings: updateAt(current.mappings, mapping.id, { helper: event.target.value as MQTTPayloadMapping["helper"] }) }))}><option value="value">Value</option><option value="quality">Quality</option><option value="unit">Unit</option><option value="observed_at">Observed at</option><option value="period_start">Period start</option><option value="period_end">Period end</option><option value="coverage">Coverage</option></select></label><button type="button" aria-label={`Remove mapping ${mapping.field}`} onClick={() => setDraft((current) => ({ ...current, mappings: current.mappings.filter((candidate) => candidate.id !== mapping.id) }))}><Trash2 size={16} /></button></div>)}</div>
+            <div className="mqtt-mapper mqtt-template-palette">
+              <header><div><h3>Template syntax palette</h3><p>Choose a helper, then click a selected source to insert its syntax at the current editor cursor.</p></div></header>
+              <div className="mqtt-palette-controls">
+                <label><span>Source helper</span><select aria-label="Payload source helper" value={payloadHelper} onChange={(event) => setPayloadHelper(event.target.value as MQTTPayloadSourceHelper)}>{mqttPayloadSourceHelpers.map((helper) => <option key={helper.id} value={helper.id}>{helper.label}</option>)}</select></label>
+                <div><span>Selected Tags and Plugin outputs</span><div className="mqtt-source-syntax-list">{draft.sources.map((source) => {
+                  const syntax = mqttPayloadSourceSyntax(payloadHelper, source.alias);
+                  return <button key={source.id} type="button" aria-label={`Insert ${payloadHelper} syntax for ${source.alias}`} onClick={() => insertPayloadSyntax(syntax)}><strong>{source.alias}</strong><code>{syntax}</code></button>;
+                })}</div></div>
+                <div><span>Publish context</span><div className="mqtt-context-syntax-list">{["{{published_unix_ms}}", "{{published_at}}", "{{publisher_id}}"].map((syntax) => <button key={syntax} type="button" aria-label={`Insert ${syntax}`} onClick={() => insertPayloadSyntax(syntax)}><code>{syntax}</code></button>)}</div></div>
+              </div>
+            </div>
 
-            <div className="mqtt-editor-grid"><div className="mqtt-editor"><label htmlFor="mqtt-payload-template"><span>Advanced JSON template</span><small>{new TextEncoder().encode(draft.mqtt.publish.payload_template).length.toLocaleString()} / 16,384 bytes</small></label><textarea id="mqtt-payload-template" spellCheck={false} value={draft.mqtt.publish.payload_template} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, payload_template: event.target.value })} /><details><summary>Allowed helpers ({mqttPayloadHelpers.length})</summary><code>{mqttPayloadHelpers.join(" · ")}</code><p>Examples: {`{{value "active_power_kw"}}`} · {`{{round "active_power_kw" 2}}`} · {`{{default "active_power_kw" 0}}`} · {`{{published_unix_ms}}`}</p></details></div><div className="mqtt-preview"><header><div><strong>Fixture preview</strong>{preview.result && <small>{preview.result.helperCalls} helpers · {preview.result.referencedAliases.length} aliases</small>}</div><div role="tablist" aria-label="Payload fixture">{fixtures.map((option) => <button key={option.id} className={fixture === option.id ? "is-active" : ""} type="button" role="tab" aria-selected={fixture === option.id} onClick={() => setFixture(option.id)}>{option.label}</button>)}</div></header>{preview.error ? <div className="mqtt-preview-error" role="alert"><CircleAlert />{preview.error}</div> : <pre>{preview.result?.rendered}</pre>}</div></div>
+            <div className="mqtt-editor-grid"><div className="mqtt-editor"><label htmlFor="mqtt-payload-template"><span>Advanced payload template</span><small>{new TextEncoder().encode(draft.mqtt.publish.payload_template).length.toLocaleString()} / 16,384 bytes</small></label><textarea ref={payloadTemplateRef} id="mqtt-payload-template" spellCheck={false} value={draft.mqtt.publish.payload_template} onChange={(event) => { updateMQTT("publish", { ...draft.mqtt.publish, payload_template: event.target.value }); setServerValidation(null); }} /><details><summary>Allowed helpers ({mqttPayloadHelpers.length})</summary><code>{mqttPayloadHelpers.join(" · ")}</code><p>Examples: {`{{value "active_power_kw"}}`} · {`{{round "active_power_kw" 2}}`} · {`{{default "active_power_kw" 0}}`} · {`{{published_unix_ms}}`}</p></details></div><div className="mqtt-preview"><header><div><strong>Fixture preview</strong>{preview.result && <small>{preview.result.helperCalls} helpers · {preview.result.referencedAliases.length} aliases</small>}</div><div role="tablist" aria-label="Payload fixture">{fixtures.map((option) => <button key={option.id} className={fixture === option.id ? "is-active" : ""} type="button" role="tab" aria-selected={fixture === option.id} onClick={() => setFixture(option.id)}>{option.label}</button>)}</div></header>{preview.error ? <div className="mqtt-preview-error" role="alert"><CircleAlert />{preview.error}</div> : <pre>{preview.result?.rendered}</pre>}</div></div>
+            <div className="mqtt-core-validation"><button type="button" onClick={() => void validateOnServer()}><ShieldCheck size={17} /> Validate with Core</button><span>{serverValidation ? `Passed · ${serverValidation.helper_calls} helpers · ${serverValidation.referenced_aliases.length} aliases` : "Local fixtures are advisory; Core validation is authoritative."}</span></div>
           </section>}
 
           {step === 3 && <section className="mqtt-panel">
             <div className="mqtt-panel-heading"><Waypoints /><div><h2>Diagnostics and review</h2><p>Subscribe to arbitrary broker response topics. Messages remain generic JSON, text, or base64 binary—no ACK/Error field schema is assumed.</p></div></div>
             <div className="mqtt-diagnostic-list">{draft.mqtt.diagnostics.map((diagnostic) => <div className="mqtt-diagnostic-row" key={diagnostic.id}><label><span>Label</span><input aria-label={`Diagnostic label ${diagnostic.id}`} spellCheck={false} value={diagnostic.label} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { label: event.target.value }))} /></label><label><span>Topic filter</span><input aria-label={`Topic filter for ${diagnostic.label}`} spellCheck={false} value={diagnostic.topic_filter} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { topic_filter: event.target.value }))} /></label><label><span>QoS</span><select aria-label={`QoS for ${diagnostic.label}`} value={diagnostic.qos} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { qos: Number(event.target.value) as 0 | 1 }))}><option value={0}>0</option><option value={1}>1</option></select></label><button type="button" aria-label={`Remove diagnostic ${diagnostic.label}`} onClick={() => updateMQTT("diagnostics", draft.mqtt.diagnostics.filter((candidate) => candidate.id !== diagnostic.id))}><Trash2 size={17} /></button></div>)}</div><button className="mqtt-add-button" type="button" disabled={draft.mqtt.diagnostics.length >= 16} onClick={() => updateMQTT("diagnostics", [...draft.mqtt.diagnostics, { id: crypto.randomUUID(), label: `diagnostic_${draft.mqtt.diagnostics.length + 1}`, topic_filter: "site/edge/#", qos: 1 }])}><Plus size={17} /> Add diagnostic subscription</button>
 
-            <div className="mqtt-runtime-grid" aria-label="MQTT runtime preview"><article><CircleDashed /><span>Connection</span><strong>Not connected</strong><small>Connection test requires BE-9.12</small></article><article><Send /><span>Delivery</span><strong>—</strong><small>QoS {draft.mqtt.publish.qos} · queue {draft.mqtt.queue_capacity}</small></article><article><RefreshCw /><span>Reconnects / drops</span><strong>— / —</strong><small>Live counters appear after save</small></article></div>
-
-            <div className="mqtt-monitor"><header><div><h3>Generic diagnostic monitor</h3><p>Runtime events will show label, exact topic, QoS, retain/duplicate flags, receive time, format, truncation, and the untouched payload.</p></div><span>History {draft.mqtt.diagnostic_history_depth}</span></header><div className="mqtt-monitor-empty"><Waypoints /><strong>Awaiting Publisher runtime</strong><span>No broker message is fabricated in this frontend-first view.</span></div></div>
-
             <details className="mqtt-advanced"><summary>Transport limits and reconnect policy</summary><div className="mqtt-form-grid"><label><span>Keep alive (ms)</span><input type="number" min="10000" max="3600000" value={draft.mqtt.keep_alive_ms} onChange={(event) => updateMQTT("keep_alive_ms", Number(event.target.value))} /></label><label><span>Connect timeout (ms)</span><input type="number" min="1000" max="120000" value={draft.mqtt.connect_timeout_ms} onChange={(event) => updateMQTT("connect_timeout_ms", Number(event.target.value))} /></label><label><span>Publish timeout (ms)</span><input type="number" min="1000" max="120000" value={draft.mqtt.publish_timeout_ms} onChange={(event) => updateMQTT("publish_timeout_ms", Number(event.target.value))} /></label><label><span>Reconnect minimum (ms)</span><input type="number" min="100" max="60000" value={draft.mqtt.reconnect_min_ms} onChange={(event) => updateMQTT("reconnect_min_ms", Number(event.target.value))} /></label><label><span>Reconnect maximum (ms)</span><input type="number" min={draft.mqtt.reconnect_min_ms} max="300000" value={draft.mqtt.reconnect_max_ms} onChange={(event) => updateMQTT("reconnect_max_ms", Number(event.target.value))} /></label><label><span>Offline queue capacity</span><input type="number" min="1" max="10000" value={draft.mqtt.queue_capacity} onChange={(event) => updateMQTT("queue_capacity", Number(event.target.value))} /></label><label><span>Diagnostic history</span><input type="number" min="1" max="1000" value={draft.mqtt.diagnostic_history_depth} onChange={(event) => updateMQTT("diagnostic_history_depth", Number(event.target.value))} /></label></div></details>
 
             <div className="mqtt-review"><header><div><h3>Server configuration preview</h3><p>Contains reference names only. No username, password, certificate, or private key material is serialized.</p></div><button type="button" onClick={() => void copyConfig()}><Copy size={16} /> Copy config</button></header><pre>{configJSON}</pre></div>
           </section>}
+          </fieldset>
+
+          {step === 3 && publisher && <MQTTPublisherOperations publisher={publisher} diagnosticHistoryDepth={draft.mqtt.diagnostic_history_depth} onPublisherChange={(next) => { setPublisher(next); setDraft((current) => ({ ...current, enabled: next.enabled })); }} />}
 
           {message && <div className="mqtt-message is-error" role="alert"><CircleAlert size={18} />{message}</div>}
           {notice && <div className="mqtt-message" role="status"><Check size={18} />{notice}</div>}
-          <footer className="mqtt-actions"><button type="button" disabled={step === 0} onClick={() => { setMessage(""); setNotice(""); setStep((current) => Math.max(0, current - 1)); }}><ArrowLeft size={17} /> Back</button><div><button type="button" disabled title="Available after BE-9.12 connection-test API"><Radio size={17} /> Test connection</button>{step < steps.length - 1 ? <button className="is-primary" type="button" onClick={continueWizard}>Continue <ArrowRight size={17} /></button> : <button className="is-primary" type="submit"><Check size={17} /> Save local draft</button>}</div></footer>
+          <footer className="mqtt-actions"><button type="button" disabled={step === 0} onClick={() => { setMessage(""); setNotice(""); setStep((current) => Math.max(0, current - 1)); }}><ArrowLeft size={17} /> Back</button><div>{step < steps.length - 1 ? <button className="is-primary" type="button" onClick={continueWizard}>Continue <ArrowRight size={17} /></button> : <><button type="button" onClick={saveLocalDraft}>Save local draft</button><button className="is-primary" type="submit" disabled={saving || configurationLocked || detailState !== "ready"}><Check size={17} /> {saving ? "Saving…" : publisher ? "Update configuration" : "Save disabled Publisher"}</button></>}</div></footer>
         </form>
       </div>
     </VGatewayShell>

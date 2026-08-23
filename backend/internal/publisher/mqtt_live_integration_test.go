@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -32,10 +33,31 @@ func TestMQTTLiveTLSIntegration(t *testing.T) {
 	deviceSlug := required("MQTT_LIVE_DEVICE_SLUG")
 
 	publisherID := uuid.New()
-	resolver := &secretTestResolver{publisherID: publisherID, materials: map[string]secretTestResolved{
-		"mqtt.username": {kind: SecretKindOpaque, material: SecretMaterial{Opaque: []byte(username)}},
-		"mqtt.password": {kind: SecretKindOpaque, material: SecretMaterial{Opaque: []byte(password)}},
-	}}
+	secretRepository := newSecretMemoryRepository(publisherID)
+	secretCipher, err := NewAESGCMSecretCipher("live-test-master-v1", bytes.Repeat([]byte{0x7a}, 32))
+	if err != nil {
+		t.Fatalf("NewAESGCMSecretCipher() error = %v", err)
+	}
+	secretRotations, err := NewSecretRotationBroker(8)
+	if err != nil {
+		t.Fatalf("NewSecretRotationBroker() error = %v", err)
+	}
+	secretService, err := NewSecretService(secretRepository, secretCipher, secretRotations)
+	if err != nil {
+		t.Fatalf("NewSecretService() error = %v", err)
+	}
+	secretVault, err := NewSecretVault(secretRepository, secretCipher)
+	if err != nil {
+		t.Fatalf("NewSecretVault() error = %v", err)
+	}
+	for reference, value := range map[string]string{"mqtt.username": username, "mqtt.password": password} {
+		material := SecretMaterial{Opaque: []byte(value)}
+		_, putErr := secretService.Put(context.Background(), publisherID, PutSecretInput{Reference: SecretReference{Name: reference}, Kind: SecretKindOpaque, Material: material})
+		material.Destroy()
+		if putErr != nil {
+			t.Fatalf("storing encrypted live MQTT secret %s: %v", reference, putErr)
+		}
+	}
 	reference := TagSource(uuid.New())
 	sources := []ResolvedSource{{Alias: "temperature", Descriptor: SourceDescriptor{Reference: reference, SchemaVersion: 1, DataType: SourceDataTypeFloat64, Unit: "°C", PeriodKind: SourcePeriodInstantaneous}}}
 	payloadTemplate := fmt.Sprintf(`{"entech_connect_telemetry":[{"device":{"id":%q,"slug":%q},"timestamp":{{published_unix_ms}},"data":{"temperature":{{value "temperature"}}},"status":{"state":"ONLINE"}}]}`, deviceID, deviceSlug)
@@ -50,8 +72,19 @@ func TestMQTTLiveTLSIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normalizing live config: %v", err)
 	}
-	entity := Publisher{ID: publisherID, Type: TypeMQTT, Name: "Live TLS Test", Enabled: true, Config: normalized, ConfigVersion: 3}
-	factory, err := NewMQTTTransportFactory(resolver, NewJSONPayloadEngine())
+	entity := Publisher{ID: publisherID, Type: TypeMQTT, Name: "Live TLS Test", Enabled: false, Config: normalized, ConfigVersion: 3}
+	payloadEngine := NewJSONPayloadEngine()
+	connectionTester, err := NewMQTTConnectionTester(secretVault, payloadEngine)
+	if err != nil {
+		t.Fatalf("NewMQTTConnectionTester() error = %v", err)
+	}
+	connectionResult, err := connectionTester.Test(context.Background(), entity, sources, nil)
+	if err != nil || !connectionResult.Connected || connectionResult.LatencyMS < 0 {
+		t.Fatalf("MQTTConnectionTester.Test() = %+v, %v", connectionResult, err)
+	}
+	t.Logf("encrypted-vault connection test succeeded: connected=%t latency_ms=%d", connectionResult.Connected, connectionResult.LatencyMS)
+	entity.Enabled = true
+	factory, err := NewMQTTTransportFactory(secretVault, payloadEngine)
 	if err != nil {
 		t.Fatalf("NewMQTTTransportFactory() error = %v", err)
 	}
@@ -72,6 +105,9 @@ func TestMQTTLiveTLSIntegration(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Topic != ackTopic && events[len(events)-1].Topic != errorTopic {
 		t.Fatalf("unexpected generic diagnostics: %#v", events)
 	}
+	metrics := transport.Metrics()
+	lastEvent := events[len(events)-1]
+	t.Logf("live MQTT checkpoint succeeded: deliveries=%d diagnostics=%d diagnostic_label=%s format=%s", metrics.DeliveryCount, metrics.DiagnosticCount, lastEvent.Label, lastEvent.Format)
 }
 
 func waitLiveMQTT(t *testing.T, timeout time.Duration, condition func() bool, description string) {

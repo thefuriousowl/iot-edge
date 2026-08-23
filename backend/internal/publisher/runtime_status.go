@@ -58,7 +58,7 @@ type RuntimeStatus struct {
 	LastDeliveredAt       *time.Time            `json:"last_delivered_at,omitempty"`
 	LastDiagnosticAt      *time.Time            `json:"last_diagnostic_at,omitempty"`
 	TransportError        string                `json:"transport_error,omitempty"`
-	Sources               []SourceRuntimeStatus `json:"sources"`
+	Sources               []SourceRuntimeStatus `json:"sources,omitempty"`
 	LastError             string                `json:"last_error,omitempty"`
 }
 

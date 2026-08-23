@@ -169,6 +169,7 @@ type fakeMQTTWireClient struct {
 	mu             sync.Mutex
 	settings       mqttWireSettings
 	connectSuccess bool
+	connectError   error
 	connected      bool
 	filters        map[string]byte
 	handler        func(mqttWireMessage)
@@ -191,6 +192,8 @@ func (client *fakeMQTTWireClient) Connect() mqttWireToken {
 	if success {
 		settings.OnConnected()
 		token.complete(nil)
+	} else if client.connectError != nil {
+		token.complete(client.connectError)
 	}
 	return token
 }

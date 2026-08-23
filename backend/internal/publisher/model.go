@@ -24,6 +24,7 @@ type Publisher struct {
 	Enabled        bool              `gorm:"not null;index" json:"enabled"`
 	Config         Config            `gorm:"type:jsonb;serializer:json;not null" json:"config"`
 	ConfigVersion  uint              `gorm:"column:config_version;not null" json:"config_version"`
+	CredentialID   *uuid.UUID        `gorm:"column:credential_id;type:uuid" json:"credential_id,omitempty"`
 	SecretRevision uint64            `gorm:"column:secret_revision;->;-:migration" json:"-"`
 	SourceCount    int               `gorm:"column:source_count;->;-:migration" json:"source_count"`
 	Sources        []SourceSelection `gorm:"-" json:"sources,omitempty"`
@@ -40,6 +41,10 @@ func clonePublisher(entity Publisher) Publisher {
 		cloned.Description = &description
 	}
 	cloned.Config = cloneConfig(entity.Config)
+	if entity.CredentialID != nil {
+		credentialID := *entity.CredentialID
+		cloned.CredentialID = &credentialID
+	}
 	cloned.Sources = append([]SourceSelection(nil), entity.Sources...)
 	return cloned
 }

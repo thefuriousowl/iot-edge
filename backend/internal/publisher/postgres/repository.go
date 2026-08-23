@@ -112,7 +112,7 @@ func (repository *repository) Update(ctx context.Context, entity *publisher.Publ
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&publisher.Publisher{}).Where("id = ?", entity.ID).Updates(map[string]any{
 			"name": entity.Name, "description": entity.Description, "enabled": entity.Enabled,
-			"config": entity.Config, "config_version": entity.ConfigVersion,
+			"config": entity.Config, "config_version": entity.ConfigVersion, "credential_id": entity.CredentialID,
 			"updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
 		})
 		if result.Error != nil {
@@ -221,6 +221,8 @@ func mapError(err error) error {
 		return publisher.ErrPublisherNameExists
 	case "data_publisher_sources_tag_id_fkey", "data_publisher_sources_plugin_instance_id_fkey":
 		return publisher.ErrSourceNotFound
+	case "data_publishers_credential_id_fkey":
+		return publisher.ErrCredentialNotFound
 	case "data_publishers_pkey", "data_publishers_type_check", "data_publishers_name_check",
 		"data_publishers_description_check", "data_publishers_config_check", "data_publishers_config_version_check",
 		"data_publisher_sources_pkey", "data_publisher_sources_alias_key", "data_publisher_sources_position_check",

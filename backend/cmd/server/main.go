@@ -16,6 +16,9 @@ import (
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
+	"github.com/thefuriousowl/iot-edge/internal/credential"
+	credentialhttp "github.com/thefuriousowl/iot-edge/internal/credential/http"
+	credentialpostgres "github.com/thefuriousowl/iot-edge/internal/credential/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/datalogger"
 	dataloggerhttp "github.com/thefuriousowl/iot-edge/internal/datalogger/http"
 	dataloggerpostgres "github.com/thefuriousowl/iot-edge/internal/datalogger/postgres"
@@ -29,6 +32,9 @@ import (
 	pluginhttp "github.com/thefuriousowl/iot-edge/internal/plugin/http"
 	pluginpostgres "github.com/thefuriousowl/iot-edge/internal/plugin/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
+	"github.com/thefuriousowl/iot-edge/internal/publisher"
+	publisherhttp "github.com/thefuriousowl/iot-edge/internal/publisher/http"
+	publisherpostgres "github.com/thefuriousowl/iot-edge/internal/publisher/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/report"
 	reporthttp "github.com/thefuriousowl/iot-edge/internal/report/http"
 	reportpostgres "github.com/thefuriousowl/iot-edge/internal/report/postgres"
@@ -214,9 +220,107 @@ func main() {
 	if err := pluginManager.Start(runtimeContext); err != nil {
 		log.Fatalf("failed to start Plugin manager: %v", err)
 	}
+	publisherSources, err := publisher.NewSourceFeed(tagService, tagValues, pluginService, pluginOutputStore)
+	if err != nil {
+		log.Fatalf("failed to initialize Data Publisher sources: %v", err)
+	}
+	publisherDefinitions, err := publisher.NewDefaultDefinitionRegistry()
+	if err != nil {
+		log.Fatalf("failed to initialize Data Publisher definitions: %v", err)
+	}
+	publisherRepository := publisherpostgres.NewRepository(db)
+	publisherPayloadEngine := publisher.NewJSONPayloadEngine()
+	var publisherManager *publisher.Manager
+	var publisherRuntimeErrors <-chan error
+	publisherHandlerOptions := []publisherhttp.HandlerOption{}
+	publisherServiceOptions := []publisher.ServiceOption{}
+	credentialHandler := credentialhttp.NewHandler(nil)
+	if len(cfg.PublisherMasterKey) != 0 {
+		publisherCipher, err := publisher.NewAESGCMSecretCipher(cfg.PublisherMasterKeyID, cfg.PublisherMasterKey)
+		for index := range cfg.PublisherMasterKey {
+			cfg.PublisherMasterKey[index] = 0
+		}
+		cfg.PublisherMasterKey = nil
+		if err != nil {
+			log.Fatalf("failed to initialize Data Publisher secret cipher: %v", err)
+		}
+		publisherSecretRepository := publisherpostgres.NewSecretRepository(db)
+		publisherSecretRotations, err := publisher.NewSecretRotationBroker(64)
+		if err != nil {
+			log.Fatalf("failed to initialize Data Publisher secret rotations: %v", err)
+		}
+		publisherSecretService, err := publisher.NewSecretService(publisherSecretRepository, publisherCipher, publisherSecretRotations)
+		if err != nil {
+			log.Fatalf("failed to initialize Data Publisher secret service: %v", err)
+		}
+		publisherSecretVault, err := publisher.NewSecretVault(publisherSecretRepository, publisherCipher)
+		if err != nil {
+			log.Fatalf("failed to initialize Data Publisher secret vault: %v", err)
+		}
+		credentialRepository := credentialpostgres.NewRepository(db)
+		credentialService, err := credential.NewService(credentialRepository, publisherSecretService)
+		if err != nil {
+			log.Fatalf("failed to initialize Credential service: %v", err)
+		}
+		credentialHandler = credentialhttp.NewHandler(credentialService)
+		publisherServiceOptions = append(publisherServiceOptions, publisher.WithCredentialValidator(credentialService))
+		publisherSecretResolver, err := credential.NewPublisherSecretResolver(publisherRepository, publisherSecretVault)
+		if err != nil {
+			log.Fatalf("failed to initialize Publisher Credential resolver: %v", err)
+		}
+		publisherTransports := publisher.NewTransportRegistry()
+		httpPublisherFactory, err := publisher.NewHTTPTransportFactory(publisherSecretResolver)
+		if err != nil {
+			log.Fatalf("failed to initialize HTTP Publisher transport: %v", err)
+		}
+		if err := publisherTransports.Register(publisher.TypeHTTPServer, httpPublisherFactory); err != nil {
+			log.Fatalf("failed to register HTTP Publisher transport: %v", err)
+		}
+		mqttPublisherFactory, err := publisher.NewMQTTTransportFactory(publisherSecretResolver, publisherPayloadEngine)
+		if err != nil {
+			log.Fatalf("failed to initialize MQTT Publisher transport: %v", err)
+		}
+		if err := publisherTransports.Register(publisher.TypeMQTT, mqttPublisherFactory); err != nil {
+			log.Fatalf("failed to register MQTT Publisher transport: %v", err)
+		}
+		publisherManager, err = publisher.NewManager(
+			publisherRepository,
+			publisherSources,
+			publisherDefinitions,
+			publisherTransports,
+		)
+		if err != nil {
+			log.Fatalf("failed to initialize Data Publisher manager: %v", err)
+		}
+		if err := publisherManager.Start(runtimeContext); err != nil {
+			log.Fatalf("failed to start Data Publisher manager: %v", err)
+		}
+		publisherConnectionTester, err := publisher.NewMQTTConnectionTester(publisherSecretResolver, publisherPayloadEngine)
+		if err != nil {
+			log.Fatalf("failed to initialize MQTT connection tester: %v", err)
+		}
+		publisherHandlerOptions = append(
+			publisherHandlerOptions,
+			publisherhttp.WithRuntimeManager(publisherManager),
+			publisherhttp.WithMQTTConnectionTester(publisherConnectionTester),
+		)
+		publisherRuntimeErrors = publisherManager.Errors()
+	} else {
+		log.Printf("Data Publisher secrets and runtime are disabled: configure PUBLISHER_MASTER_KEY_ID and PUBLISHER_MASTER_KEY_BASE64")
+	}
+	publisherService, err := publisher.NewService(publisherRepository, publisherSources, publisherDefinitions, publisherServiceOptions...)
+	if err != nil {
+		log.Fatalf("failed to initialize Data Publisher service: %v", err)
+	}
+	publisherHandler := publisherhttp.NewHandler(publisherService, publisherSources, publisherPayloadEngine, publisherHandlerOptions...)
 	defer func() {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if publisherManager != nil {
+			if err := publisherManager.Stop(shutdownContext); err != nil {
+				log.Printf("failed to stop Data Publisher manager: %v", err)
+			}
+		}
 		if err := pluginManager.Stop(shutdownContext); err != nil {
 			log.Printf("failed to stop Plugin manager: %v", err)
 		}
@@ -237,6 +341,8 @@ func main() {
 				log.Printf("Data Logger runtime: %v", loggerError)
 			case pluginError := <-pluginManager.Errors():
 				log.Printf("Plugin runtime: %v", pluginError)
+			case publisherError := <-publisherRuntimeErrors:
+				log.Printf("Data Publisher runtime: %v", publisherError)
 			}
 		}
 	}()
@@ -277,6 +383,8 @@ func main() {
 	pluginhttp.RegisterRoutes(protectedAPI, pluginHandler)
 	energyhttp.RegisterRoutes(protectedAPI, energyHandler)
 	reporthttp.RegisterRoutes(protectedAPI, reportHandler)
+	credentialhttp.RegisterRoutes(protectedAPI, credentialHandler)
+	publisherhttp.RegisterRoutes(protectedAPI, publisherHandler)
 
 	// Start HTTP server
 	address := ":" + cfg.Port

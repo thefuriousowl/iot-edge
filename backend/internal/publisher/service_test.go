@@ -170,6 +170,43 @@ func TestPublisherServiceRejectsInvalidConfigSourcesAndCompatibility(t *testing.
 	}
 }
 
+func TestPublisherServiceValidatesOptionalCredentialProfile(t *testing.T) {
+	service, repository, _, tagReference, _ := newSourceTestPublisherService(t)
+	validator := &credentialValidatorStub{}
+	service.credentials = validator
+	credentialID := uuid.New()
+	created, err := service.Create(context.Background(), CreateInput{
+		Type: TypeMQTT, Name: "Credential MQTT", CredentialID: &credentialID,
+		Sources: []SourceSelection{{Alias: "value", Reference: tagReference}},
+	})
+	if err != nil || created.CredentialID == nil || *created.CredentialID != credentialID || validator.id != credentialID || validator.publisherType != TypeMQTT {
+		t.Fatalf("Create() = %#v validator=%#v error=%v", created, validator, err)
+	}
+	updated, err := service.Update(context.Background(), created.ID, UpdateInput{CredentialID: OptionalCredentialID{Set: true}})
+	if err != nil || updated.CredentialID != nil {
+		t.Fatalf("Update(clear credential) = %#v, %v", updated, err)
+	}
+	validator.err = ErrCredentialIncompatible
+	if _, err := service.Update(context.Background(), created.ID, UpdateInput{CredentialID: OptionalCredentialID{Set: true, Value: &credentialID}}); !errors.Is(err, ErrCredentialIncompatible) {
+		t.Errorf("Update(incompatible credential) error = %v", err)
+	}
+	found, _ := repository.Find(context.Background(), created.ID)
+	if found.CredentialID != nil {
+		t.Errorf("failed update changed stored CredentialID = %s", *found.CredentialID)
+	}
+}
+
+type credentialValidatorStub struct {
+	id            uuid.UUID
+	publisherType Type
+	err           error
+}
+
+func (validator *credentialValidatorStub) ValidateCredential(_ context.Context, id uuid.UUID, publisherType Type) error {
+	validator.id, validator.publisherType = id, publisherType
+	return validator.err
+}
+
 func TestPublisherServiceValidatesListAndResolverIntegrity(t *testing.T) {
 	t.Parallel()
 

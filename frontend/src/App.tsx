@@ -23,6 +23,9 @@ import PluginListPage from "./features/plugin/pages/PluginListPage";
 import EnergyOverviewPage from "./features/plugin/pages/EnergyOverviewPage";
 import EnergyWizardPage from "./features/plugin/pages/EnergyWizardPage";
 import MQTTPublisherWizardPage from "./features/publisher/pages/MQTTPublisherWizardPage";
+import DataPublisherListPage from "./features/publisher/pages/DataPublisherListPage";
+import CredentialListPage from "./features/credential/pages/CredentialListPage";
+import CredentialEditorPage from "./features/credential/pages/CredentialEditorPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
@@ -202,7 +205,35 @@ function App() {
           }
         />
         <Route
+          path="/credentials"
+          element={<ProtectedRoute><CredentialListPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/credentials/new"
+          element={<ProtectedRoute><CredentialEditorPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/credentials/:id"
+          element={<ProtectedRoute><CredentialEditorPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/data-publishers"
+          element={
+            <ProtectedRoute>
+              <DataPublisherListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/data-publishers/new/mqtt"
+          element={
+            <ProtectedRoute>
+              <MQTTPublisherWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-publishers/:id/mqtt"
           element={
             <ProtectedRoute>
               <MQTTPublisherWizardPage />

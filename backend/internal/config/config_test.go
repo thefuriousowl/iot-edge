@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/base64"
 	"os"
 	"testing"
 	"time"
@@ -23,6 +25,8 @@ func setupEnv(t *testing.T, envs map[string]string) {
 		"COOKIE_SECURE",
 		"INTERNET_CHECK_ADDRESS",
 		"INTERNET_CHECK_TIMEOUT",
+		"PUBLISHER_MASTER_KEY_ID",
+		"PUBLISHER_MASTER_KEY_BASE64",
 	}
 	for _, key := range configKeys {
 		t.Setenv(key, "")
@@ -258,6 +262,48 @@ func TestLoad_InvalidCookieSecureReturnsError(t *testing.T) {
 	}
 	if cfg != nil {
 		t.Errorf("expected nil config, got %#v", cfg)
+	}
+}
+
+func TestLoad_PublisherMasterKeyIsOptionalAndStrict(t *testing.T) {
+	setupEnv(t, validEnv())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.PublisherMasterKeyID != "" || cfg.PublisherMasterKey != nil {
+		t.Fatalf("optional Publisher key = %q/%v", cfg.PublisherMasterKeyID, cfg.PublisherMasterKey)
+	}
+
+	valid := validEnv()
+	validPublisherKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x2a}, 32))
+	valid["PUBLISHER_MASTER_KEY_ID"] = "publisher-master-v1"
+	valid["PUBLISHER_MASTER_KEY_BASE64"] = validPublisherKey
+	setupEnv(t, valid)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() configured error = %v", err)
+	}
+	if cfg.PublisherMasterKeyID != "publisher-master-v1" || len(cfg.PublisherMasterKey) != 32 {
+		t.Fatalf("configured Publisher key = %q/%d", cfg.PublisherMasterKeyID, len(cfg.PublisherMasterKey))
+	}
+
+	for name, values := range map[string]map[string]string{
+		"missing key": {"PUBLISHER_MASTER_KEY_ID": "publisher-master-v1"},
+		"missing id":  {"PUBLISHER_MASTER_KEY_BASE64": validPublisherKey},
+		"bad base64":  {"PUBLISHER_MASTER_KEY_ID": "publisher-master-v1", "PUBLISHER_MASTER_KEY_BASE64": "not-base64"},
+		"wrong size":  {"PUBLISHER_MASTER_KEY_ID": "publisher-master-v1", "PUBLISHER_MASTER_KEY_BASE64": "c2hvcnQ="},
+	} {
+		t.Run(name, func(t *testing.T) {
+			envs := validEnv()
+			for key, value := range values {
+				envs[key] = value
+			}
+			setupEnv(t, envs)
+			if cfg, err := Load(); err == nil || cfg != nil {
+				t.Fatalf("Load() = %#v, %v", cfg, err)
+			}
+		})
 	}
 }
 

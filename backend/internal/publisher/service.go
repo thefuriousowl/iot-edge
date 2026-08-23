@@ -22,30 +22,44 @@ type OptionalPublisherDescription struct {
 	Value *string
 }
 
+type OptionalCredentialID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
 type CreateInput struct {
-	Type        Type
-	Name        string
-	Description *string
-	Enabled     *bool
-	Config      Config
-	Sources     []SourceSelection
+	Type         Type
+	Name         string
+	Description  *string
+	Enabled      *bool
+	Config       Config
+	Sources      []SourceSelection
+	CredentialID *uuid.UUID
 }
 
 type UpdateInput struct {
-	Name        *string
-	Description OptionalPublisherDescription
-	Enabled     *bool
-	Config      *Config
-	Sources     *[]SourceSelection
+	Name         *string
+	Description  OptionalPublisherDescription
+	Enabled      *bool
+	Config       *Config
+	Sources      *[]SourceSelection
+	CredentialID OptionalCredentialID
+}
+
+type ServiceOption func(*Service)
+
+func WithCredentialValidator(credentials CredentialValidator) ServiceOption {
+	return func(service *Service) { service.credentials = credentials }
 }
 
 type Service struct {
 	repository  Repository
 	sources     SourceResolver
 	definitions *DefinitionRegistry
+	credentials CredentialValidator
 }
 
-func NewService(repository Repository, sources SourceResolver, definitions *DefinitionRegistry) (*Service, error) {
+func NewService(repository Repository, sources SourceResolver, definitions *DefinitionRegistry, options ...ServiceOption) (*Service, error) {
 	if isNilSourceDependency(repository) {
 		return nil, ErrRepositoryRequired
 	}
@@ -55,7 +69,13 @@ func NewService(repository Repository, sources SourceResolver, definitions *Defi
 	if definitions == nil {
 		return nil, ErrDefinitionRegistryRequired
 	}
-	return &Service{repository: repository, sources: sources, definitions: definitions}, nil
+	service := &Service{repository: repository, sources: sources, definitions: definitions}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (service *Service) Types() []DefinitionDescriptor {
@@ -95,6 +115,9 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (*Publish
 	if err := validateDefinitionSourceConfig(ctx, definition, config, resolved); err != nil {
 		return nil, err
 	}
+	if err := service.validateCredential(ctx, input.CredentialID, input.Type); err != nil {
+		return nil, err
+	}
 	enabled := false
 	if input.Enabled != nil {
 		enabled = *input.Enabled
@@ -102,7 +125,7 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (*Publish
 	descriptor := definition.Descriptor()
 	entity := &Publisher{
 		Type: input.Type, Name: name, Description: description, Enabled: enabled,
-		Config: config, ConfigVersion: descriptor.ConfigVersion, Sources: sources, SourceCount: len(sources),
+		Config: config, ConfigVersion: descriptor.ConfigVersion, Sources: sources, SourceCount: len(sources), CredentialID: cloneUUID(input.CredentialID),
 	}
 	if err := service.repository.Create(ctx, entity); err != nil {
 		return nil, err
@@ -188,6 +211,9 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 	if input.Sources != nil {
 		entity.Sources = append([]SourceSelection(nil), (*input.Sources)...)
 	}
+	if input.CredentialID.Set {
+		entity.CredentialID = cloneUUID(input.CredentialID.Value)
+	}
 	var resolved []ResolvedSource
 	entity.Sources, resolved, err = service.normalizeSources(ctx, definition, entity.Sources)
 	if err != nil {
@@ -199,11 +225,32 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 	if err := validateDefinitionSourceConfig(ctx, definition, entity.Config, resolved); err != nil {
 		return nil, err
 	}
+	if err := service.validateCredential(ctx, entity.CredentialID, entity.Type); err != nil {
+		return nil, err
+	}
 	entity.SourceCount = len(entity.Sources)
 	if err := service.repository.Update(ctx, &entity); err != nil {
 		return nil, err
 	}
 	return service.repository.Find(ctx, id)
+}
+
+func (service *Service) validateCredential(ctx context.Context, id *uuid.UUID, publisherType Type) error {
+	if id == nil {
+		return nil
+	}
+	if *id == uuid.Nil || service.credentials == nil {
+		return ErrCredentialNotFound
+	}
+	return service.credentials.ValidateCredential(ctx, *id, publisherType)
+}
+
+func cloneUUID(value *uuid.UUID) *uuid.UUID {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func (service *Service) SetEnabled(ctx context.Context, id uuid.UUID, enabled bool) (*Publisher, error) {

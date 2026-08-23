@@ -7,6 +7,7 @@ import {
   DatabaseZap,
   FileChartColumn,
   LayoutDashboard,
+  KeyRound,
   Menu,
   Puzzle,
   RadioTower,
@@ -80,9 +81,13 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
             <Puzzle aria-hidden="true" size={21} />
             Plugins
           </NavLink>
-          <NavLink to="/data-publishers/new/mqtt">
+          <NavLink to="/data-publishers">
             <RadioTower aria-hidden="true" size={21} />
             Data Publishers
+          </NavLink>
+          <NavLink to="/credentials">
+            <KeyRound aria-hidden="true" size={21} />
+            Credentials
           </NavLink>
           <span aria-disabled="true">
             <Settings aria-hidden="true" size={21} />

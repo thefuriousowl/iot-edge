@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ type Config struct {
 	CookieSecure         bool
 	InternetCheckAddress string
 	InternetCheckTimeout time.Duration
+	PublisherMasterKeyID string
+	PublisherMasterKey   []byte
 }
 
 func Load() (*Config, error) {
@@ -56,6 +59,18 @@ func Load() (*Config, error) {
 	if err != nil || internetCheckTimeout <= 0 {
 		return nil, errors.New("INTERNET_CHECK_TIMEOUT must be a positive duration")
 	}
+	publisherMasterKeyID := os.Getenv("PUBLISHER_MASTER_KEY_ID")
+	publisherMasterKeyEncoded := os.Getenv("PUBLISHER_MASTER_KEY_BASE64")
+	var publisherMasterKey []byte
+	if publisherMasterKeyID != "" || publisherMasterKeyEncoded != "" {
+		if publisherMasterKeyID == "" || publisherMasterKeyEncoded == "" {
+			return nil, errors.New("PUBLISHER_MASTER_KEY_ID and PUBLISHER_MASTER_KEY_BASE64 must be configured together")
+		}
+		publisherMasterKey, err = base64.StdEncoding.DecodeString(publisherMasterKeyEncoded)
+		if err != nil || len(publisherMasterKey) != 32 {
+			return nil, errors.New("PUBLISHER_MASTER_KEY_BASE64 must encode exactly 32 bytes")
+		}
+	}
 
 	return &Config{
 		Port:             port,
@@ -72,6 +87,8 @@ func Load() (*Config, error) {
 		CookieSecure:         cookieSecure,
 		InternetCheckAddress: getEnv("INTERNET_CHECK_ADDRESS", "1.1.1.1:443"),
 		InternetCheckTimeout: internetCheckTimeout,
+		PublisherMasterKeyID: publisherMasterKeyID,
+		PublisherMasterKey:   publisherMasterKey,
 	}, nil
 }
 

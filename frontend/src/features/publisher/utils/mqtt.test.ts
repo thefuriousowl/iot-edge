@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { PublisherSourceDraft } from "../../../types/publisher";
+import type { DataPublisher, PublisherRuntimeStatus, PublisherSourceCatalogEntry, PublisherSourceDraft } from "../../../types/publisher";
 import {
   exportMQTTPublisherConfig,
-  generatePayloadTemplate,
+  importMQTTPublisherDraft,
   initialMQTTPublisherDraft,
   isValidPublishTopic,
   isValidTopicFilter,
+  mqttPayloadSourceSyntax,
   previewPayloadTemplate,
   validateBrokerURL,
   validateMQTTPublisherDraft,
@@ -54,15 +55,12 @@ describe("MQTT Publisher frontend contract", () => {
     expect(isValidTopicFilter("tenant/a+ck")).toBe(false);
   });
 
-  it("generates custom field mappings with raw safe helper actions", () => {
-    const template = generatePayloadTemplate([
-      { id: "one", field: "activePower", alias: "power_kw", helper: "value" },
-      { id: "two", field: "energyPeriodStart", alias: "energy_today", helper: "period_start" },
-    ]);
-
-    expect(template).toContain('"activePower": {{value "power_kw"}}');
-    expect(template).toContain('"energyPeriodStart": {{period_start "energy_today"}}');
-    expect(previewPayloadTemplate(template, sources, "good").rendered).toContain('"activePower": 42.75');
+  it("builds insertable source helper syntax without generating the payload", () => {
+    expect(mqttPayloadSourceSyntax("value", "power_kw")).toBe('{{value "power_kw"}}');
+    expect(mqttPayloadSourceSyntax("period_start", "energy_today")).toBe('{{period_start "energy_today"}}');
+    expect(mqttPayloadSourceSyntax("round", "power_kw")).toBe('{{round "power_kw" 2}}');
+    expect(mqttPayloadSourceSyntax("scale", "power_kw")).toBe('{{scale "power_kw" 1 0}}');
+    expect(mqttPayloadSourceSyntax("format_time", "power_kw")).toBe('{{format_time "power_kw" "observed_at" "Asia/Bangkok" "2006-01-02 15:04:05"}}');
   });
 
   it.each(["good", "unavailable", "windowed"] as const)("renders valid %s payload fixtures", (fixture) => {
@@ -90,24 +88,79 @@ describe("MQTT Publisher frontend contract", () => {
     expect(() => previewPayloadTemplate('{"value":{{value "power_kw"}}', sources, "good")).toThrow(/valid JSON/i);
   });
 
-  it("exports the backend MQTT v3 shape with secret references only", () => {
+  it("exports the backend MQTT v3 shape with internal profile references", () => {
     const draft = initialMQTTPublisherDraft();
     draft.sources = sources;
     draft.trigger = { mode: "on_change", source_alias: "power_kw", interval_ms: 60_000, coalesce_ms: 250 };
-    draft.mqtt.tls.custom_ca_ref = "tls.ca";
-    draft.mqtt.tls.client_identity_ref = "tls.client";
+    draft.credential_id = "credential-1";
+    draft.credential_slots = ["mqtt.username", "mqtt.password", "mqtt.custom_ca", "mqtt.client_identity"];
     const exported = exportMQTTPublisherConfig(draft);
 
     expect(exported.trigger).toEqual({ mode: "on_change", source_alias: "power_kw", coalesce_ms: 250 });
     expect(exported.mqtt.auth).toEqual({ username: { name: "mqtt.username" }, password: { name: "mqtt.password" } });
-    expect(exported.mqtt.tls).toEqual({ custom_ca: { name: "tls.ca" }, client_identity: { name: "tls.client" } });
+    expect(exported.mqtt.tls).toEqual({ custom_ca: { name: "mqtt.custom_ca" }, client_identity: { name: "mqtt.client_identity" } });
     expect(JSON.stringify(exported)).not.toContain("certificate");
     expect(JSON.stringify(exported)).not.toContain("private_key");
   });
 
+  it("imports an existing Publisher detail using authoritative catalog descriptors", () => {
+    const runtime: PublisherRuntimeStatus = {
+      publisher_id: "publisher-1", type: "mqtt", state: "stopped", config_version: 4,
+      last_transition_at: "2026-08-23T00:00:00Z", request_count: 0, publish_count: 0, failure_count: 0,
+      queue_depth: 0, drop_count: 0, reconnect_count: 0, connected: false, connection_count: 0,
+      delivery_count: 0, delivery_failure_count: 0, transport_queue_depth: 0, transport_drop_count: 0,
+      diagnostic_count: 0, diagnostic_drop_count: 0,
+    };
+    const catalog: PublisherSourceCatalogEntry[] = [{
+      descriptor: {
+        reference: { kind: "tag", tag_id: "tag-1" }, name: "Power", owner_name: "Meter",
+        schema_version: 1, data_type: "float64", unit: "kW", period_kind: "instantaneous", enabled: true,
+      },
+      current: { quality: "good" },
+    }];
+    const sourceDraft = initialMQTTPublisherDraft();
+    sourceDraft.credential_id = "credential-1";
+    sourceDraft.credential_slots = ["mqtt.username"];
+    const config = exportMQTTPublisherConfig(sourceDraft);
+    const entity: DataPublisher = {
+      id: "publisher-1", type: "mqtt", name: "Imported telemetry", enabled: false, config_version: 4,
+      source_count: 1, credential_id: "credential-1", runtime, config, sources: [{ alias: "power_kw", reference: { kind: "tag", tag_id: "tag-1" } }],
+      created_at: "2026-08-23T00:00:00Z", updated_at: "2026-08-23T00:00:00Z",
+    };
+
+    const draft = importMQTTPublisherDraft(entity, catalog);
+
+    expect(draft.name).toBe("Imported telemetry");
+    expect(draft.sources[0]).toMatchObject({ alias: "power_kw", name: "Power", owner_name: "Meter", unit: "kW" });
+    expect(draft.credential_id).toBe("credential-1");
+    expect(draft.credential_slots).toContain("mqtt.username");
+    expect(draft.mqtt).toMatchObject({ broker_host: "broker.example.com", broker_port: 8883, use_tls: true });
+    expect(JSON.stringify(draft)).not.toContain("password_value");
+  });
+
+  it("rejects an edit when an authoritative source descriptor disappeared", () => {
+    const draft = initialMQTTPublisherDraft();
+    const runtime = {
+      publisher_id: "publisher-1", type: "mqtt" as const, state: "stopped" as const, config_version: 1,
+      last_transition_at: "2026-08-23T00:00:00Z", request_count: 0, publish_count: 0, failure_count: 0,
+      queue_depth: 0, drop_count: 0, reconnect_count: 0, connected: false, connection_count: 0,
+      delivery_count: 0, delivery_failure_count: 0, transport_queue_depth: 0, transport_drop_count: 0,
+      diagnostic_count: 0, diagnostic_drop_count: 0,
+    };
+    const entity: DataPublisher = {
+      id: "publisher-1", type: "mqtt", name: "Broken", enabled: false, config_version: 1, source_count: 1,
+      runtime, config: exportMQTTPublisherConfig(draft),
+      sources: [{ alias: "missing", reference: { kind: "tag", tag_id: "missing-tag" } }],
+      created_at: "2026-08-23T00:00:00Z", updated_at: "2026-08-23T00:00:00Z",
+    };
+
+    expect(() => importMQTTPublisherDraft(entity, [])).toThrow(/no longer available/i);
+  });
+
   it("requires explicit acknowledgement for plain MQTT", () => {
     const draft = initialMQTTPublisherDraft();
-    draft.mqtt.broker_url = "mqtt://broker.example.com:1883";
+    draft.mqtt.use_tls = false;
+    draft.mqtt.broker_port = 1883;
     draft.mqtt.plaintext_acknowledged = false;
 
     expect(validateMQTTPublisherDraft(draft)).toContain("Acknowledge that plain MQTT sends traffic without TLS");

@@ -253,6 +253,7 @@ func (transport *mqttTransport) Close(ctx context.Context) error {
 	}
 	transport.closeOnce.Do(func() {
 		transport.closed.Store(true)
+		transport.connected.Store(false)
 		close(transport.stop)
 		if transport.client != nil {
 			transport.client.Disconnect(250)
@@ -290,7 +291,9 @@ func (transport *mqttTransport) Diagnostics() []MQTTDiagnosticEvent {
 	}
 	transport.diagnosticMu.RLock()
 	defer transport.diagnosticMu.RUnlock()
-	return append([]MQTTDiagnosticEvent(nil), transport.diagnostics...)
+	events := make([]MQTTDiagnosticEvent, len(transport.diagnostics))
+	copy(events, transport.diagnostics)
+	return events
 }
 
 func (transport *mqttTransport) run() {

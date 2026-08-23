@@ -303,6 +303,27 @@ func (manager *Manager) Statuses() []RuntimeStatus {
 	return statuses
 }
 
+func (manager *Manager) Diagnostics(publisherID uuid.UUID) []MQTTDiagnosticEvent {
+	if manager == nil || publisherID == uuid.Nil {
+		return []MQTTDiagnosticEvent{}
+	}
+	manager.mu.Lock()
+	job := manager.jobs[publisherID]
+	manager.mu.Unlock()
+	if job == nil || job.transport == nil {
+		return []MQTTDiagnosticEvent{}
+	}
+	provider, ok := job.transport.(interface{ Diagnostics() []MQTTDiagnosticEvent })
+	if !ok {
+		return []MQTTDiagnosticEvent{}
+	}
+	events := provider.Diagnostics()
+	if events == nil {
+		return []MQTTDiagnosticEvent{}
+	}
+	return events
+}
+
 func (manager *Manager) Errors() <-chan error { return manager.errors }
 
 func (manager *Manager) reconcileLocked(ctx context.Context) error {
@@ -778,6 +799,11 @@ func (manager *Manager) setStatusStateLocked(publisherID uuid.UUID, state Runtim
 	status.PublisherID = publisherID
 	status.State = state
 	status.LastTransitionAt = manager.now().UTC()
+	if state == RuntimeStateStopped {
+		status.Connected = false
+		status.ActiveConnections = 0
+		status.TransportQueueDepth = 0
+	}
 	if status.Sources == nil {
 		status.Sources = []SourceRuntimeStatus{}
 	}

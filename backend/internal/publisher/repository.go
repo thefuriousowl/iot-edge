@@ -19,6 +19,8 @@ var (
 	ErrInvalidPublisherConfig     = errors.New("invalid Data Publisher config")
 	ErrUnsupportedPublisherType   = errors.New("unsupported Data Publisher type")
 	ErrIncompatibleSource         = errors.New("source is incompatible with Data Publisher type")
+	ErrCredentialNotFound         = errors.New("Credential Profile not found")
+	ErrCredentialIncompatible     = errors.New("Credential Profile is incompatible with Data Publisher type")
 )
 
 type ListInput struct {
@@ -44,6 +46,10 @@ type Repository interface {
 	ListEnabled(context.Context) ([]Publisher, error)
 	Update(context.Context, *Publisher) error
 	Delete(context.Context, uuid.UUID) error
+}
+
+type CredentialValidator interface {
+	ValidateCredential(context.Context, uuid.UUID, Type) error
 }
 
 type SourceResolver interface {

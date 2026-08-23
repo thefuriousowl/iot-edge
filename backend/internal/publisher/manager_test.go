@@ -115,13 +115,16 @@ func TestPublisherManagerRunsIntervalLifecycleAndReconcilesChanges(t *testing.T)
 	}
 	waitClosed(t, first.closed, "first transport close")
 	second := receiveManagerTransport(t, factory.created)
+	manager.storeTransportMetrics(entity.ID, TransportMetrics{Connected: true, ActiveConnections: 2, TransportQueueDepth: 3})
 
 	mutateManagerPublisher(repository, entity.ID, func(stored *Publisher) { stored.Enabled = false })
 	if err := manager.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile(disabled) error = %v", err)
 	}
 	waitClosed(t, second.closed, "second transport close")
-	waitPublisherStatus(t, manager, entity.ID, func(status RuntimeStatus) bool { return status.State == RuntimeStateStopped })
+	waitPublisherStatus(t, manager, entity.ID, func(status RuntimeStatus) bool {
+		return status.State == RuntimeStateStopped && !status.Connected && status.ActiveConnections == 0 && status.TransportQueueDepth == 0
+	})
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}

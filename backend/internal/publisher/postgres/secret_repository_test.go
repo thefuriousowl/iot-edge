@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"sync"
 	"testing"
 
@@ -13,21 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestSecretRepositoryRotatesAtomicallyAndUpdatesPublisherRevision_Integration(t *testing.T) {
+func TestSecretRepositoryRotatesCredentialAndUpdatesLinkedPublisherRevision_Integration(t *testing.T) {
 	database, tagID, _ := newPublisherSecretRepositoryDatabase(t)
 	publishers := NewRepository(database)
 	repository := NewSecretRepository(database)
+	credentialID := createCredentialProfile(t, database, "Secret Repository")
 	entity := publisher.Publisher{
 		Type: publisher.TypeMQTT, Name: "Secret Repository", Enabled: true,
 		Config: publisher.Config(`{"trigger":{"mode":"interval","interval_ms":60000}}`), ConfigVersion: 2,
-		Sources: []publisher.SourceSelection{{Alias: "value", Reference: publisher.TagSource(tagID)}},
+		Sources:      []publisher.SourceSelection{{Alias: "value", Reference: publisher.TagSource(tagID)}},
+		CredentialID: &credentialID,
 	}
 	if err := publishers.Create(context.Background(), &entity); err != nil {
 		t.Fatalf("creating Publisher: %v", err)
 	}
 	reference := publisher.SecretReference{Name: "mqtt.password"}
 	first := &publisher.EncryptedSecret{
-		Metadata: publisher.SecretMetadata{PublisherID: entity.ID, Reference: reference, Kind: publisher.SecretKindOpaque},
+		Metadata: publisher.SecretMetadata{PublisherID: credentialID, Reference: reference, Kind: publisher.SecretKindOpaque},
 		KeyID:    "master-v1", Ciphertext: bytes.Repeat([]byte{0x31}, 32),
 	}
 	metadata, err := repository.Upsert(context.Background(), first)
@@ -35,18 +36,18 @@ func TestSecretRepositoryRotatesAtomicallyAndUpdatesPublisherRevision_Integratio
 		t.Fatalf("Upsert(first) = %#v, %v", metadata, err)
 	}
 	first.Ciphertext[0] = 0
-	stored, err := repository.FindEncrypted(context.Background(), entity.ID, reference)
+	stored, err := repository.FindEncrypted(context.Background(), credentialID, reference)
 	if err != nil || stored.Ciphertext[0] != 0x31 || stored.Metadata.PublisherRevision != 1 {
 		t.Fatalf("FindEncrypted(first) = %#v, %v", stored, err)
 	}
 	stored.Ciphertext[0] = 0
-	reloaded, _ := repository.FindEncrypted(context.Background(), entity.ID, reference)
+	reloaded, _ := repository.FindEncrypted(context.Background(), credentialID, reference)
 	if reloaded.Ciphertext[0] != 0x31 {
 		t.Fatal("FindEncrypted() returned aliased ciphertext")
 	}
 
 	second := &publisher.EncryptedSecret{
-		Metadata: publisher.SecretMetadata{PublisherID: entity.ID, Reference: reference, Kind: publisher.SecretKindOpaque},
+		Metadata: publisher.SecretMetadata{PublisherID: credentialID, Reference: reference, Kind: publisher.SecretKindOpaque},
 		KeyID:    "master-v2", Ciphertext: bytes.Repeat([]byte{0x32}, 40),
 	}
 	metadata, err = repository.Upsert(context.Background(), second)
@@ -55,19 +56,19 @@ func TestSecretRepositoryRotatesAtomicallyAndUpdatesPublisherRevision_Integratio
 	}
 	kindChange := *second
 	kindChange.Metadata.Kind = publisher.SecretKindCACertificate
-	if _, err := repository.Upsert(context.Background(), &kindChange); !errors.Is(err, publisher.ErrSecretKindMismatch) {
+	if _, err := repository.Upsert(context.Background(), &kindChange); !errors.Is(err, publisher.ErrInvalidSecretMaterial) {
 		t.Errorf("Upsert(kind change) error = %v", err)
 	}
-	listed, err := repository.ListMetadata(context.Background(), entity.ID)
+	listed, err := repository.ListMetadata(context.Background(), credentialID)
 	if err != nil || len(listed) != 1 || listed[0].Reference != reference || listed[0].Revision != 2 {
 		t.Fatalf("ListMetadata() = %#v, %v", listed, err)
 	}
 
-	deleted, err := repository.Delete(context.Background(), entity.ID, reference)
+	deleted, err := repository.Delete(context.Background(), credentialID, reference)
 	if err != nil || deleted.Revision != 3 || deleted.PublisherRevision != 3 {
 		t.Fatalf("Delete() = %#v, %v", deleted, err)
 	}
-	if _, err := repository.FindEncrypted(context.Background(), entity.ID, reference); !errors.Is(err, publisher.ErrSecretNotFound) {
+	if _, err := repository.FindEncrypted(context.Background(), credentialID, reference); !errors.Is(err, publisher.ErrSecretNotFound) {
 		t.Errorf("FindEncrypted(deleted) error = %v", err)
 	}
 	foundPublisher, err := publishers.Find(context.Background(), entity.ID)
@@ -80,9 +81,11 @@ func TestSecretRepositorySerializesConcurrentRotationsAndCascades_Integration(t 
 	database, tagID, _ := newPublisherSecretRepositoryDatabase(t)
 	publishers := NewRepository(database)
 	repository := NewSecretRepository(database)
+	credentialID := createCredentialProfile(t, database, "Concurrent Secrets")
 	entity := publisher.Publisher{
-		Type: publisher.TypeHTTPServer, Name: "Concurrent Secrets", Config: publisher.Config(`{"trigger":{"mode":"interval","interval_ms":60000}}`), ConfigVersion: 2,
-		Sources: []publisher.SourceSelection{{Alias: "value", Reference: publisher.TagSource(tagID)}},
+		Type: publisher.TypeMQTT, Name: "Concurrent Secrets", Config: publisher.Config(`{"trigger":{"mode":"interval","interval_ms":60000}}`), ConfigVersion: 2,
+		Sources:      []publisher.SourceSelection{{Alias: "value", Reference: publisher.TagSource(tagID)}},
+		CredentialID: &credentialID,
 	}
 	if err := publishers.Create(context.Background(), &entity); err != nil {
 		t.Fatalf("creating Publisher: %v", err)
@@ -96,7 +99,7 @@ func TestSecretRepositorySerializesConcurrentRotationsAndCascades_Integration(t 
 		go func(index int) {
 			defer waitGroup.Done()
 			metadata, err := repository.Upsert(context.Background(), &publisher.EncryptedSecret{
-				Metadata: publisher.SecretMetadata{PublisherID: entity.ID, Reference: publisher.SecretReference{Name: "http.api_key"}, Kind: publisher.SecretKindOpaque},
+				Metadata: publisher.SecretMetadata{PublisherID: credentialID, Reference: publisher.SecretReference{Name: "mqtt.username"}, Kind: publisher.SecretKindOpaque},
 				KeyID:    "master-v1", Ciphertext: bytes.Repeat([]byte{byte(index + 1)}, 32),
 			})
 			if err != nil {
@@ -119,16 +122,31 @@ func TestSecretRepositorySerializesConcurrentRotationsAndCascades_Integration(t 
 	if len(revisions) != writerCount {
 		t.Fatalf("concurrent revisions = %#v", revisions)
 	}
-	stored, err := repository.FindEncrypted(context.Background(), entity.ID, publisher.SecretReference{Name: "http.api_key"})
+	stored, err := repository.FindEncrypted(context.Background(), credentialID, publisher.SecretReference{Name: "mqtt.username"})
 	if err != nil || stored.Metadata.Revision != writerCount || stored.Metadata.PublisherRevision != writerCount {
 		t.Fatalf("FindEncrypted(concurrent) = %#v, %v", stored, err)
 	}
 	if err := publishers.Delete(context.Background(), entity.ID); err != nil {
 		t.Fatalf("deleting Publisher: %v", err)
 	}
-	if _, err := repository.FindEncrypted(context.Background(), entity.ID, publisher.SecretReference{Name: "http.api_key"}); !errors.Is(err, publisher.ErrSecretNotFound) {
-		t.Errorf("FindEncrypted(after cascade) error = %v", err)
+	if _, err := repository.FindEncrypted(context.Background(), credentialID, publisher.SecretReference{Name: "mqtt.username"}); err != nil {
+		t.Errorf("FindEncrypted(after Publisher delete) error = %v", err)
 	}
+	if err := database.Table("credential_profiles").Where("id = ?", credentialID).Delete(nil).Error; err != nil {
+		t.Fatalf("deleting Credential Profile: %v", err)
+	}
+	if _, err := repository.FindEncrypted(context.Background(), credentialID, publisher.SecretReference{Name: "mqtt.username"}); !errors.Is(err, publisher.ErrSecretNotFound) {
+		t.Errorf("FindEncrypted(after Credential cascade) error = %v", err)
+	}
+}
+
+func createCredentialProfile(t *testing.T, database *gorm.DB, name string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if err := database.Exec(`INSERT INTO credential_profiles (id,type,name) VALUES (?,?,?)`, id, "mqtt", name).Error; err != nil {
+		t.Fatalf("creating Credential Profile: %v", err)
+	}
+	return id
 }
 
 func TestSecretRepositoryRejectsInvalidAndCancelledInputs_Integration(t *testing.T) {
@@ -152,13 +170,5 @@ func TestSecretRepositoryRejectsInvalidAndCancelledInputs_Integration(t *testing
 
 func newPublisherSecretRepositoryDatabase(t *testing.T) (*gorm.DB, uuid.UUID, uuid.UUID) {
 	t.Helper()
-	database, tagID, pluginID := newPublisherRepositoryDatabase(t)
-	contents, err := os.ReadFile("../../../migrations/000013_create_data_publisher_secrets.up.sql")
-	if err != nil {
-		t.Fatalf("reading secret migration: %v", err)
-	}
-	if err := database.Exec(string(contents)).Error; err != nil {
-		t.Fatalf("applying secret migration: %v", err)
-	}
-	return database, tagID, pluginID
+	return newPublisherRepositoryDatabase(t)
 }

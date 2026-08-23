@@ -222,6 +222,7 @@ func newPublisherRepositoryDatabase(t *testing.T) (*gorm.DB, uuid.UUID, uuid.UUI
 		"../../../migrations/000004_create_tags.up.sql",
 		"../../../migrations/000010_create_plugin_instances.up.sql",
 		"../../../migrations/000012_create_data_publishers.up.sql",
+		"../../../migrations/000013_create_data_publisher_secrets.up.sql",
 	} {
 		contents, err := os.ReadFile(migration)
 		if err != nil {

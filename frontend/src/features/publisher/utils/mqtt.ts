@@ -1,14 +1,14 @@
 import type {
   MQTTPayloadFixture,
-  MQTTPayloadMapping,
   MQTTPayloadPreview,
   MQTTPublisherConfigExport,
   MQTTPublisherDraft,
+  DataPublisher,
+  PublisherSourceCatalogEntry,
   PublisherSourceDraft,
 } from "../../../types/publisher";
 
 const aliasPattern = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
-const secretReferencePattern = /^[a-z][a-z0-9_.-]{0,63}$/;
 const helperSpecs: Record<string, { minimum: number; maximum: number; source: boolean }> = {
   value: { minimum: 1, maximum: 1, source: true },
   available: { minimum: 1, maximum: 1, source: true },
@@ -34,64 +34,71 @@ const helperSpecs: Record<string, { minimum: number; maximum: number; source: bo
 
 export const mqttPayloadHelpers = Object.keys(helperSpecs);
 
+export type MQTTPayloadSourceHelper = "value" | "available" | "quality" | "error" | "unit" | "sequence" | "schema_version" | "data_type" | "observed_at" | "emitted_at" | "period_start" | "period_end" | "coverage" | "round" | "scale" | "default" | "format_time";
+
+export const mqttPayloadSourceHelpers: Array<{ id: MQTTPayloadSourceHelper; label: string }> = [
+  { id: "value", label: "Value" },
+  { id: "available", label: "Available" },
+  { id: "quality", label: "Quality" },
+  { id: "error", label: "Error" },
+  { id: "unit", label: "Unit" },
+  { id: "sequence", label: "Sequence" },
+  { id: "schema_version", label: "Schema version" },
+  { id: "data_type", label: "Data type" },
+  { id: "observed_at", label: "Observed at" },
+  { id: "emitted_at", label: "Emitted at" },
+  { id: "period_start", label: "Period start" },
+  { id: "period_end", label: "Period end" },
+  { id: "coverage", label: "Coverage" },
+  { id: "round", label: "Round (2 decimals)" },
+  { id: "scale", label: "Scale (gain 1, offset 0)" },
+  { id: "default", label: "Default (0)" },
+  { id: "format_time", label: "Format time (Bangkok)" },
+];
+
+export function mqttPayloadSourceSyntax(helper: MQTTPayloadSourceHelper, alias: string): string {
+  const source = JSON.stringify(alias);
+  switch (helper) {
+    case "round": return `{{round ${source} 2}}`;
+    case "scale": return `{{scale ${source} 1 0}}`;
+    case "default": return `{{default ${source} 0}}`;
+    case "format_time": return `{{format_time ${source} "observed_at" "Asia/Bangkok" "2006-01-02 15:04:05"}}`;
+    default: return `{{${helper} ${source}}}`;
+  }
+}
+
 export function initialMQTTPublisherDraft(): MQTTPublisherDraft {
-  const sources: PublisherSourceDraft[] = [
-    {
-      id: crypto.randomUUID(),
-      alias: "active_power_kw",
-      name: "Active power",
-      owner_name: "Payload schema draft",
-      kind: "tag",
-      data_type: "float64",
-      unit: "kW",
-      period_kind: "instantaneous",
-    },
-    {
-      id: crypto.randomUUID(),
-      alias: "energy_today_kwh",
-      name: "Energy today",
-      owner_name: "Payload schema draft",
-      kind: "plugin_output",
-      data_type: "float64",
-      unit: "kWh",
-      period_kind: "windowed",
-    },
-  ];
-  const mappings: MQTTPayloadMapping[] = sources.map((source) => ({
-    id: crypto.randomUUID(),
-    field: source.alias,
-    alias: source.alias,
-    helper: "value",
-  }));
+  const sources: PublisherSourceDraft[] = [];
 
   return {
     name: "MQTT telemetry",
     enabled: false,
+    credential_id: "",
+    credential_slots: [],
     trigger: {
       mode: "interval",
       interval_ms: 60_000,
-      source_alias: sources[0].alias,
+      source_alias: "",
       coalesce_ms: 100,
     },
     sources,
     mqtt: {
-      broker_url: "mqtts://broker.example.com:8883",
+      broker_host: "broker.example.com",
+      broker_port: 8883,
+      use_tls: true,
       plaintext_acknowledged: false,
       client_id: "",
-      auth: {
-        username_ref: "mqtt.username",
-        password_ref: "mqtt.password",
-      },
       tls: {
         server_name: "",
-        custom_ca_ref: "",
-        client_identity_ref: "",
       },
       publish: {
         topic: "site/edge/telemetry",
         qos: 1,
         retain: false,
-        payload_template: generatePayloadTemplate(mappings),
+        payload_template: `{
+  "timestamp": {{published_unix_ms}},
+  "data": {}
+}`,
       },
       diagnostics: [
         { id: crypto.randomUUID(), label: "ack", topic_filter: "site/edge/ack", qos: 1 },
@@ -105,20 +112,65 @@ export function initialMQTTPublisherDraft(): MQTTPublisherDraft {
       queue_capacity: 256,
       diagnostic_history_depth: 100,
     },
-    mappings,
   };
 }
 
-export function generatePayloadTemplate(mappings: MQTTPayloadMapping[]): string {
-  const fields = mappings
-    .filter((mapping) => mapping.field.trim() && mapping.alias)
-    .map((mapping) => `    ${JSON.stringify(mapping.field.trim())}: {{${mapping.helper} ${JSON.stringify(mapping.alias)}}}`);
-  return `{
-  "timestamp": {{published_unix_ms}},
-  "data": {
-${fields.join(",\n")}
-  }
-}`;
+export function importMQTTPublisherDraft(entity: DataPublisher, catalog: PublisherSourceCatalogEntry[]): MQTTPublisherDraft {
+  const initial = initialMQTTPublisherDraft();
+  const config = entity.config as MQTTPublisherConfigExport | undefined;
+  if (!config || !config.mqtt || !entity.sources) throw new Error("MQTT Publisher detail is incomplete");
+  const descriptorByReference = new Map(catalog.map((entry) => [sourceReferenceKey(entry.descriptor.reference), entry.descriptor]));
+  const sources: PublisherSourceDraft[] = entity.sources.map((selection) => {
+    const descriptor = descriptorByReference.get(sourceReferenceKey(selection.reference));
+    if (!descriptor) throw new Error(`Publisher source is no longer available: ${selection.alias}`);
+    return {
+      id: crypto.randomUUID(), alias: selection.alias, reference: selection.reference,
+      name: descriptor.name, owner_name: descriptor.owner_name ?? "Core", kind: descriptor.reference.kind,
+      data_type: descriptor.data_type, unit: descriptor.unit ?? "", period_kind: descriptor.period_kind,
+    };
+  });
+  const trigger = config.trigger.mode === "interval"
+    ? { ...initial.trigger, mode: "interval" as const, interval_ms: config.trigger.interval_ms }
+    : { ...initial.trigger, mode: "on_change" as const, source_alias: config.trigger.source_alias, coalesce_ms: config.trigger.coalesce_ms };
+  return {
+    ...initial,
+    name: entity.name,
+    enabled: entity.enabled,
+    credential_id: entity.credential_id ?? "",
+    credential_slots: [
+      ...(config.mqtt.auth.username ? ["mqtt.username" as const] : []),
+      ...(config.mqtt.auth.password ? ["mqtt.password" as const] : []),
+      ...(config.mqtt.tls.custom_ca ? ["mqtt.custom_ca" as const] : []),
+      ...(config.mqtt.tls.client_identity ? ["mqtt.client_identity" as const] : []),
+    ],
+    trigger,
+    sources,
+    mqtt: {
+      ...initial.mqtt,
+      broker_host: new URL(config.mqtt.broker_url).hostname,
+      broker_port: Number(new URL(config.mqtt.broker_url).port),
+      use_tls: config.mqtt.broker_url.startsWith("mqtts://"),
+      plaintext_acknowledged: config.mqtt.plaintext_acknowledged ?? false,
+      client_id: config.mqtt.client_id ?? "",
+      tls: {
+        server_name: config.mqtt.tls.server_name ?? "",
+      },
+      publish: { ...config.mqtt.publish },
+      diagnostics: config.mqtt.diagnostics.map((diagnostic) => ({ id: crypto.randomUUID(), ...diagnostic })),
+      keep_alive_ms: config.mqtt.keep_alive_ms,
+      connect_timeout_ms: config.mqtt.connect_timeout_ms,
+      publish_timeout_ms: config.mqtt.publish_timeout_ms,
+      reconnect_min_ms: config.mqtt.reconnect_min_ms,
+      reconnect_max_ms: config.mqtt.reconnect_max_ms,
+      queue_capacity: config.mqtt.queue_capacity,
+      diagnostic_history_depth: config.mqtt.diagnostic_history_depth,
+    },
+  };
+}
+
+function sourceReferenceKey(reference: PublisherSourceDraft["reference"]): string {
+  if (!reference) return "";
+  return reference.kind === "tag" ? `tag:${reference.tag_id}` : `plugin_output:${reference.plugin_instance_id}:${reference.output_key}`;
 }
 
 export function validateBrokerURL(value: string): string | null {
@@ -132,11 +184,15 @@ export function validateBrokerURL(value: string): string | null {
     return "Broker scheme must be mqtt:// or mqtts://";
   }
   if (!parsed.hostname || !parsed.port) return "Broker host and port are required";
-  if (parsed.username || parsed.password) return "Keep credentials in secret references, not the broker URL";
+  if (parsed.username || parsed.password) return "Keep credentials in a Credential Profile, not the broker URL";
   if ((parsed.pathname && parsed.pathname !== "/") || parsed.search || parsed.hash) {
     return "Broker URL cannot contain a path, query, or fragment";
   }
   return null;
+}
+
+export function buildBrokerURL(host: string, port: number, useTLS: boolean): string {
+  return `${useTLS ? "mqtts" : "mqtt"}://${host.trim()}:${port}`;
 }
 
 export function isValidPublishTopic(topic: string): boolean {
@@ -157,10 +213,6 @@ function validTopicText(value: string): boolean {
   return value.length > 0 && new TextEncoder().encode(value).length <= 1024 && !value.includes("\0");
 }
 
-export function validateSecretReference(value: string): boolean {
-  return value === "" || secretReferencePattern.test(value);
-}
-
 export function validateSourceAliases(sources: PublisherSourceDraft[]): string[] {
   const errors: string[] = [];
   const aliases = new Set<string>();
@@ -175,21 +227,13 @@ export function validateSourceAliases(sources: PublisherSourceDraft[]): string[]
 export function validateMQTTPublisherDraft(draft: MQTTPublisherDraft): string[] {
   const errors: string[] = [];
   if (!draft.name.trim()) errors.push("Publisher name is required");
-  const brokerError = validateBrokerURL(draft.mqtt.broker_url.trim());
+  const brokerError = validateBrokerURL(buildBrokerURL(draft.mqtt.broker_host, draft.mqtt.broker_port, draft.mqtt.use_tls));
   if (brokerError) errors.push(brokerError);
-  if (draft.mqtt.broker_url.startsWith("mqtt://") && !draft.mqtt.plaintext_acknowledged) {
+  if (!draft.mqtt.use_tls && !draft.mqtt.plaintext_acknowledged) {
     errors.push("Acknowledge that plain MQTT sends traffic without TLS");
   }
   if (!isValidPublishTopic(draft.mqtt.publish.topic.trim())) errors.push("Publish topic is invalid or contains wildcards");
-  if (draft.mqtt.auth.password_ref && !draft.mqtt.auth.username_ref) errors.push("Password reference requires a username reference");
-  for (const reference of [
-    draft.mqtt.auth.username_ref,
-    draft.mqtt.auth.password_ref,
-    draft.mqtt.tls.custom_ca_ref,
-    draft.mqtt.tls.client_identity_ref,
-  ]) {
-    if (!validateSecretReference(reference)) errors.push(`Invalid secret reference: ${reference}`);
-  }
+  if (draft.credential_slots.includes("mqtt.password") && !draft.credential_slots.includes("mqtt.username")) errors.push("The selected Credential Profile has a password but no username");
   errors.push(...validateSourceAliases(draft.sources));
   if (draft.sources.length === 0) errors.push("Add at least one Publisher source alias");
   if (draft.trigger.mode === "interval" && (draft.trigger.interval_ms < 100 || draft.trigger.interval_ms > 86_400_000)) {
@@ -332,23 +376,24 @@ function fixtureValue(source: PublisherSourceDraft | undefined): boolean | numbe
 }
 
 export function exportMQTTPublisherConfig(draft: MQTTPublisherDraft): MQTTPublisherConfigExport {
-  const secure = draft.mqtt.broker_url.startsWith("mqtts://");
+  const secure = draft.mqtt.use_tls;
+  const hasSlot = (slot: MQTTPublisherDraft["credential_slots"][number]) => draft.credential_slots.includes(slot);
   return {
     trigger: draft.trigger.mode === "interval"
       ? { mode: "interval", interval_ms: draft.trigger.interval_ms }
       : { mode: "on_change", source_alias: draft.trigger.source_alias, coalesce_ms: draft.trigger.coalesce_ms },
     mqtt: {
-      broker_url: draft.mqtt.broker_url.trim(),
+      broker_url: buildBrokerURL(draft.mqtt.broker_host, draft.mqtt.broker_port, secure),
       ...(!secure && draft.mqtt.plaintext_acknowledged ? { plaintext_acknowledged: true as const } : {}),
       ...(draft.mqtt.client_id.trim() ? { client_id: draft.mqtt.client_id.trim() } : {}),
       auth: {
-        ...(draft.mqtt.auth.username_ref ? { username: { name: draft.mqtt.auth.username_ref } } : {}),
-        ...(draft.mqtt.auth.password_ref ? { password: { name: draft.mqtt.auth.password_ref } } : {}),
+        ...(draft.credential_id && hasSlot("mqtt.username") ? { username: { name: "mqtt.username" } } : {}),
+        ...(draft.credential_id && hasSlot("mqtt.password") ? { password: { name: "mqtt.password" } } : {}),
       },
       tls: secure ? {
         ...(draft.mqtt.tls.server_name ? { server_name: draft.mqtt.tls.server_name } : {}),
-        ...(draft.mqtt.tls.custom_ca_ref ? { custom_ca: { name: draft.mqtt.tls.custom_ca_ref } } : {}),
-        ...(draft.mqtt.tls.client_identity_ref ? { client_identity: { name: draft.mqtt.tls.client_identity_ref } } : {}),
+        ...(draft.credential_id && hasSlot("mqtt.custom_ca") ? { custom_ca: { name: "mqtt.custom_ca" } } : {}),
+        ...(draft.credential_id && hasSlot("mqtt.client_identity") ? { client_identity: { name: "mqtt.client_identity" } } : {}),
       } : {},
       publish: {
         topic: draft.mqtt.publish.topic.trim(),
