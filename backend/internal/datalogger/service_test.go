@@ -320,6 +320,14 @@ func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch)
 	return repository.err
 }
 
+func (repository *memoryHistoryRepository) LatestBatch(context.Context, uuid.UUID) (*RawBatch, error) {
+	return nil, ErrRawBatchNotFound
+}
+
+func (repository *memoryHistoryRepository) ListBatches(context.Context, RawBatchListInput) ([]RawBatch, error) {
+	return []RawBatch{}, nil
+}
+
 func (repository *memoryHistoryRepository) ListValues(_ context.Context, input RawValueListInput) (*RawValueListResult, error) {
 	repository.input = input
 	return repository.result, repository.err

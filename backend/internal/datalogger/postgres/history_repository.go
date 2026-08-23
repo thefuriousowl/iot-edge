@@ -21,7 +21,20 @@ const (
 	estimatedIndexBytesPerRawRow = 192
 )
 
-type historyRepository struct{ db *gorm.DB }
+type HistoryRepositoryOption func(*historyRepository)
+
+func WithCommittedBatchPublisher(publisher datalogger.CommittedBatchPublisher) HistoryRepositoryOption {
+	return func(repository *historyRepository) {
+		if publisher != nil {
+			repository.publisher = publisher
+		}
+	}
+}
+
+type historyRepository struct {
+	db        *gorm.DB
+	publisher datalogger.CommittedBatchPublisher
+}
 
 type rawValueRow struct {
 	LoggerID    uuid.UUID       `gorm:"column:logger_id"`
@@ -33,6 +46,19 @@ type rawValueRow struct {
 	Quality     string          `gorm:"column:quality"`
 	Error       *string         `gorm:"column:error_message"`
 	PersistedAt time.Time       `gorm:"column:persisted_at"`
+}
+
+type selectedBatchRawValueRow struct {
+	BatchAt     time.Time       `gorm:"column:batch_at"`
+	HasSample   bool            `gorm:"column:has_sample"`
+	LoggerID    *uuid.UUID      `gorm:"column:logger_id"`
+	TagID       *uuid.UUID      `gorm:"column:tag_id"`
+	ObservedAt  *time.Time      `gorm:"column:observed_at"`
+	DataType    *string         `gorm:"column:data_type"`
+	Value       json.RawMessage `gorm:"column:value"`
+	Quality     *string         `gorm:"column:quality"`
+	Error       *string         `gorm:"column:error_message"`
+	PersistedAt *time.Time      `gorm:"column:persisted_at"`
 }
 
 type selectedRawTag struct {
@@ -67,8 +93,14 @@ type storageOverview struct {
 	NewestBatchAt      *time.Time `gorm:"column:newest_batch_at"`
 }
 
-func NewHistoryRepository(db *gorm.DB) datalogger.HistoryRepository {
-	return &historyRepository{db: db}
+func NewHistoryRepository(db *gorm.DB, options ...HistoryRepositoryOption) datalogger.HistoryRepository {
+	repository := &historyRepository{db: db}
+	for _, option := range options {
+		if option != nil {
+			option(repository)
+		}
+	}
+	return repository
 }
 
 func (repository *historyRepository) WriteBatch(ctx context.Context, batch datalogger.RawBatch) error {
@@ -90,6 +122,7 @@ func (repository *historyRepository) WriteBatch(ctx context.Context, batch datal
 		samples = append(samples, normalized)
 	}
 
+	var committed *datalogger.RawBatch
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		policy, err := lockLoggerStoragePolicy(tx, batch.LoggerID)
 		if err != nil {
@@ -101,15 +134,139 @@ func (repository *historyRepository) WriteBatch(ctx context.Context, batch datal
 		if err := ensureRawPartition(tx, batch.BatchAt); err != nil {
 			return err
 		}
-		if err := insertRawBatch(tx, batch.LoggerID, batch.BatchAt, samples); err != nil {
+		inserted, err := insertRawBatch(tx, batch.LoggerID, batch.BatchAt, samples)
+		if err != nil {
 			return err
 		}
 		if err := refreshBatchStorage(tx, batch.LoggerID, batch.BatchAt); err != nil {
 			return err
 		}
-		return enforceStorageLimit(tx, batch.LoggerID, policy.MaxSizeBytes)
+		if err := enforceStorageLimit(tx, batch.LoggerID, policy.MaxSizeBytes); err != nil {
+			return err
+		}
+		if !inserted {
+			return nil
+		}
+		committed, err = readRawBatch(tx, batch.LoggerID, batch.BatchAt)
+		if errors.Is(err, datalogger.ErrRawBatchNotFound) {
+			committed = nil
+			return nil
+		}
+		return err
 	})
-	return mapHistoryError(err)
+	if err != nil {
+		return mapHistoryError(err)
+	}
+	if committed != nil && repository.publisher != nil {
+		publishCommittedBatch(repository.publisher, *committed)
+	}
+	return nil
+}
+
+func (repository *historyRepository) LatestBatch(ctx context.Context, loggerID uuid.UUID) (*datalogger.RawBatch, error) {
+	if loggerID == uuid.Nil {
+		return nil, datalogger.ErrInvalidInput
+	}
+	var latest struct {
+		BatchAt time.Time `gorm:"column:batch_at"`
+	}
+	result := repository.db.WithContext(ctx).Table("data_logger_batches").
+		Select("batch_at").
+		Where("logger_id = ?", loggerID).
+		Order("batch_at DESC").
+		Limit(1).
+		Scan(&latest)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, datalogger.ErrRawBatchNotFound
+	}
+	return readRawBatch(repository.db.WithContext(ctx), loggerID, latest.BatchAt)
+}
+
+func (repository *historyRepository) ListBatches(ctx context.Context, input datalogger.RawBatchListInput) ([]datalogger.RawBatch, error) {
+	if input.LoggerID == uuid.Nil || len(input.TagIDs) == 0 || input.From.IsZero() || input.To.IsZero() || input.To.Before(input.From) {
+		return nil, datalogger.ErrInvalidInput
+	}
+	seenTags := make(map[uuid.UUID]struct{}, len(input.TagIDs))
+	for _, tagID := range input.TagIDs {
+		if tagID == uuid.Nil {
+			return nil, datalogger.ErrInvalidInput
+		}
+		if _, duplicate := seenTags[tagID]; duplicate {
+			return nil, datalogger.ErrInvalidInput
+		}
+		seenTags[tagID] = struct{}{}
+	}
+	rows := make([]selectedBatchRawValueRow, 0)
+	if err := repository.db.WithContext(ctx).Raw(`
+		WITH selected_batches AS (
+			SELECT batch_at
+			FROM data_logger_batches
+			WHERE logger_id = ? AND batch_at >= ? AND batch_at <= ?
+			UNION
+			SELECT batch_at
+			FROM (
+				SELECT batch_at
+				FROM data_logger_batches
+				WHERE ? AND logger_id = ? AND batch_at < ?
+				ORDER BY batch_at DESC
+				LIMIT 1
+			) AS preceding_batch
+			UNION
+			SELECT batch_at
+			FROM (
+				SELECT batch_at
+				FROM data_logger_batches
+				WHERE ? AND logger_id = ? AND batch_at > ?
+				ORDER BY batch_at ASC
+				LIMIT 1
+			) AS following_batch
+		)
+		SELECT selected_batches.batch_at,
+			raw.tag_id IS NOT NULL AS has_sample,
+			raw.logger_id, raw.tag_id, raw.observed_at, raw.data_type, raw.value,
+			raw.quality, raw.error_message, raw.persisted_at
+		FROM selected_batches
+		LEFT JOIN tag_values_raw AS raw
+			ON raw.logger_id = ?
+			AND raw.batch_at = selected_batches.batch_at
+			AND raw.tag_id IN ?
+		ORDER BY selected_batches.batch_at ASC, raw.tag_id ASC`,
+		input.LoggerID, input.From.UTC(), input.To.UTC(),
+		input.IncludeNeighbors, input.LoggerID, input.From.UTC(),
+		input.IncludeNeighbors, input.LoggerID, input.To.UTC(),
+		input.LoggerID, input.TagIDs,
+	).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	batches := make([]datalogger.RawBatch, 0)
+	for _, row := range rows {
+		batchAt := row.BatchAt.UTC()
+		if len(batches) == 0 || !batches[len(batches)-1].BatchAt.Equal(batchAt) {
+			batches = append(batches, datalogger.RawBatch{LoggerID: input.LoggerID, BatchAt: batchAt, Samples: []datalogger.RawSample{}})
+		}
+		if !row.HasSample {
+			continue
+		}
+		value, err := decodeSelectedBatchRawValue(row)
+		if err != nil {
+			return nil, err
+		}
+		batches[len(batches)-1].Samples = append(batches[len(batches)-1].Samples, datalogger.RawSample{TagID: value.TagID, ObservedAt: value.ObservedAt, DataType: value.DataType, Value: value.Value, Quality: value.Quality, Error: value.Error})
+	}
+	return batches, nil
+}
+
+func decodeSelectedBatchRawValue(row selectedBatchRawValueRow) (datalogger.RawValue, error) {
+	if row.LoggerID == nil || row.TagID == nil || row.ObservedAt == nil || row.DataType == nil || row.Quality == nil || row.PersistedAt == nil {
+		return datalogger.RawValue{}, errors.New("incomplete raw history sample")
+	}
+	return decodeRawValue(rawValueRow{
+		LoggerID: *row.LoggerID, TagID: *row.TagID, BatchAt: row.BatchAt, ObservedAt: *row.ObservedAt,
+		DataType: *row.DataType, Value: row.Value, Quality: *row.Quality, Error: row.Error, PersistedAt: *row.PersistedAt,
+	})
 }
 
 func (repository *historyRepository) Storage(ctx context.Context, loggerID uuid.UUID, tagCount int, maxSizeBytes *int64) (*datalogger.StorageStats, error) {
@@ -334,7 +491,7 @@ func ensureRawPartition(tx *gorm.DB, batchAt time.Time) error {
 	return tx.Exec(statement).Error
 }
 
-func insertRawBatch(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time, samples []normalizedRawSample) error {
+func insertRawBatch(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time, samples []normalizedRawSample) (bool, error) {
 	values := make([]string, 0, len(samples))
 	arguments := make([]any, 0, len(samples)*8)
 	for _, sample := range samples {
@@ -351,7 +508,40 @@ func insertRawBatch(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time, samples 
 		) VALUES ` + strings.Join(values, ",") + `
 		ON CONFLICT (logger_id, tag_id, batch_at) DO NOTHING
 	`
-	return tx.Exec(statement, arguments...).Error
+	result := tx.Exec(statement, arguments...)
+	return result.RowsAffected > 0, result.Error
+}
+
+func readRawBatch(query *gorm.DB, loggerID uuid.UUID, batchAt time.Time) (*datalogger.RawBatch, error) {
+	rows := make([]rawValueRow, 0)
+	result := query.Table("tag_values_raw").
+		Select("logger_id, tag_id, batch_at, observed_at, data_type, value, quality, error_message, persisted_at").
+		Where("logger_id = ? AND batch_at = ?", loggerID, batchAt.UTC()).
+		Order("tag_id ASC").
+		Scan(&rows)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if len(rows) == 0 {
+		return nil, datalogger.ErrRawBatchNotFound
+	}
+	batch := &datalogger.RawBatch{LoggerID: loggerID, BatchAt: batchAt.UTC(), Samples: make([]datalogger.RawSample, 0, len(rows))}
+	for _, row := range rows {
+		value, err := decodeRawValue(row)
+		if err != nil {
+			return nil, err
+		}
+		batch.Samples = append(batch.Samples, datalogger.RawSample{
+			TagID: value.TagID, ObservedAt: value.ObservedAt, DataType: value.DataType,
+			Value: value.Value, Quality: value.Quality, Error: value.Error,
+		})
+	}
+	return batch, nil
+}
+
+func publishCommittedBatch(publisher datalogger.CommittedBatchPublisher, batch datalogger.RawBatch) {
+	defer func() { _ = recover() }()
+	publisher.PublishCommittedBatch(batch)
 }
 
 func lockLoggerStoragePolicy(tx *gorm.DB, loggerID uuid.UUID) (loggerStoragePolicy, error) {

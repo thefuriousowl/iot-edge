@@ -18,6 +18,8 @@ import DeviceListPage from "./features/device/pages/DeviceListPage";
 import ReportBuilderPage from "./features/report/pages/ReportBuilderPage";
 import ReportDetailPage from "./features/report/pages/ReportDetailPage";
 import ReportListPage from "./features/report/pages/ReportListPage";
+import PluginListPage from "./features/plugin/pages/PluginListPage";
+import EnergyWizardPage from "./features/plugin/pages/EnergyWizardPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
@@ -143,6 +145,30 @@ function App() {
           element={
             <ProtectedRoute>
               <DataLoggerDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plugins"
+          element={
+            <ProtectedRoute>
+              <PluginListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plugins/new/energy"
+          element={
+            <ProtectedRoute>
+              <EnergyWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plugins/:id/configure"
+          element={
+            <ProtectedRoute>
+              <EnergyWizardPage />
             </ProtectedRoute>
           }
         />

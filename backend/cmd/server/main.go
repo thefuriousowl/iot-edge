@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -22,6 +23,11 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/device"
 	devicehttp "github.com/thefuriousowl/iot-edge/internal/device/http"
 	devicepostgres "github.com/thefuriousowl/iot-edge/internal/device/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/plugin"
+	pluginenergy "github.com/thefuriousowl/iot-edge/internal/plugin/energy"
+	energyhttp "github.com/thefuriousowl/iot-edge/internal/plugin/energy/http"
+	pluginhttp "github.com/thefuriousowl/iot-edge/internal/plugin/http"
+	pluginpostgres "github.com/thefuriousowl/iot-edge/internal/plugin/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
 	"github.com/thefuriousowl/iot-edge/internal/report"
 	reporthttp "github.com/thefuriousowl/iot-edge/internal/report/http"
@@ -129,7 +135,22 @@ func main() {
 	}
 	tagHandler := taghttp.NewHandler(tagService, taghttp.WithValueMonitor(tagValues))
 	dataLoggerRepository := dataloggerpostgres.NewRepository(db)
-	dataLoggerHistory := dataloggerpostgres.NewHistoryRepository(db)
+	dataLoggerBatchBroker, err := datalogger.NewCommittedBatchBroker()
+	if err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize committed Data Logger batch broker: %v", err)
+	}
+	dataLoggerHistory := dataloggerpostgres.NewHistoryRepository(
+		db,
+		dataloggerpostgres.WithCommittedBatchPublisher(dataLoggerBatchBroker),
+	)
+	dataLoggerBatchFeed, err := datalogger.NewCommittedBatchFeed(dataLoggerHistory, dataLoggerBatchBroker)
+	if err != nil {
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize committed Data Logger batch feed: %v", err)
+	}
 	dataLoggerService, err := datalogger.NewService(dataLoggerRepository, dataLoggerHistory)
 	if err != nil {
 		acquisitionRuntime.Stop()
@@ -153,7 +174,42 @@ func main() {
 		tagValues.Stop()
 		log.Fatalf("failed to start Data Logger runtime: %v", err)
 	}
+	energyLiveHub, err := pluginenergy.NewLiveHub()
+	if err != nil {
+		log.Fatalf("failed to initialize Energy live hub: %v", err)
+	}
+	energyDefinition, err := pluginenergy.NewDefinition(dataLoggerRepository, pluginenergy.WithRuntimeFactory(energyLiveHub))
+	if err != nil {
+		log.Fatalf("failed to initialize Energy Plugin definition: %v", err)
+	}
+	pluginRegistry, err := plugin.NewRegistry(energyDefinition)
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin registry: %v", err)
+	}
+	pluginRepository := pluginpostgres.NewRepository(db)
+	pluginService, err := plugin.NewService(pluginRepository, pluginRegistry)
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin service: %v", err)
+	}
+	pluginHost, err := plugin.NewCapabilityHost(map[plugin.Capability]any{
+		plugin.CapabilityLoggerCommittedBatches: dataLoggerBatchFeed,
+	})
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin capability host: %v", err)
+	}
+	pluginManager, err := plugin.NewManager(pluginRepository, pluginRegistry, pluginHost)
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin manager: %v", err)
+	}
+	if err := pluginManager.Start(runtimeContext); err != nil {
+		log.Fatalf("failed to start Plugin manager: %v", err)
+	}
 	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := pluginManager.Stop(shutdownContext); err != nil {
+			log.Printf("failed to stop Plugin manager: %v", err)
+		}
 		dataLoggerRuntime.Stop()
 		acquisitionRuntime.Stop()
 		tagValues.Stop()
@@ -169,10 +225,18 @@ func main() {
 				log.Printf("Tag value persistence: %v", persistenceError)
 			case loggerError := <-dataLoggerRuntime.Errors():
 				log.Printf("Data Logger runtime: %v", loggerError)
+			case pluginError := <-pluginManager.Errors():
+				log.Printf("Plugin runtime: %v", pluginError)
 			}
 		}
 	}()
 	dataLoggerHandler := dataloggerhttp.NewHandler(dataLoggerService)
+	pluginHandler := pluginhttp.NewHandler(pluginService, pluginManager)
+	energyService, err := pluginenergy.NewService(pluginRepository, dataLoggerHistory, pluginenergy.WithLiveHub(energyLiveHub))
+	if err != nil {
+		log.Fatalf("failed to initialize Energy service: %v", err)
+	}
+	energyHandler := energyhttp.NewHandler(energyService)
 	reportService, err := report.NewService(reportpostgres.NewRepository(db), dataLoggerRepository, dataLoggerHistory)
 	if err != nil {
 		log.Fatalf("failed to initialize Report service: %v", err)
@@ -200,6 +264,8 @@ func main() {
 	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
 	taghttp.RegisterRoutes(protectedAPI, tagHandler)
 	dataloggerhttp.RegisterRoutes(protectedAPI, dataLoggerHandler)
+	pluginhttp.RegisterRoutes(protectedAPI, pluginHandler)
+	energyhttp.RegisterRoutes(protectedAPI, energyHandler)
 	reporthttp.RegisterRoutes(protectedAPI, reportHandler)
 
 	// Start HTTP server

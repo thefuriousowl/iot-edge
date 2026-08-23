@@ -240,6 +240,80 @@ func TestHistoryRepositoryWritesPartitionsAndQueriesTypedBatches_Integration(t *
 	}
 }
 
+func TestHistoryRepositoryListsSelectedBatchWindowWithNeighbors_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitions := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	start := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
+	logger := datalogger.Logger{Name: "Energy Window Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: start, Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitions.Create(ctx, &logger, tagIDs[:2]); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	for index := 0; index < 4; index++ {
+		batchAt := start.Add(time.Duration(index) * time.Minute)
+		samples := []datalogger.RawSample{
+			{TagID: tagIDs[0], ObservedAt: batchAt, DataType: "float64", Value: float64(index + 1), Quality: datalogger.RawQualityGood},
+			{TagID: tagIDs[1], ObservedAt: batchAt, DataType: "float64", Value: float64((index + 1) * 10), Quality: datalogger.RawQualityGood},
+		}
+		if index == 2 {
+			samples[0].Value = nil
+			samples[0].Quality = datalogger.RawQualityBad
+			samples[0].Error = "Modbus 0x02 Illegal Data Address"
+		}
+		if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: batchAt, Samples: samples}); err != nil {
+			t.Fatalf("WriteBatch(%d) error = %v", index, err)
+		}
+	}
+	batches, err := history.ListBatches(ctx, datalogger.RawBatchListInput{
+		LoggerID: logger.ID, TagIDs: []uuid.UUID{tagIDs[0]}, From: start.Add(time.Minute), To: start.Add(2 * time.Minute), IncludeNeighbors: true,
+	})
+	if err != nil {
+		t.Fatalf("ListBatches() error = %v", err)
+	}
+	if len(batches) != 4 {
+		t.Fatalf("ListBatches() = %#v", batches)
+	}
+	for index, batch := range batches {
+		if !batch.BatchAt.Equal(start.Add(time.Duration(index)*time.Minute)) || batch.LoggerID != logger.ID || len(batch.Samples) != 1 || batch.Samples[0].TagID != tagIDs[0] {
+			t.Errorf("batch %d = %#v", index, batch)
+		}
+	}
+	if batches[0].Samples[0].Value != float64(1) || batches[2].Samples[0].Quality != datalogger.RawQualityBad || batches[2].Samples[0].Error != "Modbus 0x02 Illegal Data Address" {
+		t.Errorf("typed batches = %#v", batches)
+	}
+	withoutNeighbors, err := history.ListBatches(ctx, datalogger.RawBatchListInput{
+		LoggerID: logger.ID, TagIDs: []uuid.UUID{tagIDs[1]}, From: start.Add(time.Minute), To: start.Add(2 * time.Minute),
+	})
+	if err != nil || len(withoutNeighbors) != 2 || withoutNeighbors[0].Samples[0].Value != float64(20) || withoutNeighbors[1].Samples[0].Value != float64(30) {
+		t.Errorf("ListBatches(no neighbors) = %#v, %v", withoutNeighbors, err)
+	}
+	for _, input := range []datalogger.RawBatchListInput{
+		{},
+		{LoggerID: logger.ID, From: start, To: start.Add(time.Minute)},
+		{LoggerID: logger.ID, TagIDs: []uuid.UUID{uuid.Nil}, From: start, To: start.Add(time.Minute)},
+		{LoggerID: logger.ID, TagIDs: []uuid.UUID{tagIDs[0], tagIDs[0]}, From: start, To: start.Add(time.Minute)},
+		{LoggerID: logger.ID, TagIDs: []uuid.UUID{tagIDs[0]}, From: start.Add(time.Minute), To: start},
+	} {
+		if _, err := history.ListBatches(ctx, input); !errors.Is(err, datalogger.ErrInvalidInput) {
+			t.Errorf("ListBatches(%#v) error = %v", input, err)
+		}
+	}
+
+	partialAt := start.Add(4 * time.Minute)
+	if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: partialAt, Samples: []datalogger.RawSample{
+		{TagID: tagIDs[1], ObservedAt: partialAt, DataType: "float64", Value: float64(50), Quality: datalogger.RawQualityGood},
+	}}); err != nil {
+		t.Fatalf("WriteBatch(partial) error = %v", err)
+	}
+	partial, err := history.ListBatches(ctx, datalogger.RawBatchListInput{
+		LoggerID: logger.ID, TagIDs: []uuid.UUID{tagIDs[0]}, From: partialAt, To: partialAt,
+	})
+	if err != nil || len(partial) != 1 || len(partial[0].Samples) != 0 || !partial[0].BatchAt.Equal(partialAt) {
+		t.Errorf("ListBatches(partial) = %#v, %v", partial, err)
+	}
+}
+
 func TestHistoryRepositoryEnforcesRollingLimitByCompleteBatch_Integration(t *testing.T) {
 	db, tagIDs := newRepositoryDatabase(t)
 	definitionRepository := NewRepository(db)

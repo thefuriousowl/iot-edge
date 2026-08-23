@@ -15,6 +15,7 @@ const (
 
 var (
 	ErrInvalidRawBatch      = errors.New("invalid Data Logger batch")
+	ErrRawBatchNotFound     = errors.New("Data Logger batch not found")
 	ErrRawTagNotSelected    = errors.New("Tag is not selected by Data Logger")
 	ErrStorageLimitTooSmall = errors.New("Data Logger storage limit cannot hold one complete batch")
 )
@@ -32,6 +33,14 @@ type RawBatch struct {
 	LoggerID uuid.UUID
 	BatchAt  time.Time
 	Samples  []RawSample
+}
+
+type RawBatchListInput struct {
+	LoggerID         uuid.UUID
+	TagIDs           []uuid.UUID
+	From             time.Time
+	To               time.Time
+	IncludeNeighbors bool
 }
 
 type RawValue struct {
@@ -66,6 +75,8 @@ type RawValueListResult struct {
 
 type HistoryRepository interface {
 	WriteBatch(context.Context, RawBatch) error
+	LatestBatch(context.Context, uuid.UUID) (*RawBatch, error)
+	ListBatches(context.Context, RawBatchListInput) ([]RawBatch, error)
 	ListValues(context.Context, RawValueListInput) (*RawValueListResult, error)
 	Query(context.Context, QueryInput) (*QueryResult, error)
 	Storage(context.Context, uuid.UUID, int, *int64) (*StorageStats, error)

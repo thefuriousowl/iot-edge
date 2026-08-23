@@ -82,6 +82,14 @@ vi.mock("./features/report/pages/ReportDetailPage", () => ({
   default: () => <h1>Report Detail</h1>,
 }));
 
+vi.mock("./features/plugin/pages/PluginListPage", () => ({
+  default: () => <h1>Plugin Inventory</h1>,
+}));
+
+vi.mock("./features/plugin/pages/EnergyWizardPage", () => ({
+  default: () => <h1>Energy Configuration Wizard</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedListVGateways = vi.mocked(listVGateways);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
@@ -347,6 +355,21 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Report Inventory" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/reports");
   });
+
+  it("protects and renders the Plugin inventory route", () => {
+    renderAuthenticatedApp("/plugins");
+    expect(screen.getByRole("heading", { name: "Plugin Inventory" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/plugins");
+  });
+
+  it.each(["/plugins/new/energy", "/plugins/plugin-id/configure"])(
+    "protects and renders the Energy configuration route at %s",
+    (path) => {
+      renderAuthenticatedApp(path);
+      expect(screen.getByRole("heading", { name: "Energy Configuration Wizard" })).toBeInTheDocument();
+      expect(window.location.pathname).toBe(path);
+    },
+  );
 
   it.each(["/reports/new", "/reports/report-id/edit"])(
     "protects and renders the Report builder route at %s",

@@ -75,10 +75,10 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
             <FileChartColumn aria-hidden="true" size={21} />
             Reports
           </NavLink>
-          <span aria-disabled="true">
+          <NavLink to="/plugins">
             <Puzzle aria-hidden="true" size={21} />
             Plugins
-          </span>
+          </NavLink>
           <span aria-disabled="true">
             <Settings aria-hidden="true" size={21} />
             Settings
