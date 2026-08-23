@@ -98,6 +98,10 @@ vi.mock("./features/plugin/pages/EnergyHistoryPage", () => ({
   default: () => <h1>Energy History Workspace</h1>,
 }));
 
+vi.mock("./features/publisher/pages/MQTTPublisherWizardPage", () => ({
+  default: () => <h1>MQTT Publisher Wizard</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedListVGateways = vi.mocked(listVGateways);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
@@ -362,6 +366,12 @@ describe("App", () => {
     renderAuthenticatedApp("/reports");
     expect(screen.getByRole("heading", { name: "Report Inventory" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/reports");
+  });
+
+  it("protects and renders the MQTT Publisher route", () => {
+    renderAuthenticatedApp("/data-publishers/new/mqtt");
+    expect(screen.getByRole("heading", { name: "MQTT Publisher Wizard" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/data-publishers/new/mqtt");
   });
 
   it("protects and renders the Plugin inventory route", () => {

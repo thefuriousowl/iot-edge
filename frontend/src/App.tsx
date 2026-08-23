@@ -22,6 +22,7 @@ import ReportListPage from "./features/report/pages/ReportListPage";
 import PluginListPage from "./features/plugin/pages/PluginListPage";
 import EnergyOverviewPage from "./features/plugin/pages/EnergyOverviewPage";
 import EnergyWizardPage from "./features/plugin/pages/EnergyWizardPage";
+import MQTTPublisherWizardPage from "./features/publisher/pages/MQTTPublisherWizardPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
 import TagWizardPage from "./features/tag/pages/TagWizardPage";
@@ -197,6 +198,14 @@ function App() {
           element={
             <ProtectedRoute>
               <ReportListPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-publishers/new/mqtt"
+          element={
+            <ProtectedRoute>
+              <MQTTPublisherWizardPage />
             </ProtectedRoute>
           }
         />

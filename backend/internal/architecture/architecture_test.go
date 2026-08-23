@@ -53,6 +53,14 @@ func TestFeatureCoreImportBoundaries(t *testing.T) {
 			directory: filepath.Join(backendRoot, "internal", "plugin"),
 		},
 		{
+			name:      "Data Publisher core",
+			directory: filepath.Join(backendRoot, "internal", "publisher"),
+			allowedInternal: map[string]bool{
+				"github.com/thefuriousowl/iot-edge/internal/plugin": true,
+				"github.com/thefuriousowl/iot-edge/internal/tag":    true,
+			},
+		},
+		{
 			name:      "Energy Plugin",
 			directory: filepath.Join(backendRoot, "internal", "plugin", "energy"),
 			allowedInternal: map[string]bool{

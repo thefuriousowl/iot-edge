@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Menu,
   Puzzle,
+  RadioTower,
   Settings,
   Tags,
   X,
@@ -78,6 +79,10 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
           <NavLink to="/plugins">
             <Puzzle aria-hidden="true" size={21} />
             Plugins
+          </NavLink>
+          <NavLink to="/data-publishers/new/mqtt">
+            <RadioTower aria-hidden="true" size={21} />
+            Data Publishers
           </NavLink>
           <span aria-disabled="true">
             <Settings aria-hidden="true" size={21} />
