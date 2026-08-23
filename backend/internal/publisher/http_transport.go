@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,16 +38,31 @@ func WithHTTPListenFunc(listen HTTPListenFunc) HTTPTransportOption {
 	}
 }
 
-type HTTPTransportFactory struct {
-	secrets SecretResolver
-	listen  HTTPListenFunc
+func WithHTTPClock(clock func() time.Time) HTTPTransportOption {
+	return func(factory *HTTPTransportFactory) error {
+		if clock == nil {
+			return ErrHTTPTransportRequired
+		}
+		factory.now = clock
+		return nil
+	}
 }
 
-func NewHTTPTransportFactory(secrets SecretResolver, options ...HTTPTransportOption) (*HTTPTransportFactory, error) {
+type HTTPTransportFactory struct {
+	secrets SecretResolver
+	engine  *JSONPayloadEngine
+	listen  HTTPListenFunc
+	now     func() time.Time
+}
+
+func NewHTTPTransportFactory(secrets SecretResolver, engine *JSONPayloadEngine, options ...HTTPTransportOption) (*HTTPTransportFactory, error) {
 	if isNilSourceDependency(secrets) {
 		return nil, ErrSecretResolverRequired
 	}
-	factory := &HTTPTransportFactory{secrets: secrets, listen: net.Listen}
+	if engine == nil {
+		return nil, ErrHTTPTransportRequired
+	}
+	factory := &HTTPTransportFactory{secrets: secrets, engine: engine, listen: net.Listen, now: time.Now}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -66,8 +82,12 @@ func (factory *HTTPTransportFactory) ListenerClaims(entity Publisher) ([]Listene
 	return []ListenerClaim{{Network: "tcp", Address: net.JoinHostPort(config.HTTP.BindAddress, strconv.Itoa(int(config.HTTP.Port)))}}, nil
 }
 
-func (factory *HTTPTransportFactory) NewTransport(ctx context.Context, entity Publisher) (Transport, error) {
-	if factory == nil || factory.listen == nil || isNilSourceDependency(factory.secrets) || ctx == nil {
+func (factory *HTTPTransportFactory) NewTransport(context.Context, Publisher) (Transport, error) {
+	return nil, ErrHTTPTransportRequired
+}
+
+func (factory *HTTPTransportFactory) NewResolvedTransport(ctx context.Context, entity Publisher, sources []ResolvedSource) (Transport, error) {
+	if factory == nil || factory.engine == nil || factory.listen == nil || factory.now == nil || isNilSourceDependency(factory.secrets) || ctx == nil {
 		return nil, ErrHTTPTransportRequired
 	}
 	if err := ctx.Err(); err != nil {
@@ -77,26 +97,22 @@ func (factory *HTTPTransportFactory) NewTransport(ctx context.Context, entity Pu
 	if err != nil {
 		return nil, err
 	}
-	var apiKey []byte
-	if config.HTTP.Access.Mode == HTTPAccessAPIKey {
-		material, _, resolveErr := factory.secrets.Resolve(ctx, entity.ID, *config.HTTP.Access.APIKey, SecretKindOpaque)
-		if resolveErr != nil {
-			return nil, resolveErr
-		}
-		defer material.Destroy()
-		if len(material.Opaque) == 0 {
-			return nil, ErrInvalidSecretMaterial
-		}
-		apiKey = append([]byte(nil), material.Opaque...)
+	compiled, err := factory.engine.Compile(config.Response.PayloadTemplate, sources)
+	if err != nil {
+		return nil, err
+	}
+	access, err := resolveHTTPAccessVerifier(ctx, factory.secrets, entity.ID, config.HTTP.Access)
+	if err != nil {
+		return nil, err
 	}
 	address := net.JoinHostPort(config.HTTP.BindAddress, strconv.Itoa(int(config.HTTP.Port)))
 	listener, err := factory.listen("tcp", address)
 	if err != nil {
-		zeroBytes(apiKey)
+		access.clear()
 		return nil, err
 	}
 	transport := &httpSnapshotTransport{
-		publisherID: entity.ID, config: config.HTTP, listener: listener, apiKey: apiKey,
+		publisherID: entity.ID, config: config.HTTP, compiled: compiled, listener: listener, access: access, now: factory.now,
 		failures: make(chan error, 1), done: make(chan struct{}),
 	}
 	limitedListener := &httpConnectionLimitListener{
@@ -117,9 +133,11 @@ func (factory *HTTPTransportFactory) NewTransport(ctx context.Context, entity Pu
 type httpSnapshotTransport struct {
 	publisherID uuid.UUID
 	config      HTTPServerConfig
+	compiled    *CompiledJSONPayload
 	listener    net.Listener
 	server      *http.Server
-	apiKey      []byte
+	access      httpAccessVerifier
+	now         func() time.Time
 	failures    chan error
 	done        chan struct{}
 	closeOnce   sync.Once
@@ -164,8 +182,7 @@ func (transport *httpSnapshotTransport) Close(ctx context.Context) error {
 				transport.closeErr = ctx.Err()
 			}
 		}
-		zeroBytes(transport.apiKey)
-		transport.apiKey = nil
+		transport.access.clear()
 	})
 	return transport.closeErr
 }
@@ -241,9 +258,9 @@ func (transport *httpSnapshotTransport) handle(writer http.ResponseWriter, reque
 		transport.writeError(writer, http.StatusRequestEntityTooLarge, "REQUEST_BODY_NOT_ALLOWED", "Snapshot requests must not include a body")
 		return
 	}
-	if transport.config.Access.Mode == HTTPAccessAPIKey && !transport.authorized(request.Header.Get("X-API-Key")) {
-		writer.Header().Set("WWW-Authenticate", `ApiKey realm="iot-edge-publisher"`)
-		transport.writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "A valid API key is required")
+	if !transport.authorized(request) {
+		transport.setAuthenticateHeader(writer)
+		transport.writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "Valid Publisher credentials are required")
 		return
 	}
 	transport.snapshotMu.RLock()
@@ -259,20 +276,47 @@ func (transport *httpSnapshotTransport) handle(writer http.ResponseWriter, reque
 	if transport.config.QualityPolicy == HTTPQualityStrict && quality != "good" {
 		statusCode = http.StatusServiceUnavailable
 	}
+	payload, err := transport.compiled.RenderWithContext(JSONPayloadRenderContext{
+		PublisherID: transport.publisherID, PublishedAt: transport.now().UTC(), Snapshot: snapshot,
+	})
+	if err != nil {
+		transport.writeError(writer, http.StatusServiceUnavailable, "PAYLOAD_RENDER_FAILED", "Publisher payload could not be rendered")
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
 	if statusCode != http.StatusOK {
 		transport.rejectedRequests.Add(1)
 	}
 	writer.WriteHeader(statusCode)
-	_ = json.NewEncoder(writer).Encode(httpSnapshotResponse{
-		PublisherID: transport.publisherID, CapturedAt: snapshot.CapturedAt, Quality: quality, Samples: snapshot.Samples,
-	})
+	_, _ = writer.Write(payload)
 }
 
-func (transport *httpSnapshotTransport) authorized(presented string) bool {
-	presentedHash := sha256.Sum256([]byte(presented))
-	expectedHash := sha256.Sum256(transport.apiKey)
-	return subtle.ConstantTimeCompare(presentedHash[:], expectedHash[:]) == 1
+func (transport *httpSnapshotTransport) authorized(request *http.Request) bool {
+	switch transport.access.mode {
+	case HTTPAccessAnonymous:
+		return true
+	case HTTPAccessAPIKey:
+		return transport.access.matches(transport.access.apiKeyHash, request.Header.Get(transport.access.apiKeyHeader))
+	case HTTPAccessBasic:
+		username, password, ok := request.BasicAuth()
+		return ok && transport.access.matches(transport.access.usernameHash, username) && transport.access.matches(transport.access.passwordHash, password)
+	case HTTPAccessBearer:
+		parts := strings.Fields(request.Header.Get("Authorization"))
+		return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && transport.access.matches(transport.access.bearerHash, parts[1])
+	default:
+		return false
+	}
+}
+
+func (transport *httpSnapshotTransport) setAuthenticateHeader(writer http.ResponseWriter) {
+	switch transport.access.mode {
+	case HTTPAccessAPIKey:
+		writer.Header().Set("WWW-Authenticate", `ApiKey realm="iot-edge-publisher"`)
+	case HTTPAccessBasic:
+		writer.Header().Set("WWW-Authenticate", `Basic realm="iot-edge-publisher", charset="UTF-8"`)
+	case HTTPAccessBearer:
+		writer.Header().Set("WWW-Authenticate", `Bearer realm="iot-edge-publisher"`)
+	}
 }
 
 func (transport *httpSnapshotTransport) writeError(writer http.ResponseWriter, status int, code, message string) {
@@ -289,13 +333,6 @@ func (transport *httpSnapshotTransport) connectionState(_ net.Conn, state http.C
 	case http.StateHijacked, http.StateClosed:
 		transport.activeConnections.Add(-1)
 	}
-}
-
-type httpSnapshotResponse struct {
-	PublisherID uuid.UUID      `json:"publisher_id"`
-	CapturedAt  time.Time      `json:"captured_at"`
-	Quality     string         `json:"quality"`
-	Samples     []SourceSample `json:"samples"`
 }
 
 type httpErrorResponse struct {
@@ -321,10 +358,72 @@ func httpSnapshotQuality(snapshot SourceSnapshot) string {
 }
 
 func validateHTTPTransportPublisher(entity Publisher) (HTTPPublisherConfig, error) {
-	if entity.ID == uuid.Nil || entity.Type != TypeHTTPServer || entity.ConfigVersion != 3 {
+	if entity.ID == uuid.Nil || entity.Type != TypeHTTPServer || entity.ConfigVersion != 4 {
 		return HTTPPublisherConfig{}, ErrInvalidPublisher
 	}
 	return ParseHTTPPublisherConfig(entity.Config)
+}
+
+type httpAccessVerifier struct {
+	mode         HTTPAccessMode
+	apiKeyHeader string
+	apiKeyHash   [sha256.Size]byte
+	usernameHash [sha256.Size]byte
+	passwordHash [sha256.Size]byte
+	bearerHash   [sha256.Size]byte
+}
+
+func resolveHTTPAccessVerifier(ctx context.Context, resolver SecretResolver, publisherID uuid.UUID, config HTTPAccessConfig) (httpAccessVerifier, error) {
+	verifier := httpAccessVerifier{mode: config.Mode, apiKeyHeader: config.APIKeyHeader}
+	var err error
+	switch config.Mode {
+	case HTTPAccessAnonymous:
+		return verifier, nil
+	case HTTPAccessAPIKey:
+		verifier.apiKeyHash, err = resolveHTTPOpaqueHash(ctx, resolver, publisherID, "http.api_key")
+	case HTTPAccessBasic:
+		verifier.usernameHash, err = resolveHTTPOpaqueHash(ctx, resolver, publisherID, "http.username")
+		if err == nil {
+			verifier.passwordHash, err = resolveHTTPOpaqueHash(ctx, resolver, publisherID, "http.password")
+		}
+	case HTTPAccessBearer:
+		verifier.bearerHash, err = resolveHTTPOpaqueHash(ctx, resolver, publisherID, "http.bearer_token")
+	default:
+		err = ErrInvalidPublisherConfig
+	}
+	if err != nil {
+		verifier.clear()
+	}
+	return verifier, err
+}
+
+func resolveHTTPOpaqueHash(ctx context.Context, resolver SecretResolver, publisherID uuid.UUID, name string) ([sha256.Size]byte, error) {
+	var zero [sha256.Size]byte
+	material, _, err := resolver.Resolve(ctx, publisherID, SecretReference{Name: name}, SecretKindOpaque)
+	if err != nil {
+		return zero, err
+	}
+	defer material.Destroy()
+	if len(material.Opaque) == 0 {
+		return zero, ErrInvalidSecretMaterial
+	}
+	return sha256.Sum256(material.Opaque), nil
+}
+
+func (verifier *httpAccessVerifier) matches(expected [sha256.Size]byte, presented string) bool {
+	presentedHash := sha256.Sum256([]byte(presented))
+	return subtle.ConstantTimeCompare(expected[:], presentedHash[:]) == 1
+}
+
+func (verifier *httpAccessVerifier) clear() {
+	if verifier == nil {
+		return
+	}
+	zeroBytes(verifier.apiKeyHash[:])
+	zeroBytes(verifier.usernameHash[:])
+	zeroBytes(verifier.passwordHash[:])
+	zeroBytes(verifier.bearerHash[:])
+	verifier.apiKeyHeader = ""
 }
 
 type httpConnectionLimitListener struct {
@@ -364,6 +463,7 @@ func (connection *httpLimitedConnection) Close() error {
 }
 
 var _ TransportFactory = (*HTTPTransportFactory)(nil)
+var _ ResolvedTransportFactory = (*HTTPTransportFactory)(nil)
 var _ Transport = (*httpSnapshotTransport)(nil)
 var _ TransportMetricsProvider = (*httpSnapshotTransport)(nil)
 var _ TransportFailureSource = (*httpSnapshotTransport)(nil)

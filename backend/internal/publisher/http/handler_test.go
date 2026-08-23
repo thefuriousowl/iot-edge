@@ -19,10 +19,13 @@ import (
 func TestPublisherHandlerListsTypesAndFiltersUnifiedSources(t *testing.T) {
 	instanceID := uuid.New()
 	reference := publisher.PluginOutputSource(instanceID, "energy.today_kwh")
+	periodEnd := time.Date(2026, 8, 23, 9, 30, 0, 0, time.UTC)
+	periodStart := periodEnd.Add(-time.Hour)
+	coverage := 82.5
 	service := &handlerService{types: []publisher.DefinitionDescriptor{{Type: publisher.TypeMQTT, ConfigVersion: 3}}}
 	sources := &handlerSources{catalog: []publisher.SourceCatalogEntry{{
 		Descriptor: publisher.SourceDescriptor{Reference: reference, Name: "Energy today", OwnerName: "Energy Management", SchemaVersion: 1, DataType: publisher.SourceDataTypeFloat64, Unit: "kWh", PeriodKind: publisher.SourcePeriodWindowed, Enabled: true},
-		Current:    publisher.SourceCurrent{Quality: publisher.SourceQualityGood, Sequence: 12},
+		Current:    publisher.SourceCurrent{Quality: publisher.SourceQualityPartial, Sequence: 12, ObservedAt: &periodEnd, PeriodStart: &periodStart, PeriodEnd: &periodEnd, CoveragePercent: &coverage},
 	}}}
 	app := publisherTestApp(service, sources, publisher.NewJSONPayloadEngine())
 
@@ -55,7 +58,7 @@ func TestPublisherHandlerListsTypesAndFiltersUnifiedSources(t *testing.T) {
 		Data []publisher.SourceCatalogEntry `json:"data"`
 	}
 	decodeResponse(t, response, &body)
-	if len(body.Data) != 1 || body.Data[0].Descriptor.Reference != reference || body.Data[0].Descriptor.PeriodKind != publisher.SourcePeriodWindowed || body.Data[0].Current.Sequence != 12 {
+	if len(body.Data) != 1 || body.Data[0].Descriptor.Reference != reference || body.Data[0].Descriptor.PeriodKind != publisher.SourcePeriodWindowed || body.Data[0].Current.Sequence != 12 || body.Data[0].Current.CoveragePercent == nil || *body.Data[0].Current.CoveragePercent != 82.5 || !body.Data[0].Current.PeriodStart.Equal(periodStart) || !body.Data[0].Current.PeriodEnd.Equal(periodEnd) {
 		t.Fatalf("catalog body = %+v", body.Data)
 	}
 }
@@ -99,7 +102,7 @@ func TestPublisherHandlerValidatesPayloadWithResolvedSources(t *testing.T) {
 
 	invalid := `{"payload_template":"{\"power\":{{unknown \"power\"}}}","sources":[{"alias":"power","reference":{"kind":"tag","tag_id":"` + tagID.String() + `"}}]}`
 	response, _ = app.Test(httptest.NewRequest("POST", "/api/publisher-payloads/validate", strings.NewReader(invalid)))
-	assertAPIError(t, response, fiber.StatusBadRequest, "PUB008", "MQTT JSON payload template is invalid")
+	assertAPIError(t, response, fiber.StatusBadRequest, "PUB008", "Data Publisher JSON payload template is invalid")
 }
 
 func TestPublisherHandlerCRUDUsesStrictDTOsAndSafeProjections(t *testing.T) {
@@ -240,6 +243,87 @@ func TestPublisherHandlerLifecycleStatusAndGenericDiagnostics(t *testing.T) {
 	}
 }
 
+func TestPublisherHandlerOverlaysPersistedMetadataOnEmptyStoppedRuntime(t *testing.T) {
+	publisherID := uuid.New()
+	updatedAt := time.Date(2026, time.August, 23, 14, 0, 0, 0, time.UTC)
+	entity := &publisher.Publisher{ID: publisherID, Type: publisher.TypeHTTPServer, Enabled: false, ConfigVersion: 4, UpdatedAt: updatedAt}
+	manager := &handlerManager{status: publisher.RuntimeStatus{State: publisher.RuntimeStateStopped}}
+	app := publisherTestAppWithOptions(&handlerService{entity: entity}, &handlerSources{}, publisher.NewJSONPayloadEngine(), WithRuntimeManager(manager))
+
+	response, _ := app.Test(httptest.NewRequest("GET", "/api/data-publishers/"+publisherID.String()+"/status", nil))
+	var body struct {
+		Runtime publisher.RuntimeStatus `json:"runtime"`
+	}
+	decodeResponse(t, response, &body)
+	if body.Runtime.PublisherID != publisherID || body.Runtime.Type != publisher.TypeHTTPServer || body.Runtime.ConfigVersion != 4 || body.Runtime.State != publisher.RuntimeStateStopped || !body.Runtime.LastTransitionAt.Equal(updatedAt) {
+		t.Fatalf("stopped runtime projection = %#v", body.Runtime)
+	}
+}
+
+func TestPublisherHandlerProjectsHTTPMetadataAndProbesRunningListener(t *testing.T) {
+	publisherID := uuid.New()
+	config := publisher.Config(`{"trigger":{"mode":"interval","interval_ms":60000},"http":{"bind_address":"0.0.0.0","port":8088,"path":"/snapshot","access":{"mode":"anonymous","anonymous_acknowledged":true},"quality_policy":"payload","read_timeout_ms":5000,"write_timeout_ms":5000,"idle_timeout_ms":30000,"max_header_bytes":16384,"max_connections":64},"response":{"payload_template":"{\"publisher_id\":{{publisher_id}}}"}}`)
+	entity := &publisher.Publisher{ID: publisherID, Type: publisher.TypeHTTPServer, Name: "HTTP", Enabled: true, Config: config, ConfigVersion: 4}
+	service := &handlerService{entity: entity}
+	manager := &handlerManager{status: publisher.RuntimeStatus{PublisherID: publisherID, Type: publisher.TypeHTTPServer, State: publisher.RuntimeStateRunning, ConfigVersion: 4, Sources: []publisher.SourceRuntimeStatus{}}}
+	probedAt := time.Date(2026, time.August, 23, 14, 0, 0, 0, time.UTC)
+	prober := &handlerHTTPServerProber{result: publisher.HTTPServerProbeResult{Reachable: true, ProbedAt: probedAt, LatencyMS: 1.25}}
+	app := publisherTestAppWithOptions(service, &handlerSources{}, publisher.NewJSONPayloadEngine(), WithRuntimeManager(manager), WithHTTPServerListenerProber(prober))
+
+	response, _ := app.Test(httptest.NewRequest("GET", "/api/data-publishers/"+publisherID.String(), nil))
+	var detail struct {
+		Endpoint *publisher.HTTPServerEndpointMetadata `json:"endpoint"`
+	}
+	decodeResponse(t, response, &detail)
+	if detail.Endpoint == nil || detail.Endpoint.BindAddress != "0.0.0.0" || detail.Endpoint.Port != 8088 || detail.Endpoint.Path != "/snapshot" || detail.Endpoint.AccessMode != publisher.HTTPAccessAnonymous {
+		t.Fatalf("detail endpoint = %#v", detail.Endpoint)
+	}
+
+	response, _ = app.Test(httptest.NewRequest("GET", "/api/data-publishers/"+publisherID.String()+"/status", nil))
+	var status struct {
+		Endpoint *publisher.HTTPServerEndpointMetadata `json:"endpoint"`
+	}
+	decodeResponse(t, response, &status)
+	if status.Endpoint == nil || status.Endpoint.QualityPolicy != publisher.HTTPQualityPayload {
+		t.Fatalf("status endpoint = %#v", status.Endpoint)
+	}
+
+	response, _ = app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/probe-listener", nil))
+	var result publisher.HTTPServerProbeResult
+	decodeResponse(t, response, &result)
+	if !result.Reachable || result.LatencyMS != 1.25 || prober.entity.ID != publisherID {
+		t.Fatalf("probe result = %#v entity=%s", result, prober.entity.ID)
+	}
+
+	entity.Enabled = false
+	response, _ = app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/probe-listener", nil))
+	assertAPIError(t, response, fiber.StatusConflict, "PUB026", "Enable the HTTP Server Publisher before probing its listener")
+	entity.Enabled = true
+	manager.status.State = publisher.RuntimeStateError
+	response, _ = app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/probe-listener", nil))
+	assertAPIError(t, response, fiber.StatusConflict, "PUB027", "HTTP Server Publisher listener is not running")
+}
+
+func TestPublisherHandlerSanitizesHTTPListenerProbeFailures(t *testing.T) {
+	publisherID := uuid.New()
+	entity := &publisher.Publisher{ID: publisherID, Type: publisher.TypeHTTPServer, Enabled: true, ConfigVersion: 4}
+	manager := &handlerManager{status: publisher.RuntimeStatus{State: publisher.RuntimeStateRunning}}
+	for _, test := range []struct {
+		err     error
+		status  int
+		code    string
+		message string
+	}{
+		{publisher.ErrHTTPServerProbeFailed, fiber.StatusBadGateway, "PUB028", "HTTP Server listener probe failed"},
+		{publisher.ErrHTTPServerProbeTimedOut, fiber.StatusGatewayTimeout, "PUB029", "HTTP Server listener probe timed out"},
+	} {
+		prober := &handlerHTTPServerProber{err: test.err}
+		app := publisherTestAppWithOptions(&handlerService{entity: entity}, &handlerSources{}, publisher.NewJSONPayloadEngine(), WithRuntimeManager(manager), WithHTTPServerListenerProber(prober))
+		response, _ := app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/probe-listener", nil))
+		assertAPIError(t, response, test.status, test.code, test.message)
+	}
+}
+
 func TestPublisherHandlerConnectionUsesStoredCredentialProfileOnly(t *testing.T) {
 	publisherID := uuid.New()
 	selection := publisher.SourceSelection{Alias: "power", Reference: publisher.TagSource(uuid.New())}
@@ -350,6 +434,17 @@ type handlerConnectionTester struct {
 	result    publisher.MQTTConnectionTestResult
 	overrides []publisher.MQTTSecretOverride
 	err       error
+}
+
+type handlerHTTPServerProber struct {
+	result publisher.HTTPServerProbeResult
+	entity publisher.Publisher
+	err    error
+}
+
+func (prober *handlerHTTPServerProber) Probe(_ context.Context, entity publisher.Publisher) (publisher.HTTPServerProbeResult, error) {
+	prober.entity = entity
+	return prober.result, prober.err
 }
 
 func (tester *handlerConnectionTester) Test(_ context.Context, _ publisher.Publisher, _ []publisher.ResolvedSource, overrides []publisher.MQTTSecretOverride) (publisher.MQTTConnectionTestResult, error) {

@@ -1,6 +1,6 @@
 import type { CredentialSecretSlot } from "./publisher";
 
-export type CredentialType = "mqtt";
+export type CredentialType = "mqtt" | "http";
 export type CredentialSecretKind = "opaque" | "ca_certificate" | "client_identity";
 
 export interface CredentialSecretMetadata {

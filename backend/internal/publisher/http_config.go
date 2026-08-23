@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"path"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ const (
 	defaultHTTPMaxConnections = 64
 	maxHTTPSnapshotPathLength = 128
 	maxHTTPConnections        = 10000
+	defaultHTTPAPIKeyHeader   = "X-API-Key"
 )
 
 type HTTPAccessMode string
@@ -28,6 +30,8 @@ type HTTPQualityPolicy string
 
 const (
 	HTTPAccessAPIKey    HTTPAccessMode = "api_key"
+	HTTPAccessBasic     HTTPAccessMode = "basic"
+	HTTPAccessBearer    HTTPAccessMode = "bearer"
 	HTTPAccessAnonymous HTTPAccessMode = "anonymous"
 )
 
@@ -37,9 +41,9 @@ const (
 )
 
 type HTTPAccessConfig struct {
-	Mode                  HTTPAccessMode   `json:"mode"`
-	APIKey                *SecretReference `json:"api_key,omitempty"`
-	AnonymousAcknowledged bool             `json:"anonymous_acknowledged,omitempty"`
+	Mode                  HTTPAccessMode `json:"mode"`
+	APIKeyHeader          string         `json:"api_key_header,omitempty"`
+	AnonymousAcknowledged bool           `json:"anonymous_acknowledged,omitempty"`
 }
 
 type HTTPServerConfig struct {
@@ -55,9 +59,14 @@ type HTTPServerConfig struct {
 	MaxConnections int               `json:"max_connections"`
 }
 
+type HTTPResponseConfig struct {
+	PayloadTemplate string `json:"payload_template"`
+}
+
 type HTTPPublisherConfig struct {
-	Trigger TriggerConfig    `json:"trigger"`
-	HTTP    HTTPServerConfig `json:"http"`
+	Trigger  TriggerConfig      `json:"trigger"`
+	HTTP     HTTPServerConfig   `json:"http"`
+	Response HTTPResponseConfig `json:"response"`
 }
 
 func ParseHTTPPublisherConfig(config Config) (HTTPPublisherConfig, error) {
@@ -87,7 +96,7 @@ func normalizeHTTPPublisherConfig(config Config) (Config, error) {
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return nil, ErrInvalidPublisherConfig
 		}
-		for _, key := range []string{"trigger", "http"} {
+		for _, key := range []string{"trigger", "http", "response"} {
 			if raw, exists := object[key]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				return nil, ErrInvalidPublisherConfig
 			}
@@ -122,6 +131,9 @@ func normalizeHTTPPublisherConfig(config Config) (Config, error) {
 	if err := normalizeHTTPServerConfig(&decoded.HTTP); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(decoded.Response.PayloadTemplate) == "" || len(decoded.Response.PayloadTemplate) > MaxJSONPayloadTemplateBytes {
+		return nil, ErrInvalidPublisherConfig
+	}
 	normalized, err := json.Marshal(decoded)
 	if err != nil {
 		return nil, ErrInvalidPublisherConfig
@@ -143,11 +155,19 @@ func normalizeHTTPServerConfig(config *HTTPServerConfig) error {
 	}
 	switch config.Access.Mode {
 	case HTTPAccessAPIKey:
-		if config.Access.APIKey == nil || config.Access.APIKey.Validate() != nil || config.Access.AnonymousAcknowledged {
+		if config.Access.APIKeyHeader == "" {
+			config.Access.APIKeyHeader = defaultHTTPAPIKeyHeader
+		}
+		config.Access.APIKeyHeader = httpCanonicalHeader(config.Access.APIKeyHeader)
+		if config.Access.APIKeyHeader == "" || strings.EqualFold(config.Access.APIKeyHeader, "Authorization") || config.Access.AnonymousAcknowledged {
+			return ErrInvalidPublisherConfig
+		}
+	case HTTPAccessBasic, HTTPAccessBearer:
+		if config.Access.APIKeyHeader != "" || config.Access.AnonymousAcknowledged {
 			return ErrInvalidPublisherConfig
 		}
 	case HTTPAccessAnonymous:
-		if config.Access.APIKey != nil || !config.Access.AnonymousAcknowledged {
+		if config.Access.APIKeyHeader != "" || !config.Access.AnonymousAcknowledged {
 			return ErrInvalidPublisherConfig
 		}
 	default:
@@ -165,6 +185,20 @@ func normalizeHTTPServerConfig(config *HTTPServerConfig) error {
 	return nil
 }
 
+func httpCanonicalHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for index := range value {
+		character := value[index]
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(character))) {
+			return ""
+		}
+	}
+	return http.CanonicalHeaderKey(value)
+}
+
 func validHTTPTimeout(value, minimum, maximum uint64) bool {
 	return value >= minimum && value <= maximum
 }
@@ -174,11 +208,12 @@ func defaultHTTPPublisherConfig() HTTPPublisherConfig {
 		Trigger: defaultIntervalTrigger(),
 		HTTP: HTTPServerConfig{
 			BindAddress: defaultHTTPBindAddress, Port: defaultHTTPPort, Path: defaultHTTPSnapshotPath,
-			Access:        HTTPAccessConfig{Mode: HTTPAccessAPIKey, APIKey: &SecretReference{Name: "http.api_key"}},
+			Access:        HTTPAccessConfig{Mode: HTTPAccessAPIKey, APIKeyHeader: defaultHTTPAPIKeyHeader},
 			QualityPolicy: HTTPQualityPayload,
 			ReadTimeoutMS: uint64(defaultHTTPTimeout / time.Millisecond), WriteTimeoutMS: uint64(defaultHTTPTimeout / time.Millisecond),
 			IdleTimeoutMS: uint64(defaultHTTPIdleTimeout / time.Millisecond), MaxHeaderBytes: defaultHTTPMaxHeaderBytes,
 			MaxConnections: defaultHTTPMaxConnections,
 		},
+		Response: HTTPResponseConfig{PayloadTemplate: `{"publisher_id":{{publisher_id}},"published_at":{{published_at}},"values":{}}`},
 	}
 }

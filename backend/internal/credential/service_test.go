@@ -39,6 +39,36 @@ func TestServiceManagesProfilesAndTypedSecretSlots(t *testing.T) {
 	}
 }
 
+func TestServiceManagesHTTPProfilesAndAllTypedSecretSlots(t *testing.T) {
+	repository := &credentialRepositoryStub{}
+	secrets := &credentialSecretsStub{}
+	service, err := NewService(repository, secrets)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	profile, err := service.Create(context.Background(), CreateInput{Type: TypeHTTP, Name: "Plant HTTP"})
+	if err != nil || profile.Type != TypeHTTP {
+		t.Fatalf("Create(HTTP) = %#v, %v", profile, err)
+	}
+	for slot, wantKind := range map[string]publisher.SecretKind{
+		HTTPUsernameSlot: publisher.SecretKindOpaque, HTTPPasswordSlot: publisher.SecretKindOpaque,
+		HTTPAPIKeySlot: publisher.SecretKindOpaque, HTTPBearerTokenSlot: publisher.SecretKindOpaque,
+		HTTPOAuthSecretSlot: publisher.SecretKindOpaque, HTTPCustomCASlot: publisher.SecretKindCACertificate,
+		HTTPClientIdentitySlot: publisher.SecretKindClientIdentity,
+	} {
+		kind, err := ExpectedSecretKind(TypeHTTP, slot)
+		if err != nil || kind != wantKind {
+			t.Errorf("ExpectedSecretKind(%s) = %s, %v; want %s", slot, kind, err, wantKind)
+		}
+	}
+	if _, err := service.PutSecret(context.Background(), profile.ID, HTTPAPIKeySlot, publisher.SecretMaterial{Opaque: []byte("write-only")}); err != nil {
+		t.Fatalf("PutSecret(http.api_key) error = %v", err)
+	}
+	if secrets.lastInput.Reference.Name != HTTPAPIKeySlot || secrets.lastInput.Kind != publisher.SecretKindOpaque {
+		t.Fatalf("HTTP secret input = %#v", secrets.lastInput)
+	}
+}
+
 func TestServiceValidatesPublisherCompatibilityAndResolverOwnership(t *testing.T) {
 	credentialID := uuid.New()
 	publisherID := uuid.New()
@@ -64,6 +94,20 @@ func TestServiceValidatesPublisherCompatibilityAndResolverOwnership(t *testing.T
 	resolver, _ = NewPublisherSecretResolver(&publisherStoreStub{entity: &publisher.Publisher{ID: publisherID}}, vault)
 	if _, _, err := resolver.Resolve(context.Background(), publisherID, publisher.SecretReference{Name: MQTTUsernameSlot}, publisher.SecretKindOpaque); !errors.Is(err, publisher.ErrSecretNotFound) {
 		t.Errorf("Resolve(no credential) error = %v", err)
+	}
+}
+
+func TestServiceValidatesHTTPProfileCompatibility(t *testing.T) {
+	credentialID := uuid.New()
+	repository := &credentialRepositoryStub{profile: &Profile{ID: credentialID, Type: TypeHTTP, Name: "HTTP"}}
+	service, _ := NewService(repository, &credentialSecretsStub{})
+	for _, publisherType := range []publisher.Type{publisher.TypeHTTPServer, publisher.TypeHTTPClient} {
+		if err := service.ValidateCredential(context.Background(), credentialID, publisherType); err != nil {
+			t.Errorf("ValidateCredential(%s) error = %v", publisherType, err)
+		}
+	}
+	if err := service.ValidateCredential(context.Background(), credentialID, publisher.TypeMQTT); !errors.Is(err, publisher.ErrCredentialIncompatible) {
+		t.Errorf("ValidateCredential(MQTT) error = %v", err)
 	}
 }
 

@@ -17,14 +17,15 @@ const (
 )
 
 type SourceRuntimeStatus struct {
-	Alias       string          `json:"alias"`
-	Reference   SourceReference `json:"reference"`
-	Available   bool            `json:"available"`
-	Quality     SourceQuality   `json:"quality"`
-	Sequence    uint64          `json:"sequence,omitempty"`
-	ObservedAt  *time.Time      `json:"observed_at,omitempty"`
-	PeriodStart *time.Time      `json:"period_start,omitempty"`
-	PeriodEnd   *time.Time      `json:"period_end,omitempty"`
+	Alias           string          `json:"alias"`
+	Reference       SourceReference `json:"reference"`
+	Available       bool            `json:"available"`
+	Quality         SourceQuality   `json:"quality"`
+	Sequence        uint64          `json:"sequence,omitempty"`
+	ObservedAt      *time.Time      `json:"observed_at,omitempty"`
+	PeriodStart     *time.Time      `json:"period_start,omitempty"`
+	PeriodEnd       *time.Time      `json:"period_end,omitempty"`
+	CoveragePercent *float64        `json:"coverage_percent,omitempty"`
 }
 
 type RuntimeStatus struct {
@@ -77,6 +78,7 @@ func clonePublisherRuntimeStatus(status RuntimeStatus) RuntimeStatus {
 		status.Sources[index].ObservedAt = cloneTime(source.ObservedAt)
 		status.Sources[index].PeriodStart = cloneTime(source.PeriodStart)
 		status.Sources[index].PeriodEnd = cloneTime(source.PeriodEnd)
+		status.Sources[index].CoveragePercent = cloneFloat(source.CoveragePercent)
 	}
 	return status
 }

@@ -28,7 +28,7 @@ func TestDefinitionManifestAndDependencies(t *testing.T) {
 		t.Fatalf("NewDefinition() error = %v", err)
 	}
 	manifest := definition.Manifest()
-	if manifest.Type != PluginType || manifest.Name != "Energy Management" || manifest.Version != "0.1.0" || manifest.ConfigVersion != 1 || !manifest.MultipleInstances || len(manifest.Capabilities) != 3 || manifest.Capabilities[0] != plugin.CapabilityLoggerCommittedBatches || manifest.Capabilities[1] != plugin.CapabilityLoggerHistoryBatches || manifest.Capabilities[2] != plugin.CapabilityPluginOutputsPublish || len(manifest.Outputs) != 16 {
+	if manifest.Type != PluginType || manifest.Name != "Energy Management" || manifest.Version != "0.1.1" || manifest.ConfigVersion != 1 || !manifest.MultipleInstances || len(manifest.Capabilities) != 3 || manifest.Capabilities[0] != plugin.CapabilityLoggerCommittedBatches || manifest.Capabilities[1] != plugin.CapabilityLoggerHistoryBatches || manifest.Capabilities[2] != plugin.CapabilityPluginOutputsPublish || len(manifest.Outputs) != 18 {
 		t.Errorf("Manifest() = %#v", manifest)
 	}
 }

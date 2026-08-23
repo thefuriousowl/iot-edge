@@ -11,13 +11,23 @@ import (
 
 type Type string
 
-const TypeMQTT Type = "mqtt"
+const (
+	TypeMQTT Type = "mqtt"
+	TypeHTTP Type = "http"
+)
 
 const (
 	MQTTUsernameSlot       = "mqtt.username"
 	MQTTPasswordSlot       = "mqtt.password"
 	MQTTCustomCASlot       = "mqtt.custom_ca"
 	MQTTClientIdentitySlot = "mqtt.client_identity"
+	HTTPUsernameSlot       = "http.username"
+	HTTPPasswordSlot       = "http.password"
+	HTTPAPIKeySlot         = "http.api_key"
+	HTTPBearerTokenSlot    = "http.bearer_token"
+	HTTPOAuthSecretSlot    = "http.oauth_client_secret"
+	HTTPCustomCASlot       = "http.custom_ca"
+	HTTPClientIdentitySlot = "http.client_identity"
 )
 
 var (
@@ -74,17 +84,27 @@ type PublisherStore interface {
 }
 
 func ExpectedSecretKind(profileType Type, slot string) (publisher.SecretKind, error) {
-	if profileType != TypeMQTT {
+	switch profileType {
+	case TypeMQTT:
+		switch slot {
+		case MQTTUsernameSlot, MQTTPasswordSlot:
+			return publisher.SecretKindOpaque, nil
+		case MQTTCustomCASlot:
+			return publisher.SecretKindCACertificate, nil
+		case MQTTClientIdentitySlot:
+			return publisher.SecretKindClientIdentity, nil
+		}
+	case TypeHTTP:
+		switch slot {
+		case HTTPUsernameSlot, HTTPPasswordSlot, HTTPAPIKeySlot, HTTPBearerTokenSlot, HTTPOAuthSecretSlot:
+			return publisher.SecretKindOpaque, nil
+		case HTTPCustomCASlot:
+			return publisher.SecretKindCACertificate, nil
+		case HTTPClientIdentitySlot:
+			return publisher.SecretKindClientIdentity, nil
+		}
+	default:
 		return "", ErrUnsupported
 	}
-	switch slot {
-	case MQTTUsernameSlot, MQTTPasswordSlot:
-		return publisher.SecretKindOpaque, nil
-	case MQTTCustomCASlot:
-		return publisher.SecretKindCACertificate, nil
-	case MQTTClientIdentitySlot:
-		return publisher.SecretKindClientIdentity, nil
-	default:
-		return "", ErrInvalidInput
-	}
+	return "", ErrInvalidInput
 }

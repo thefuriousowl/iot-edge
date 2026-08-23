@@ -78,9 +78,12 @@ func TestPublisherManagerRunsIntervalLifecycleAndReconcilesChanges(t *testing.T)
 
 	repository := newSourceTestPublisherRepository()
 	sources := newManagerSourceFeed()
-	reference := TagSource(uuid.New())
-	sources.add(reference, SourceDescriptor{Reference: reference, Name: "Power", SchemaVersion: 1, DataType: SourceDataTypeFloat64, Unit: "kW", PeriodKind: SourcePeriodInstantaneous, Enabled: true})
-	sources.setSnapshot(SourceSnapshot{Samples: []SourceSample{{Alias: "power", Reference: reference, Available: true, Sequence: 7, SchemaVersion: 1, DataType: SourceDataTypeFloat64, Unit: "kW", Value: 42.5, Quality: SourceQualityGood}}})
+	reference := PluginOutputSource(uuid.New(), "today.covered_estimated_cost")
+	observedAt := time.Date(2026, time.August, 23, 10, 0, 0, 0, time.UTC)
+	periodStart := observedAt.Add(-time.Hour)
+	coverage := 75.0
+	sources.add(reference, SourceDescriptor{Reference: reference, Name: "Today covered cost", SchemaVersion: 1, DataType: SourceDataTypeFloat64, Unit: "THB", PeriodKind: SourcePeriodWindowed, Enabled: true})
+	sources.setSnapshot(SourceSnapshot{Samples: []SourceSample{{Alias: "power", Reference: reference, Available: true, Sequence: 7, SchemaVersion: 1, DataType: SourceDataTypeFloat64, Unit: "THB", Value: 42.5, Quality: SourceQualityPartial, ObservedAt: &observedAt, PeriodStart: &periodStart, PeriodEnd: &observedAt, CoveragePercent: &coverage}}})
 	entity := managerPublisher(uuid.New(), TypeMQTT, Config(`{"trigger":{"mode":"interval","interval_ms":100}}`), []SourceSelection{{Alias: "power", Reference: reference}})
 	if err := repository.Create(context.Background(), &entity); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -96,8 +99,13 @@ func TestPublisherManagerRunsIntervalLifecycleAndReconcilesChanges(t *testing.T)
 		return status.State == RuntimeStateRunning && status.RequestCount >= 1 && status.PublishCount >= 1 && len(status.Sources) == 1
 	})
 	status := manager.Status(entity.ID)
+	if status.Sources[0].CoveragePercent == nil || *status.Sources[0].CoveragePercent != 75 || !status.Sources[0].PeriodStart.Equal(periodStart) || !status.Sources[0].PeriodEnd.Equal(observedAt) {
+		t.Fatalf("Status() source provenance = %#v", status.Sources[0])
+	}
 	status.Sources[0].Alias = "mutated"
-	if manager.Status(entity.ID).Sources[0].Alias != "power" {
+	*status.Sources[0].CoveragePercent = 1
+	latestStatus := manager.Status(entity.ID)
+	if latestStatus.Sources[0].Alias != "power" || latestStatus.Sources[0].CoveragePercent == nil || *latestStatus.Sources[0].CoveragePercent != 75 {
 		t.Fatal("Status() returned aliased source state")
 	}
 
@@ -133,6 +141,43 @@ func TestPublisherManagerRunsIntervalLifecycleAndReconcilesChanges(t *testing.T)
 	}
 }
 
+func TestPublisherManagerRecordsIndependentRequestAndPublishTimes(t *testing.T) {
+	t.Parallel()
+
+	publisherID := uuid.New()
+	reference := TagSource(uuid.New())
+	requestedAt := time.Date(2026, time.August, 23, 13, 0, 0, 0, time.UTC)
+	publishedAt := requestedAt.Add(250 * time.Millisecond)
+	clockValues := []time.Time{requestedAt, publishedAt}
+	sources := newManagerSourceFeed()
+	sources.setSnapshot(SourceSnapshot{CapturedAt: requestedAt, Samples: []SourceSample{{
+		Alias: "power", Reference: reference, Available: true, SchemaVersion: 1,
+		DataType: SourceDataTypeFloat64, Value: 42.5, Quality: SourceQualityGood,
+	}}})
+	manager := &Manager{
+		sources: sources,
+		now: func() time.Time {
+			value := clockValues[0]
+			clockValues = clockValues[1:]
+			return value
+		},
+		jobs:     make(map[uuid.UUID]*publisherJob),
+		statuses: map[uuid.UUID]RuntimeStatus{publisherID: {PublisherID: publisherID}},
+	}
+	transport := newManagerTransport(publisherID)
+	manager.publishSnapshot(context.Background(), Publisher{
+		ID: publisherID, Sources: []SourceSelection{{Alias: "power", Reference: reference}},
+	}, transport)
+
+	status := manager.Status(publisherID)
+	if status.LastRequestAt == nil || !status.LastRequestAt.Equal(requestedAt) {
+		t.Fatalf("LastRequestAt = %v, want %v", status.LastRequestAt, requestedAt)
+	}
+	if status.LastPublishAt == nil || !status.LastPublishAt.Equal(publishedAt) {
+		t.Fatalf("LastPublishAt = %v, want %v", status.LastPublishAt, publishedAt)
+	}
+}
+
 func TestPublisherManagerCoalescesTriggerSourceAndReportsSanitizedFailures(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +205,10 @@ func TestPublisherManagerCoalescesTriggerSourceAndReportsSanitizedFailures(t *te
 	}
 	transport := receiveManagerTransport(t, factory.created)
 	subscription := receiveManagerSubscription(t, sources.subscribed)
+	initialSnapshot := receiveSnapshot(t, transport.published)
+	if len(initialSnapshot.Samples) != 2 {
+		t.Fatalf("initial snapshot = %#v", initialSnapshot)
+	}
 	subscription.events <- SourceSample{Alias: "temperature", Reference: temperatureReference}
 	assertNoSnapshot(t, transport.published)
 
@@ -183,16 +232,16 @@ func TestPublisherManagerCoalescesTriggerSourceAndReportsSanitizedFailures(t *te
 	transport.setPublishError(nil)
 	subscription.events <- SourceSample{Alias: "power", Reference: powerReference, Sequence: 4}
 	receiveSnapshot(t, transport.published)
-	waitPublisherStatus(t, manager, entity.ID, func(status RuntimeStatus) bool { return status.PublishCount == 1 && status.LastError == "" })
-	if sources.snapshotCalls() != 2 {
-		t.Fatalf("Snapshot() calls = %d, want 2", sources.snapshotCalls())
+	waitPublisherStatus(t, manager, entity.ID, func(status RuntimeStatus) bool { return status.PublishCount == 2 && status.LastError == "" })
+	if sources.snapshotCalls() != 3 {
+		t.Fatalf("Snapshot() calls = %d, want 3", sources.snapshotCalls())
 	}
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
 }
 
-func TestPublisherManagerConflictsHTTPAndModbusListenerOwnership(t *testing.T) {
+func TestPublisherManagerConflictsHTTPListenerOwnership(t *testing.T) {
 	t.Parallel()
 
 	repository := newSourceTestPublisherRepository()
@@ -200,39 +249,37 @@ func TestPublisherManagerConflictsHTTPAndModbusListenerOwnership(t *testing.T) {
 	reference := TagSource(uuid.New())
 	sources.add(reference, SourceDescriptor{Reference: reference, Name: "Value", SchemaVersion: 1, DataType: SourceDataTypeUInt16, PeriodKind: SourcePeriodInstantaneous, Enabled: true})
 	selection := []SourceSelection{{Alias: "value", Reference: reference}}
-	httpPublisher := managerPublisher(uuid.MustParse("00000000-0000-0000-0000-000000000001"), TypeHTTPServer, nil, selection)
-	modbusPublisher := managerPublisher(uuid.MustParse("00000000-0000-0000-0000-000000000002"), TypeModbusTCPServer, nil, selection)
-	if err := repository.Create(context.Background(), &httpPublisher); err != nil {
-		t.Fatalf("Create(HTTP) error = %v", err)
+	firstPublisher := managerPublisher(uuid.MustParse("00000000-0000-0000-0000-000000000001"), TypeHTTPServer, nil, selection)
+	secondPublisher := managerPublisher(uuid.MustParse("00000000-0000-0000-0000-000000000002"), TypeHTTPServer, nil, selection)
+	if err := repository.Create(context.Background(), &firstPublisher); err != nil {
+		t.Fatalf("Create(first HTTP) error = %v", err)
 	}
-	if err := repository.Create(context.Background(), &modbusPublisher); err != nil {
-		t.Fatalf("Create(Modbus) error = %v", err)
+	if err := repository.Create(context.Background(), &secondPublisher); err != nil {
+		t.Fatalf("Create(second HTTP) error = %v", err)
 	}
 	httpFactory := newManagerTransportFactory()
 	httpFactory.claims = []ListenerClaim{{Network: "tcp", Address: ":8080"}}
-	modbusFactory := newManagerTransportFactory()
-	modbusFactory.claims = []ListenerClaim{{Network: "tcp4", Address: "127.0.0.1:8080"}}
-	manager := newTestPublisherManager(t, repository, sources, map[Type]*managerTransportFactory{TypeHTTPServer: httpFactory, TypeModbusTCPServer: modbusFactory})
+	manager := newTestPublisherManager(t, repository, sources, map[Type]*managerTransportFactory{TypeHTTPServer: httpFactory})
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	httpTransport := receiveManagerTransport(t, httpFactory.created)
-	waitPublisherStatus(t, manager, modbusPublisher.ID, func(status RuntimeStatus) bool {
+	waitPublisherStatus(t, manager, secondPublisher.ID, func(status RuntimeStatus) bool {
 		return status.State == RuntimeStateError && strings.Contains(status.LastError, ErrListenerConflict.Error())
 	})
-	assertNoManagerTransport(t, modbusFactory.created)
+	assertNoManagerTransport(t, httpFactory.created)
 
-	mutateManagerPublisher(repository, httpPublisher.ID, func(stored *Publisher) { stored.Enabled = false })
+	mutateManagerPublisher(repository, firstPublisher.ID, func(stored *Publisher) { stored.Enabled = false })
 	if err := manager.Reconcile(context.Background()); err != nil {
 		t.Fatalf("Reconcile(release listener) error = %v", err)
 	}
 	waitClosed(t, httpTransport.closed, "HTTP transport close")
-	modbusTransport := receiveManagerTransport(t, modbusFactory.created)
-	waitPublisherStatus(t, manager, modbusPublisher.ID, func(status RuntimeStatus) bool { return status.State == RuntimeStateRunning })
+	secondTransport := receiveManagerTransport(t, httpFactory.created)
+	waitPublisherStatus(t, manager, secondPublisher.ID, func(status RuntimeStatus) bool { return status.State == RuntimeStateRunning })
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
-	waitClosed(t, modbusTransport.closed, "Modbus transport close")
+	waitClosed(t, secondTransport.closed, "second HTTP transport close")
 }
 
 func TestPublisherManagerReportsFactoryFailureAndSupportsExplicitRestart(t *testing.T) {
@@ -401,6 +448,10 @@ func TestPublisherManagerSurfacesTransportFailureAndLiveMetrics(t *testing.T) {
 	waitPublisherStatus(t, manager, entity.ID, func(status RuntimeStatus) bool {
 		return status.State == RuntimeStateError && strings.Contains(status.LastError, "listener stopped")
 	})
+	failedStatus := manager.Status(entity.ID)
+	if failedStatus.Connected || failedStatus.ActiveConnections != 0 || failedStatus.QueueDepth != 0 || failedStatus.TransportQueueDepth != 0 {
+		t.Fatalf("error status retained live gauges = %#v", failedStatus)
+	}
 	waitClosed(t, transport.closed, "failed transport close")
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
@@ -644,7 +695,9 @@ func managerPublisher(id uuid.UUID, publisherType Type, config Config, sources [
 		}
 	}
 	configVersion := uint(2)
-	if publisherType == TypeHTTPServer || publisherType == TypeMQTT {
+	if publisherType == TypeHTTPServer {
+		configVersion = 4
+	} else if publisherType == TypeMQTT {
 		configVersion = 3
 	}
 	return Publisher{ID: id, Type: publisherType, Name: publisherType.String() + " " + id.String(), Enabled: true, Config: config, ConfigVersion: configVersion, Sources: sources, SourceCount: len(sources)}

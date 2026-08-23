@@ -34,6 +34,9 @@ export interface PublisherSourceCatalogEntry {
     quality: "good" | "partial" | "bad" | "unavailable";
     sequence?: number;
     observed_at?: string;
+    period_start?: string;
+    period_end?: string;
+    coverage_percent?: number;
   };
 }
 
@@ -137,6 +140,75 @@ export interface MQTTPublisherConfigExport {
   };
 }
 
+export type HTTPServerAccessMode = "api_key" | "basic" | "bearer" | "anonymous";
+export type HTTPServerQualityPolicy = "payload" | "strict";
+
+export interface HTTPServerPublisherDraft {
+  name: string;
+  enabled: boolean;
+  credential_id: string;
+  credential_slots: CredentialSecretSlot[];
+  trigger: MQTTPublisherDraft["trigger"];
+  sources: PublisherSourceDraft[];
+  http: {
+    bind_address: string;
+    port: number;
+    path: string;
+    access_mode: HTTPServerAccessMode;
+    api_key_header: string;
+    anonymous_acknowledged: boolean;
+    quality_policy: HTTPServerQualityPolicy;
+    read_timeout_ms: number;
+    write_timeout_ms: number;
+    idle_timeout_ms: number;
+    max_header_bytes: number;
+    max_connections: number;
+  };
+  response: {
+    payload_template: string;
+  };
+}
+
+export interface HTTPServerPublisherConfigExport {
+  trigger: MQTTPublisherConfigExport["trigger"];
+  http: {
+    bind_address: string;
+    port: number;
+    path: string;
+    access: {
+      mode: HTTPServerAccessMode;
+      api_key_header?: string;
+      anonymous_acknowledged?: true;
+    };
+    quality_policy: HTTPServerQualityPolicy;
+    read_timeout_ms: number;
+    write_timeout_ms: number;
+    idle_timeout_ms: number;
+    max_header_bytes: number;
+    max_connections: number;
+  };
+  response: {
+    payload_template: string;
+  };
+}
+
+export interface HTTPServerEndpointMetadata {
+  network: "tcp";
+  scheme: "http";
+  bind_address: string;
+  port: number;
+  path: string;
+  access_mode: HTTPServerAccessMode;
+  quality_policy: HTTPServerQualityPolicy;
+}
+
+export interface HTTPServerProbeResult {
+  reachable: boolean;
+  probed_at: string;
+  latency_ms: number;
+  endpoint: HTTPServerEndpointMetadata;
+}
+
 export type MQTTPayloadFixture = "good" | "unavailable" | "windowed";
 
 export interface MQTTPayloadPreview {
@@ -164,6 +236,7 @@ export interface PublisherRuntimeSource {
   observed_at?: string;
   period_start?: string;
   period_end?: string;
+  coverage_percent?: number;
 }
 
 export interface PublisherRuntimeStatus {
@@ -189,6 +262,10 @@ export interface PublisherRuntimeStatus {
   transport_drop_count: number;
   diagnostic_count: number;
   diagnostic_drop_count: number;
+  external_request_count?: number;
+  rejected_request_count?: number;
+  active_connections?: number;
+  last_external_request_at?: string;
   last_connected_at?: string;
   last_delivered_at?: string;
   last_diagnostic_at?: string;
@@ -210,19 +287,31 @@ export interface MQTTDiagnosticEvent {
   truncated: boolean;
 }
 
-export type CredentialSecretSlot = "mqtt.username" | "mqtt.password" | "mqtt.custom_ca" | "mqtt.client_identity";
+export type CredentialSecretSlot =
+  | "mqtt.username"
+  | "mqtt.password"
+  | "mqtt.custom_ca"
+  | "mqtt.client_identity"
+  | "http.username"
+  | "http.password"
+  | "http.api_key"
+  | "http.bearer_token"
+  | "http.oauth_client_secret"
+  | "http.custom_ca"
+  | "http.client_identity";
 
 export interface DataPublisher {
   id: string;
-  type: "http_server" | "mqtt" | "modbus_tcp_server";
+  type: "http_server" | "mqtt";
   name: string;
   description?: string;
   enabled: boolean;
   config_version: number;
   source_count: number;
   credential_id?: string;
+  endpoint?: HTTPServerEndpointMetadata;
   runtime: PublisherRuntimeStatus;
-  config?: MQTTPublisherConfigExport | Record<string, unknown>;
+  config?: MQTTPublisherConfigExport | HTTPServerPublisherConfigExport | Record<string, unknown>;
   sources?: PublisherSourceSelection[];
   created_at: string;
   updated_at: string;
@@ -242,11 +331,11 @@ export interface DataPublisherListParams {
 }
 
 export interface CreateDataPublisherRequest {
-  type: "mqtt";
+  type: "mqtt" | "http_server";
   name: string;
   description: string | null;
   enabled: false;
-  config: MQTTPublisherConfigExport;
+  config: MQTTPublisherConfigExport | HTTPServerPublisherConfigExport;
   sources: PublisherSourceSelection[];
   credential_id: string | null;
 }
@@ -254,7 +343,7 @@ export interface CreateDataPublisherRequest {
 export interface UpdateDataPublisherRequest {
   name?: string;
   description?: string | null;
-  config?: MQTTPublisherConfigExport;
+  config?: MQTTPublisherConfigExport | HTTPServerPublisherConfigExport;
   sources?: PublisherSourceSelection[];
   credential_id?: string | null;
 }

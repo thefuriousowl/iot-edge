@@ -52,6 +52,12 @@ func TestCredentialHandlerCRUDAndWriteOnlySecretMetadata(t *testing.T) {
 	if response.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("unknown slot status = %d", response.StatusCode)
 	}
+
+	service.profile.Type = credential.TypeHTTP
+	response, _ = app.Test(httptest.NewRequest("PUT", "/api/credentials/"+id.String()+"/secrets/http.api_key", strings.NewReader(`{"value_base64":"aHR0cC1rZXk="}`)))
+	if response.StatusCode != fiber.StatusOK || service.slot != credential.HTTPAPIKeySlot || string(service.material.Opaque) != "http-key" {
+		t.Fatalf("HTTP secret response = %d slot=%q material=%q", response.StatusCode, service.slot, service.material.Opaque)
+	}
 }
 
 type credentialHandlerService struct {

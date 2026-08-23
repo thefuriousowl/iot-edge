@@ -46,6 +46,7 @@ import type {
 } from "../../../types/publisher";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import MQTTPublisherOperations from "../components/MQTTPublisherOperations";
+import PublisherSourceCurrent from "../components/PublisherSourceCurrent";
 import {
   exportMQTTPublisherConfig,
   buildBrokerURL,
@@ -479,7 +480,7 @@ function MQTTPublisherWizardPage() {
               {catalogState === "error" ? <div className="mqtt-catalog-empty">Source catalog unavailable. Existing local draft remains untouched.</div> : catalogState === "ready" && catalog.length === 0 ? <div className="mqtt-catalog-empty">No enabled sources match this filter.</div> : <div className="mqtt-catalog-list">{catalog.map((entry) => {
                 const descriptor = entry.descriptor;
                 const selected = draft.sources.some((source) => source.reference && referenceKey(source.reference) === referenceKey(descriptor.reference));
-                return <article key={referenceKey(descriptor.reference)}><div><strong>{descriptor.name}</strong><span>{descriptor.owner_name || "Core"} · {descriptor.reference.kind === "tag" ? "Tag" : "Plugin output"}</span></div><div><strong>{descriptor.data_type}</strong><span>{descriptor.unit || "No unit"} · {descriptor.period_kind}</span></div><div className={`mqtt-source-quality is-${entry.current.quality}`}>{entry.current.quality}</div><button type="button" disabled={selected} onClick={() => addCatalogSource(entry)}>{selected ? <Check size={16} /> : <Plus size={16} />}{selected ? "Selected" : "Add"}</button></article>;
+                return <article key={referenceKey(descriptor.reference)}><div><strong>{descriptor.name}</strong><span>{descriptor.owner_name || "Core"} · {descriptor.reference.kind === "tag" ? "Tag" : "Plugin output"}</span></div><div><strong>{descriptor.data_type}</strong><span>{descriptor.unit || "No unit"} · {descriptor.period_kind}</span></div><PublisherSourceCurrent entry={entry} /><button type="button" disabled={selected} onClick={() => addCatalogSource(entry)}>{selected ? <Check size={16} /> : <Plus size={16} />}{selected ? "Selected" : "Add"}</button></article>;
               })}</div>}
             </div>
             {draft.sources.some((source) => !source.reference) && <div className="mqtt-source-note"><CircleAlert size={17} /><span>This browser contains legacy schema-only rows. Remove them and select real Core sources before server validation or save.</span></div>}

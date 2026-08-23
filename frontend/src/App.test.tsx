@@ -102,6 +102,10 @@ vi.mock("./features/publisher/pages/MQTTPublisherWizardPage", () => ({
   default: () => <h1>MQTT Publisher Wizard</h1>,
 }));
 
+vi.mock("./features/publisher/pages/HTTPServerPublisherWizardPage", () => ({
+  default: () => <h1>HTTP Server Publisher Wizard</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedListVGateways = vi.mocked(listVGateways);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
@@ -373,6 +377,15 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "MQTT Publisher Wizard" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/data-publishers/new/mqtt");
   });
+
+  it.each(["/data-publishers/new/http-server", "/data-publishers/publisher-id/http-server"])(
+    "protects and renders the HTTP Server Publisher route at %s",
+    (path) => {
+      renderAuthenticatedApp(path);
+      expect(screen.getByRole("heading", { name: "HTTP Server Publisher Wizard" })).toBeInTheDocument();
+      expect(window.location.pathname).toBe(path);
+    },
+  );
 
   it("protects and renders the Plugin inventory route", () => {
     renderAuthenticatedApp("/plugins");

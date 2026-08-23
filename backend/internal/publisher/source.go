@@ -216,9 +216,12 @@ type SourceDescriptor struct {
 }
 
 type SourceCurrent struct {
-	Quality    SourceQuality `json:"quality"`
-	Sequence   uint64        `json:"sequence,omitempty"`
-	ObservedAt *time.Time    `json:"observed_at,omitempty"`
+	Quality         SourceQuality `json:"quality"`
+	Sequence        uint64        `json:"sequence,omitempty"`
+	ObservedAt      *time.Time    `json:"observed_at,omitempty"`
+	PeriodStart     *time.Time    `json:"period_start,omitempty"`
+	PeriodEnd       *time.Time    `json:"period_end,omitempty"`
+	CoveragePercent *float64      `json:"coverage_percent,omitempty"`
 }
 
 type SourceCatalogEntry struct {

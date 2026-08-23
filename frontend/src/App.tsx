@@ -23,6 +23,7 @@ import PluginListPage from "./features/plugin/pages/PluginListPage";
 import EnergyOverviewPage from "./features/plugin/pages/EnergyOverviewPage";
 import EnergyWizardPage from "./features/plugin/pages/EnergyWizardPage";
 import MQTTPublisherWizardPage from "./features/publisher/pages/MQTTPublisherWizardPage";
+import HTTPServerPublisherWizardPage from "./features/publisher/pages/HTTPServerPublisherWizardPage";
 import DataPublisherListPage from "./features/publisher/pages/DataPublisherListPage";
 import CredentialListPage from "./features/credential/pages/CredentialListPage";
 import CredentialEditorPage from "./features/credential/pages/CredentialEditorPage";
@@ -237,6 +238,22 @@ function App() {
           element={
             <ProtectedRoute>
               <MQTTPublisherWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-publishers/new/http-server"
+          element={
+            <ProtectedRoute>
+              <HTTPServerPublisherWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/data-publishers/:id/http-server"
+          element={
+            <ProtectedRoute>
+              <HTTPServerPublisherWizardPage />
             </ProtectedRoute>
           }
         />

@@ -64,6 +64,8 @@ func (repository *repository) List(ctx context.Context, input publisher.ListInpu
 	query := repository.db.WithContext(ctx).Model(&publisher.Publisher{})
 	if input.Type != nil {
 		query = query.Where("type = ?", *input.Type)
+	} else if len(input.Types) > 0 {
+		query = query.Where("type IN ?", input.Types)
 	}
 	if input.Enabled != nil {
 		query = query.Where("enabled = ?", *input.Enabled)

@@ -25,6 +25,7 @@ var (
 
 type ListInput struct {
 	Type    *Type
+	Types   []Type
 	Enabled *bool
 	Search  string
 	Page    int

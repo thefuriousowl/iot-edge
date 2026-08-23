@@ -16,23 +16,23 @@ func TestEnergyOutputDescriptorsAreStableValidatedAndManifestOwned(t *testing.T)
 	t.Parallel()
 
 	descriptors := outputDescriptors()
-	if len(descriptors) != 16 {
-		t.Fatalf("output descriptor count = %d, want 16", len(descriptors))
+	if len(descriptors) != 18 {
+		t.Fatalf("output descriptor count = %d, want 18", len(descriptors))
 	}
 	if err := plugin.ValidateOutputDescriptors(descriptors); err != nil {
 		t.Fatalf("ValidateOutputDescriptors() error = %v", err)
 	}
 	wantKeys := []plugin.OutputKey{
 		OutputElectricalDemandKW, OutputThermalOutputKW, OutputInstantaneousCOP, OutputTariffRate,
-		OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputTodayElectricalCoverage, OutputTodayThermalCoverage,
-		OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost, OutputMonthElectricalCoverage, OutputMonthThermalCoverage,
+		OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputTodayCoveredCost, OutputTodayElectricalCoverage, OutputTodayThermalCoverage,
+		OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost, OutputMonthCoveredCost, OutputMonthElectricalCoverage, OutputMonthThermalCoverage,
 	}
 	for index, want := range wantKeys {
 		if descriptors[index].Key != want || descriptors[index].SchemaVersion != 1 || descriptors[index].DataType != plugin.OutputDataTypeFloat64 {
 			t.Errorf("descriptor[%d] = %#v, want key %q schema 1 float64", index, descriptors[index], want)
 		}
 	}
-	if !descriptors[3].DynamicUnit || !descriptors[7].DynamicUnit || !descriptors[13].DynamicUnit {
+	if !descriptors[3].DynamicUnit || !descriptors[7].DynamicUnit || !descriptors[8].DynamicUnit || !descriptors[14].DynamicUnit || !descriptors[15].DynamicUnit {
 		t.Error("tariff and Cost descriptors must use config-driven units")
 	}
 	manifest := (&Definition{}).Manifest()
@@ -83,6 +83,7 @@ func TestEnergyOutputBuilderPublishesLiveTodayAndMonthWithExactProvenance(t *tes
 	assertEnergyOutput(t, byKey[OutputTodayThermalEnergyKWh], plugin.OutputQualityGood, 360, "kWh", todayStart.UTC(), at.UTC())
 	assertEnergyOutput(t, byKey[OutputTodayCOP], plugin.OutputQualityGood, 3, "", todayStart.UTC(), at.UTC())
 	assertEnergyOutput(t, byKey[OutputTodayEstimatedCost], plugin.OutputQualityGood, 480, "THB", todayStart.UTC(), at.UTC())
+	assertEnergyOutput(t, byKey[OutputTodayCoveredCost], plugin.OutputQualityGood, 480, "THB", todayStart.UTC(), at.UTC())
 	assertEnergyOutput(t, byKey[OutputTodayElectricalCoverage], plugin.OutputQualityGood, 100, "%", todayStart.UTC(), at.UTC())
 	monthHours := at.Sub(monthStart).Hours()
 	assertEnergyOutput(t, byKey[OutputMonthElectricalEnergyKWh], plugin.OutputQualityGood, monthHours*10, "kWh", monthStart.UTC(), at.UTC())
@@ -103,7 +104,7 @@ func TestEnergyOutputBuilderPublishesLiveTodayAndMonthWithExactProvenance(t *tes
 		t.Errorf("history was re-read within same month: %d calls", history.calls)
 	}
 	nextByKey := outputValuesByKey(nextValues)
-	if !closeEnergy(nextByKey[OutputTodayElectricalEnergyKWh].Value.(float64), 120.25) || !closeEnergy(nextByKey[OutputTodayThermalEnergyKWh].Value.(float64), 360.75) || !closeEnergy(nextByKey[OutputTodayEstimatedCost].Value.(float64), 481) || !closeEnergy(nextByKey[OutputTodayCOP].Value.(float64), 3) {
+	if !closeEnergy(nextByKey[OutputTodayElectricalEnergyKWh].Value.(float64), 120.25) || !closeEnergy(nextByKey[OutputTodayThermalEnergyKWh].Value.(float64), 360.75) || !closeEnergy(nextByKey[OutputTodayEstimatedCost].Value.(float64), 481) || !closeEnergy(nextByKey[OutputTodayCoveredCost].Value.(float64), 481) || !closeEnergy(nextByKey[OutputTodayCOP].Value.(float64), 3) {
 		t.Errorf("incremental Today outputs = %#v", nextByKey)
 	}
 }
@@ -131,7 +132,7 @@ func TestEnergyOutputBuilderFailsClosedOnCoverageAndBoundsIssues(t *testing.T) {
 		t.Fatalf("NormalizeOutputBatch() error = %v", err)
 	}
 	byKey := outputValuesByKey(batch.Values)
-	for _, key := range []plugin.OutputKey{OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost} {
+	for _, key := range []plugin.OutputKey{OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputTodayCoveredCost, OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost, OutputMonthCoveredCost} {
 		if byKey[key].Quality != plugin.OutputQualityBad || byKey[key].Value != nil || byKey[key].Error == "" || byKey[key].CoveragePercent == nil || *byKey[key].CoveragePercent != 0 || len(byKey[key].Issues) == 0 {
 			t.Errorf("fail-closed output %s = %#v", key, byKey[key])
 		}
@@ -144,6 +145,43 @@ func TestEnergyOutputBuilderFailsClosedOnCoverageAndBoundsIssues(t *testing.T) {
 	issue := byKey[OutputTodayElectricalEnergyKWh].Issues[0]
 	if issue.PeriodStart == nil || issue.PeriodEnd == nil || issue.PeriodStart.Before(from) || issue.PeriodEnd.After(at) {
 		t.Errorf("issue provenance = %#v", issue)
+	}
+}
+
+func TestEnergyOutputBuilderPublishesCoveredCostWithPartialQuality(t *testing.T) {
+	t.Parallel()
+
+	loggerID, electricalID, thermalID := uuid.New(), uuid.New(), uuid.New()
+	config := testEnergyConfig(loggerID, electricalID, thermalID, 2*60*60)
+	dayStart := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
+	firstAt := dayStart.Add(time.Hour)
+	latestAt := dayStart.Add(2 * time.Hour)
+	history := &energyHistoryReader{batches: []datalogger.RawBatch{
+		energyRawBatch(loggerID, electricalID, thermalID, firstAt, 10, 30),
+		energyRawBatch(loggerID, electricalID, thermalID, latestAt, 10, 30),
+	}}
+	calculator, _ := NewCalculator(config)
+	builder, _ := newOutputBuilder(config, calculator, history)
+	latest, _ := calculator.Evaluate(history.batches[1])
+	values, ready, err := builder.Build(context.Background(), latest)
+	if err != nil || !ready {
+		t.Fatalf("Build() = ready %t, error %v", ready, err)
+	}
+	batch, err := plugin.NormalizeOutputBatch(plugin.OutputBatch{InstanceID: uuid.New(), Sequence: 1, PublishedAt: latestAt.Add(time.Second), Values: values}, outputDescriptors())
+	if err != nil {
+		t.Fatalf("NormalizeOutputBatch() error = %v", err)
+	}
+	byKey := outputValuesByKey(batch.Values)
+	strictCost := byKey[OutputTodayEstimatedCost]
+	if strictCost.Quality != plugin.OutputQualityBad || strictCost.Value != nil || strictCost.Error != "source coverage is incomplete" || strictCost.CoveragePercent == nil || !closeEnergy(*strictCost.CoveragePercent, 50) {
+		t.Fatalf("fail-closed Today Cost = %#v", strictCost)
+	}
+	coveredCost := byKey[OutputTodayCoveredCost]
+	if coveredCost.Quality != plugin.OutputQualityPartial || !closeEnergy(coveredCost.Value.(float64), 40) || coveredCost.Unit != "THB" || coveredCost.CoveragePercent == nil || !closeEnergy(*coveredCost.CoveragePercent, 50) || len(coveredCost.Issues) == 0 {
+		t.Fatalf("covered Today Cost = %#v", coveredCost)
+	}
+	if coveredCost.Attributes["covered_seconds"] != "3600" || coveredCost.Attributes["skipped_seconds"] != "3600" || coveredCost.Attributes["currency"] != "THB" {
+		t.Errorf("covered Today Cost attributes = %#v", coveredCost.Attributes)
 	}
 }
 
@@ -170,6 +208,7 @@ func TestEnergyOutputBuilderPublishesSynchronizedTagTariffAndPeriodCost(t *testi
 	byKey := outputValuesByKey(values)
 	assertEnergyOutput(t, byKey[OutputTariffRate], plugin.OutputQualityGood, 5, "THB/kWh", at, at)
 	assertEnergyOutput(t, byKey[OutputTodayEstimatedCost], plugin.OutputQualityGood, 20, "THB", from, at)
+	assertEnergyOutput(t, byKey[OutputTodayCoveredCost], plugin.OutputQualityGood, 20, "THB", from, at)
 	if byKey[OutputTodayEstimatedCost].Attributes["tariff_mode"] != "tag" {
 		t.Errorf("Tag tariff Cost attributes = %#v", byKey[OutputTodayEstimatedCost].Attributes)
 	}

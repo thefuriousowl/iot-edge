@@ -80,7 +80,7 @@ func TestEnergyDefinitionValidatesAndPersistsAgainstDataLogger_Integration(t *te
 		t.Errorf("stored config = %#v, error = %v", storedConfig, err)
 	}
 	manifests := service.Types()
-	if len(manifests) != 1 || manifests[0].Type != PluginType || len(manifests[0].Capabilities) != 3 || len(manifests[0].Outputs) != 16 {
+	if len(manifests) != 1 || manifests[0].Type != PluginType || len(manifests[0].Capabilities) != 3 || len(manifests[0].Outputs) != 18 {
 		t.Errorf("Plugin types = %#v", manifests)
 	}
 

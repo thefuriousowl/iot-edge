@@ -20,6 +20,7 @@ import {
   listDataPublishers,
   listPublisherDiagnostics,
   listPublisherSources,
+  probeHTTPServerListener,
   restartDataPublisher,
   testMQTTConnection,
   updateDataPublisher,
@@ -137,6 +138,14 @@ describe("Publisher service", () => {
     expect(mockedGet.mock.calls.map(([path]) => path)).toEqual([
       "/data-publishers/publisher-1/status", "/data-publishers/publisher-1/diagnostics",
     ]);
+  });
+
+  it("probes an HTTP Server listener without sending endpoint credentials", async () => {
+    const result = { reachable: true, probed_at: "2026-08-23T00:00:00Z", latency_ms: 1.25, endpoint: { network: "tcp" as const, scheme: "http" as const, bind_address: "127.0.0.1", port: 8088, path: "/snapshot", access_mode: "anonymous" as const, quality_policy: "payload" as const } };
+    mockedPost.mockResolvedValueOnce(responseWith(result));
+
+    await expect(probeHTTPServerListener(publisher.id)).resolves.toEqual(result);
+    expect(mockedPost).toHaveBeenCalledWith("/data-publishers/publisher-1/probe-listener");
   });
 
   it("tests the stored Publisher configuration without transient secrets", async () => {

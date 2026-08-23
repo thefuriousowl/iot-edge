@@ -54,7 +54,7 @@ func TestPublisherServiceCRUDNormalizesAndRevalidatesSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.ID == uuid.Nil || created.Type != TypeHTTPServer || created.Name != "Plant API" || created.Description == nil || *created.Description != "External plant snapshot" || !created.Enabled || string(created.Config) != defaultHTTPConfigJSON || created.ConfigVersion != 3 || created.SourceCount != 2 {
+	if created.ID == uuid.Nil || created.Type != TypeHTTPServer || created.Name != "Plant API" || created.Description == nil || *created.Description != "External plant snapshot" || !created.Enabled || string(created.Config) != defaultHTTPConfigJSON || created.ConfigVersion != 4 || created.SourceCount != 2 {
 		t.Fatalf("created Publisher = %#v", created)
 	}
 	if resolver.calls != 1 || len(resolver.last) != 2 {
@@ -100,8 +100,22 @@ func TestPublisherServiceCRUDNormalizesAndRevalidatesSources(t *testing.T) {
 	if err != nil || result.Total != 1 || len(result.Data) != 1 {
 		t.Fatalf("List() = %#v, %v", result, err)
 	}
-	if types := service.Types(); len(types) != 3 {
+	if types := service.Types(); len(types) != 2 {
 		t.Errorf("Types() = %#v", types)
+	}
+	reserved := Publisher{ID: uuid.New(), Type: TypeHTTPClient, Name: "Reserved HTTP Client", Enabled: false, Config: Config(`{}`), ConfigVersion: 1}
+	if err := repository.Create(context.Background(), &reserved); err != nil {
+		t.Fatalf("creating reserved Publisher: %v", err)
+	}
+	all, err := service.List(context.Background(), ListInput{Page: 1, PerPage: 20})
+	if err != nil || all.Total != 1 || len(all.Data) != 1 || all.Data[0].Type != TypeHTTPServer {
+		t.Fatalf("v0.1 List() exposed reserved type = %#v, %v", all, err)
+	}
+	if _, err := service.Get(context.Background(), reserved.ID); !errors.Is(err, ErrUnsupportedPublisherType) {
+		t.Fatalf("Get(reserved) error = %v", err)
+	}
+	if err := service.Delete(context.Background(), reserved.ID); !errors.Is(err, ErrUnsupportedPublisherType) {
+		t.Fatalf("Delete(reserved) error = %v", err)
 	}
 	if err := service.Delete(context.Background(), created.ID); err != nil {
 		t.Fatalf("Delete() error = %v", err)
@@ -140,11 +154,14 @@ func TestPublisherServiceRejectsInvalidConfigSourcesAndCompatibility(t *testing.
 	stringReference := PluginOutputSource(uuid.New(), "status")
 	resolver.descriptors[stringReference] = SourceDescriptor{Reference: stringReference, Name: "Status", SchemaVersion: 1, DataType: SourceDataTypeString, PeriodKind: SourcePeriodInstantaneous, Enabled: true}
 	stringSources := []SourceSelection{{Alias: "status", Reference: stringReference}}
-	if _, err := service.Create(context.Background(), CreateInput{Type: TypeModbusTCPServer, Name: "Modbus", Sources: stringSources}); !errors.Is(err, ErrIncompatibleSource) {
-		t.Errorf("Modbus string source error = %v", err)
+	if _, err := service.Create(context.Background(), CreateInput{Type: TypeHTTPServer, Name: "HTTP String", Sources: stringSources}); err != nil {
+		t.Errorf("HTTP string source error = %v", err)
 	}
 	if _, err := service.Create(context.Background(), CreateInput{Type: TypeMQTT, Name: "MQTT", Sources: stringSources}); err != nil {
 		t.Errorf("MQTT string source error = %v", err)
+	}
+	if _, err := service.Create(context.Background(), CreateInput{Type: TypeHTTPClient, Name: "HTTP Client", Sources: stringSources}); !errors.Is(err, ErrUnsupportedPublisherType) {
+		t.Errorf("HTTP Client before BE-9.12 error = %v", err)
 	}
 
 	created, err := service.Create(context.Background(), CreateInput{Type: TypeHTTPServer, Name: "Stale", Sources: validSources})
@@ -340,12 +357,21 @@ func (repository *sourceTestPublisherRepository) List(_ context.Context, input L
 	defer repository.mu.Unlock()
 	data := make([]Publisher, 0)
 	for _, entity := range repository.entities {
-		if input.Type != nil && entity.Type != *input.Type || input.Enabled != nil && entity.Enabled != *input.Enabled || input.Search != "" && !strings.Contains(strings.ToLower(entity.Name), strings.ToLower(input.Search)) {
+		if input.Type != nil && entity.Type != *input.Type || input.Type == nil && len(input.Types) > 0 && !publisherTypeIncluded(input.Types, entity.Type) || input.Enabled != nil && entity.Enabled != *input.Enabled || input.Search != "" && !strings.Contains(strings.ToLower(entity.Name), strings.ToLower(input.Search)) {
 			continue
 		}
 		data = append(data, clonePublisher(entity))
 	}
 	return &ListResult{Data: data, Page: input.Page, PerPage: input.PerPage, Total: int64(len(data)), TotalPages: 1}, nil
+}
+
+func publisherTypeIncluded(types []Type, candidate Type) bool {
+	for _, publisherType := range types {
+		if publisherType == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (repository *sourceTestPublisherRepository) ListEnabled(ctx context.Context) ([]Publisher, error) {

@@ -84,13 +84,21 @@ func TestSourceFeedCatalogCombinesMetadataAndCurrentQuality(t *testing.T) {
 	if entries[2].Descriptor.Unit != "kW" || entries[2].Descriptor.PeriodKind != SourcePeriodInstantaneous || entries[2].Current.Quality != SourceQualityGood {
 		t.Errorf("demand catalog entry = %#v", entries[2])
 	}
-	if entries[3].Descriptor.PeriodKind != SourcePeriodWindowed || entries[3].Current.Quality != SourceQualityPartial || entries[3].Current.Sequence != 7 {
+	if entries[3].Descriptor.PeriodKind != SourcePeriodWindowed || entries[3].Current.Quality != SourceQualityPartial || entries[3].Current.Sequence != 7 || entries[3].Current.CoveragePercent == nil || *entries[3].Current.CoveragePercent != 80 {
 		t.Errorf("energy catalog entry = %#v", entries[3])
+	}
+	if !entries[3].Current.PeriodStart.Equal(fixture.observedAt.Add(-time.Hour)) || !entries[3].Current.PeriodEnd.Equal(fixture.observedAt) {
+		t.Errorf("energy catalog period = %#v", entries[3].Current)
 	}
 	if calls := fixture.pluginValues.latestCallCount(fixture.instanceID); calls != 1 {
 		t.Errorf("Plugin latest calls = %d, want 1 per instance", calls)
 	}
-
+	*entries[3].Current.CoveragePercent = 1
+	pluginKind := SourceKindPluginOutput
+	again, err := fixture.feed.Catalog(context.Background(), SourceCatalogInput{Kind: &pluginKind})
+	if err != nil || len(again) != 2 || again[1].Current.CoveragePercent == nil || *again[1].Current.CoveragePercent != 80 {
+		t.Fatalf("catalog current aliases Plugin output = %#v, %v", again, err)
+	}
 	kind := SourceKindPluginOutput
 	filtered, err := fixture.feed.Catalog(context.Background(), SourceCatalogInput{Kind: &kind, Search: "today"})
 	if err != nil || len(filtered) != 1 || filtered[0].Descriptor.Reference.OutputKey != "today.energy_kwh" {

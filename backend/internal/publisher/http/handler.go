@@ -45,6 +45,10 @@ type MQTTConnectionTester interface {
 	Test(context.Context, publisher.Publisher, []publisher.ResolvedSource, []publisher.MQTTSecretOverride) (publisher.MQTTConnectionTestResult, error)
 }
 
+type HTTPServerListenerProber interface {
+	Probe(context.Context, publisher.Publisher) (publisher.HTTPServerProbeResult, error)
+}
+
 type HandlerOption func(*Handler)
 
 func WithRuntimeManager(manager RuntimeManager) HandlerOption {
@@ -55,12 +59,17 @@ func WithMQTTConnectionTester(tester MQTTConnectionTester) HandlerOption {
 	return func(handler *Handler) { handler.tester = tester }
 }
 
+func WithHTTPServerListenerProber(prober HTTPServerListenerProber) HandlerOption {
+	return func(handler *Handler) { handler.prober = prober }
+}
+
 type Handler struct {
 	service Service
 	sources SourceCatalog
 	payload PayloadEngine
 	manager RuntimeManager
 	tester  MQTTConnectionTester
+	prober  HTTPServerListenerProber
 }
 
 type createRequest struct {
@@ -103,8 +112,9 @@ type listResponse struct {
 
 type detailResponse struct {
 	listResponse
-	Config  json.RawMessage             `json:"config"`
-	Sources []publisher.SourceSelection `json:"sources"`
+	Config   json.RawMessage                       `json:"config"`
+	Sources  []publisher.SourceSelection           `json:"sources"`
+	Endpoint *publisher.HTTPServerEndpointMetadata `json:"endpoint,omitempty"`
 }
 
 func NewHandler(service Service, sources SourceCatalog, payload PayloadEngine, options ...HandlerOption) *Handler {
@@ -332,6 +342,37 @@ func (handler *Handler) Status(c *fiber.Ctx) error {
 	return c.JSON(handler.status(entity))
 }
 
+func (handler *Handler) ProbeListener(c *fiber.Ctx) error {
+	if handler == nil || handler.service == nil || handler.manager == nil || handler.prober == nil {
+		return runtimeUnavailable(c)
+	}
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Publisher ID")
+	}
+	if err := decodeEmpty(c.Body()); err != nil {
+		return validation(c, "Invalid request body")
+	}
+	entity, err := handler.service.Get(c.UserContext(), id)
+	if err != nil {
+		return handleError(c, err)
+	}
+	if entity.Type != publisher.TypeHTTPServer {
+		return apiError(c, fiber.StatusBadRequest, "PUB003", "Data Publisher type is unavailable")
+	}
+	if !entity.Enabled {
+		return apiError(c, fiber.StatusConflict, "PUB026", "Enable the HTTP Server Publisher before probing its listener")
+	}
+	if status := handler.manager.Status(id); status.State != publisher.RuntimeStateRunning {
+		return apiError(c, fiber.StatusConflict, "PUB027", "HTTP Server Publisher listener is not running")
+	}
+	result, err := handler.prober.Probe(c.UserContext(), *entity)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(result)
+}
+
 func (handler *Handler) Diagnostics(c *fiber.Ctx) error {
 	if handler == nil || handler.service == nil || handler.manager == nil {
 		return runtimeUnavailable(c)
@@ -434,6 +475,7 @@ func (handler *Handler) projectDetail(entity *publisher.Publisher) detailRespons
 	response.Config = append(json.RawMessage(nil), entity.Config...)
 	response.Sources = append([]publisher.SourceSelection(nil), entity.Sources...)
 	response.Runtime = handler.runtimeStatus(entity)
+	response.Endpoint = httpEndpointMetadata(entity)
 	return response
 }
 
@@ -445,8 +487,14 @@ func (handler *Handler) runtimeStatus(entity *publisher.Publisher) publisher.Run
 		return publisher.RuntimeStatus{PublisherID: entity.ID, Type: entity.Type, State: publisher.RuntimeStateStopped, ConfigVersion: entity.ConfigVersion, Sources: []publisher.SourceRuntimeStatus{}}
 	}
 	status := handler.manager.Status(entity.ID)
+	status.PublisherID = entity.ID
+	status.Type = entity.Type
+	status.ConfigVersion = entity.ConfigVersion
 	if status.State == "" {
 		status.State = publisher.RuntimeStateStopped
+	}
+	if status.LastTransitionAt.IsZero() {
+		status.LastTransitionAt = entity.UpdatedAt.UTC()
 	}
 	if status.Sources == nil {
 		status.Sources = []publisher.SourceRuntimeStatus{}
@@ -455,7 +503,22 @@ func (handler *Handler) runtimeStatus(entity *publisher.Publisher) publisher.Run
 }
 
 func (handler *Handler) status(entity *publisher.Publisher) fiber.Map {
-	return fiber.Map{"id": entity.ID, "type": entity.Type, "enabled": entity.Enabled, "runtime": handler.runtimeStatus(entity)}
+	response := fiber.Map{"id": entity.ID, "type": entity.Type, "enabled": entity.Enabled, "runtime": handler.runtimeStatus(entity)}
+	if endpoint := httpEndpointMetadata(entity); endpoint != nil {
+		response["endpoint"] = endpoint
+	}
+	return response
+}
+
+func httpEndpointMetadata(entity *publisher.Publisher) *publisher.HTTPServerEndpointMetadata {
+	if entity == nil || entity.Type != publisher.TypeHTTPServer {
+		return nil
+	}
+	endpoint, err := publisher.HTTPServerEndpoint(*entity)
+	if err != nil {
+		return nil
+	}
+	return &endpoint
 }
 
 func parseSourceCatalogInput(c *fiber.Ctx) (publisher.SourceCatalogInput, error) {
@@ -578,7 +641,7 @@ func handleError(c *fiber.Ctx, err error) error {
 	case errors.Is(err, publisher.ErrSourceCatalogTooLarge):
 		return apiError(c, fiber.StatusRequestEntityTooLarge, "PUB007", "Publisher source catalog is too large")
 	case errors.Is(err, publisher.ErrInvalidJSONPayloadTemplate), errors.Is(err, publisher.ErrJSONPayloadTooComplex), errors.Is(err, publisher.ErrJSONPayloadUnknownAlias), errors.Is(err, publisher.ErrJSONPayloadRender), errors.Is(err, publisher.ErrJSONPayloadInvalid), errors.Is(err, publisher.ErrJSONPayloadTooLarge):
-		return apiError(c, fiber.StatusBadRequest, "PUB008", "MQTT JSON payload template is invalid")
+		return apiError(c, fiber.StatusBadRequest, "PUB008", "Data Publisher JSON payload template is invalid")
 	case errors.Is(err, publisher.ErrSecretNotFound):
 		return apiError(c, fiber.StatusNotFound, "PUB014", "Data Publisher secret was not found")
 	case errors.Is(err, publisher.ErrSecretKindMismatch):
@@ -599,6 +662,10 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusBadGateway, "PUB024", "MQTT authentication or Client ID was rejected")
 	case errors.Is(err, publisher.ErrMQTTConnectionTimedOut):
 		return apiError(c, fiber.StatusGatewayTimeout, "PUB025", "MQTT broker connection timed out")
+	case errors.Is(err, publisher.ErrHTTPServerProbeFailed):
+		return apiError(c, fiber.StatusBadGateway, "PUB028", "HTTP Server listener probe failed")
+	case errors.Is(err, publisher.ErrHTTPServerProbeTimedOut):
+		return apiError(c, fiber.StatusGatewayTimeout, "PUB029", "HTTP Server listener probe timed out")
 	case errors.Is(err, publisher.ErrManagerNotStarted), errors.Is(err, publisher.ErrTransportUnavailable):
 		return runtimeUnavailable(c)
 	case errors.Is(err, publisher.ErrInvalidInput), errors.Is(err, publisher.ErrInvalidPublisher), errors.Is(err, publisher.ErrInvalidPublisherConfig), errors.Is(err, publisher.ErrInvalidSourceReference), errors.Is(err, publisher.ErrInvalidSourceSelection), errors.Is(err, publisher.ErrDuplicateSourceAlias), errors.Is(err, publisher.ErrDuplicateSource), errors.Is(err, publisher.ErrInvalidCatalogInput):

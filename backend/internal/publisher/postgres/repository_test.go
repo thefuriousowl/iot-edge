@@ -44,11 +44,11 @@ func TestPublisherRepositoryCRUDSourcesFiltersAndOwnership_Integration(t *testin
 		Type: publisher.TypeMQTT, Name: "MQTT_Backup", Enabled: true,
 		Config: publisher.Config(`{}`), ConfigVersion: 1, Sources: []publisher.SourceSelection{tagSource},
 	}
-	modbus := publisher.Publisher{
-		Type: publisher.TypeModbusTCPServer, Name: "Read Only Modbus", Enabled: true,
+	httpClient := publisher.Publisher{
+		Type: publisher.TypeHTTPClient, Name: "Outbound HTTP", Enabled: true,
 		Config: publisher.Config(`{}`), ConfigVersion: 1, Sources: []publisher.SourceSelection{outputSource},
 	}
-	for _, entity := range []*publisher.Publisher{&backup, &modbus} {
+	for _, entity := range []*publisher.Publisher{&backup, &httpClient} {
 		if err := repository.Create(ctx, entity); err != nil {
 			t.Fatalf("Create(%s) error = %v", entity.Name, err)
 		}
@@ -57,20 +57,20 @@ func TestPublisherRepositoryCRUDSourcesFiltersAndOwnership_Integration(t *testin
 	if err := database.Exec("UPDATE data_publishers SET created_at=? WHERE id=?", orderBase, backup.ID).Error; err != nil {
 		t.Fatalf("setting backup order: %v", err)
 	}
-	if err := database.Exec("UPDATE data_publishers SET created_at=? WHERE id=?", orderBase.Add(time.Minute), modbus.ID).Error; err != nil {
-		t.Fatalf("setting Modbus order: %v", err)
+	if err := database.Exec("UPDATE data_publishers SET created_at=? WHERE id=?", orderBase.Add(time.Minute), httpClient.ID).Error; err != nil {
+		t.Fatalf("setting HTTP Client order: %v", err)
 	}
 	assertPublisherList(t, repository, publisher.ListInput{Type: publisherTypePointer(publisher.TypeHTTPServer), Page: 1, PerPage: 20}, 1)
 	assertPublisherList(t, repository, publisher.ListInput{Enabled: publisherBoolPointer(true), Page: 1, PerPage: 20}, 2)
 	assertPublisherList(t, repository, publisher.ListInput{Search: "%", Page: 1, PerPage: 20}, 1)
 	assertPublisherList(t, repository, publisher.ListInput{Search: "_", Page: 1, PerPage: 20}, 1)
-	assertPublisherList(t, repository, publisher.ListInput{Search: "modbus", Page: 1, PerPage: 20}, 1)
+	assertPublisherList(t, repository, publisher.ListInput{Search: "outbound", Page: 1, PerPage: 20}, 1)
 	page, err := repository.List(ctx, publisher.ListInput{Page: 2, PerPage: 1})
 	if err != nil || len(page.Data) != 1 || page.Total != 3 || page.TotalPages != 3 || page.Data[0].SourceCount < 1 || len(page.Data[0].Sources) != 0 {
 		t.Fatalf("List(page 2) = %#v, %v", page, err)
 	}
 	enabled, err := repository.ListEnabled(ctx)
-	if err != nil || len(enabled) != 2 || enabled[0].ID != backup.ID || enabled[1].ID != modbus.ID || len(enabled[0].Sources) != 1 || len(enabled[1].Sources) != 1 {
+	if err != nil || len(enabled) != 2 || enabled[0].ID != backup.ID || enabled[1].ID != httpClient.ID || len(enabled[0].Sources) != 1 || len(enabled[1].Sources) != 1 {
 		t.Fatalf("ListEnabled() = %#v, %v", enabled, err)
 	}
 
@@ -223,6 +223,7 @@ func newPublisherRepositoryDatabase(t *testing.T) (*gorm.DB, uuid.UUID, uuid.UUI
 		"../../../migrations/000010_create_plugin_instances.up.sql",
 		"../../../migrations/000012_create_data_publishers.up.sql",
 		"../../../migrations/000013_create_data_publisher_secrets.up.sql",
+		"../../../migrations/000014_replace_modbus_publisher_with_http_client.up.sql",
 	} {
 		contents, err := os.ReadFile(migration)
 		if err != nil {

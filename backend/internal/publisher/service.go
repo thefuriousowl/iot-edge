@@ -137,7 +137,14 @@ func (service *Service) Get(ctx context.Context, id uuid.UUID) (*Publisher, erro
 	if service == nil || ctx == nil || id == uuid.Nil {
 		return nil, ErrInvalidInput
 	}
-	return service.repository.Find(ctx, id)
+	entity, err := service.repository.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := service.definitions.Find(entity.Type); err != nil {
+		return nil, err
+	}
+	return entity, nil
 }
 
 func (service *Service) List(ctx context.Context, input ListInput) (*ListResult, error) {
@@ -147,6 +154,12 @@ func (service *Service) List(ctx context.Context, input ListInput) (*ListResult,
 	if input.Type != nil {
 		if _, err := service.definitions.Find(*input.Type); err != nil {
 			return nil, err
+		}
+	} else {
+		descriptors := service.definitions.List()
+		input.Types = make([]Type, len(descriptors))
+		for index, descriptor := range descriptors {
+			input.Types[index] = descriptor.Type
 		}
 	}
 	input.Search = strings.TrimSpace(input.Search)
@@ -260,7 +273,7 @@ func (service *Service) SetEnabled(ctx context.Context, id uuid.UUID, enabled bo
 	if service == nil || ctx == nil || id == uuid.Nil {
 		return nil, ErrInvalidInput
 	}
-	entity, err := service.repository.Find(ctx, id)
+	entity, err := service.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +287,9 @@ func (service *Service) SetEnabled(ctx context.Context, id uuid.UUID, enabled bo
 func (service *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	if service == nil || ctx == nil || id == uuid.Nil {
 		return ErrInvalidInput
+	}
+	if _, err := service.Get(ctx, id); err != nil {
+		return err
 	}
 	return service.repository.Delete(ctx, id)
 }

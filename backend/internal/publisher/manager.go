@@ -584,6 +584,7 @@ func (manager *Manager) runPublisher(ctx context.Context, specification *desired
 }
 
 func (manager *Manager) runIntervalPublisher(ctx context.Context, specification *desiredPublisher, transport Transport, failures <-chan error) error {
+	manager.publishSnapshot(ctx, specification.entity, transport)
 	ticker := time.NewTicker(specification.trigger.Interval())
 	defer ticker.Stop()
 	for {
@@ -607,6 +608,7 @@ func (manager *Manager) runOnChangePublisher(ctx context.Context, specification 
 		return err
 	}
 	defer subscription.Close()
+	manager.publishSnapshot(ctx, specification.entity, transport)
 	var timer *time.Timer
 	var timerChannel <-chan time.Time
 	defer func() {
@@ -653,11 +655,11 @@ func (manager *Manager) runOnChangePublisher(ctx context.Context, specification 
 }
 
 func (manager *Manager) publishSnapshot(ctx context.Context, entity Publisher, transport Transport) {
-	now := manager.now().UTC()
+	requestedAt := manager.now().UTC()
 	manager.mu.Lock()
 	status := manager.statuses[entity.ID]
 	status.RequestCount++
-	status.LastRequestAt = &now
+	status.LastRequestAt = &requestedAt
 	manager.statuses[entity.ID] = status
 	manager.mu.Unlock()
 
@@ -673,11 +675,11 @@ func (manager *Manager) publishSnapshot(ctx context.Context, entity Publisher, t
 		manager.recordFailure(entity.ID, err)
 		return
 	}
-	now = manager.now().UTC()
+	publishedAt := manager.now().UTC()
 	manager.mu.Lock()
 	status = manager.statuses[entity.ID]
 	status.PublishCount++
-	status.LastPublishAt = &now
+	status.LastPublishAt = &publishedAt
 	status.LastError = ""
 	manager.statuses[entity.ID] = status
 	manager.mu.Unlock()
@@ -688,7 +690,7 @@ func (manager *Manager) updateSourceStatus(publisherID uuid.UUID, snapshot Sourc
 	for index, sample := range snapshot.Samples {
 		sources[index] = SourceRuntimeStatus{
 			Alias: sample.Alias, Reference: sample.Reference, Available: sample.Available, Quality: sample.Quality,
-			Sequence: sample.Sequence, ObservedAt: cloneTime(sample.ObservedAt), PeriodStart: cloneTime(sample.PeriodStart), PeriodEnd: cloneTime(sample.PeriodEnd),
+			Sequence: sample.Sequence, ObservedAt: cloneTime(sample.ObservedAt), PeriodStart: cloneTime(sample.PeriodStart), PeriodEnd: cloneTime(sample.PeriodEnd), CoveragePercent: cloneFloat(sample.CoveragePercent),
 		}
 	}
 	manager.mu.Lock()
@@ -799,11 +801,7 @@ func (manager *Manager) setStatusStateLocked(publisherID uuid.UUID, state Runtim
 	status.PublisherID = publisherID
 	status.State = state
 	status.LastTransitionAt = manager.now().UTC()
-	if state == RuntimeStateStopped {
-		status.Connected = false
-		status.ActiveConnections = 0
-		status.TransportQueueDepth = 0
-	}
+	normalizeInactiveRuntimeStatus(&status)
 	if status.Sources == nil {
 		status.Sources = []SourceRuntimeStatus{}
 	}
@@ -888,7 +886,18 @@ func applyTransportStatus(status RuntimeStatus, job *publisherJob) RuntimeStatus
 	status.LastDeliveredAt = cloneTime(metrics.LastDeliveredAt)
 	status.LastDiagnosticAt = cloneTime(metrics.LastDiagnosticAt)
 	status.TransportError = sanitizeRuntimeErrorText(metrics.TransportError)
+	normalizeInactiveRuntimeStatus(&status)
 	return status
+}
+
+func normalizeInactiveRuntimeStatus(status *RuntimeStatus) {
+	if status == nil || (status.State != RuntimeStateStopped && status.State != RuntimeStateError) {
+		return
+	}
+	status.Connected = false
+	status.ActiveConnections = 0
+	status.QueueDepth = 0
+	status.TransportQueueDepth = 0
 }
 
 func sanitizeRuntimeErrorText(message string) string {

@@ -59,6 +59,26 @@ describe("CredentialEditorPage", () => {
     expect(screen.getByLabelText(/^Password/)).toBeInTheDocument();
     expect(screen.getByText("Custom CA certificate")).toBeInTheDocument();
     expect(screen.getByText("mTLS client identity")).toBeInTheDocument();
-    expect(screen.getByText(/Store only what the broker requires/)).toBeInTheDocument();
+    expect(screen.getByText(/Store only what the destination requires/)).toBeInTheDocument();
+  });
+
+  it("stores HTTP API keys in the HTTP profile namespace without rendering them back", async () => {
+    const httpProfile: CredentialProfile = { ...baseProfile, type: "http", name: "Plant HTTP API" };
+    const rotated: CredentialProfile = {
+      ...httpProfile, secret_revision: 1,
+      secrets: [{ slot: "http.api_key", kind: "opaque", revision: 1, created_at: "2026-08-23T00:00:00Z", rotated_at: "2026-08-23T00:00:00Z" }],
+    };
+    mockedGet.mockReset().mockResolvedValueOnce(httpProfile).mockResolvedValueOnce(rotated);
+    renderPage();
+
+    const apiKey = await screen.findByLabelText(/^API key/);
+    fireEvent.change(apiKey, { target: { value: "temporary-http-key" } });
+    fireEvent.click(within(apiKey.closest("article")!).getByRole("button", { name: "Store" }));
+
+    await waitFor(() => expect(mockedPut).toHaveBeenCalledWith("credential-1", "http.api_key", { value_base64: "dGVtcG9yYXJ5LWh0dHAta2V5" }));
+    expect(apiKey).toHaveValue("");
+    expect(screen.queryByText("temporary-http-key")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Bearer token/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^OAuth client secret/)).toBeInTheDocument();
   });
 });

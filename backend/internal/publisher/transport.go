@@ -108,7 +108,7 @@ func normalizeListenerClaims(publisherType Type, claims []ListenerClaim) ([]List
 	if len(claims) == 0 {
 		return []ListenerClaim{}, nil
 	}
-	if publisherType != TypeHTTPServer && publisherType != TypeModbusTCPServer {
+	if publisherType != TypeHTTPServer {
 		return nil, ErrInvalidListenerClaim
 	}
 	normalized := make([]ListenerClaim, 0, len(claims))

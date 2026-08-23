@@ -158,7 +158,11 @@ func (handler *Handler) PutSecret(c *fiber.Ctx) error {
 		return validation(c, "Invalid Credential Profile ID")
 	}
 	slot := c.Params("slot")
-	kind, err := credential.ExpectedSecretKind(credential.TypeMQTT, slot)
+	profile, err := handler.service.Get(c.UserContext(), id)
+	if err != nil {
+		return handleError(c, err)
+	}
+	kind, err := credential.ExpectedSecretKind(profile.Type, slot)
 	if err != nil {
 		return validation(c, "Invalid Credential secret slot")
 	}

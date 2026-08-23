@@ -67,7 +67,10 @@ const catalog: PublisherSourceCatalogEntry[] = [
       name: "Energy today", owner_name: "Energy Management", schema_version: 1, data_type: "float64",
       unit: "kWh", period_kind: "windowed", enabled: true,
     },
-    current: { quality: "partial", sequence: 7, observed_at: "2026-08-23T08:35:25.573Z" },
+    current: {
+      quality: "partial", sequence: 7, observed_at: "2026-08-23T08:35:25.573Z",
+      period_start: "2026-08-23T00:00:00Z", period_end: "2026-08-23T08:35:25.573Z", coverage_percent: 82.5,
+    },
   },
 ];
 
@@ -146,6 +149,15 @@ describe("MQTTPublisherWizardPage", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /I understand this connection is not encrypted/ }));
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     expect(screen.getByRole("heading", { name: "Payload source aliases" })).toBeInTheDocument();
+  });
+
+  it("shows Plugin-output coverage and period in the shared source catalog", async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+
+    await screen.findByText("Energy today");
+    expect(screen.getByRole("progressbar", { name: "Coverage 82.5 percent" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Period from 2026-08-23T00:00:00Z to 2026-08-23T08:35:25.573Z")).toBeInTheDocument();
   });
 
   it("keeps the payload freely editable and inserts source syntax at the cursor", async () => {

@@ -16,8 +16,8 @@ func TestDefaultPublisherDefinitionsAreVersionedAndTypeCompatible(t *testing.T) 
 		t.Fatalf("NewDefaultDefinitionRegistry() error = %v", err)
 	}
 	descriptors := registry.List()
-	wantTypes := []Type{TypeHTTPServer, TypeModbusTCPServer, TypeMQTT}
-	wantVersions := map[Type]uint{TypeHTTPServer: 3, TypeModbusTCPServer: 2, TypeMQTT: 3}
+	wantTypes := []Type{TypeHTTPServer, TypeMQTT}
+	wantVersions := map[Type]uint{TypeHTTPServer: 4, TypeMQTT: 3}
 	if len(descriptors) != len(wantTypes) {
 		t.Fatalf("definitions = %#v", descriptors)
 	}
@@ -26,7 +26,7 @@ func TestDefaultPublisherDefinitionsAreVersionedAndTypeCompatible(t *testing.T) 
 			t.Errorf("definition %d = %#v", index, descriptors[index])
 		}
 	}
-	for _, publisherType := range []Type{TypeHTTPServer, TypeMQTT, TypeModbusTCPServer} {
+	for _, publisherType := range []Type{TypeHTTPServer, TypeMQTT} {
 		definition, err := registry.Find(publisherType)
 		if err != nil {
 			t.Fatalf("Find(%s) error = %v", publisherType, err)
@@ -53,7 +53,7 @@ func TestDefaultPublisherDefinitionsAreVersionedAndTypeCompatible(t *testing.T) 
 		if !definition.Supports(numeric) {
 			t.Errorf("%s does not support numeric source", publisherType)
 		}
-		if definition.Supports(text) != (publisherType != TypeModbusTCPServer) {
+		if !definition.Supports(text) {
 			t.Errorf("%s string support = %t", publisherType, definition.Supports(text))
 		}
 	}
@@ -69,32 +69,32 @@ func TestDefaultPublisherDefinitionsAreVersionedAndTypeCompatible(t *testing.T) 
 	}
 }
 
-const defaultHTTPConfigJSON = `{"trigger":{"mode":"interval","interval_ms":60000},"http":{"bind_address":"127.0.0.1","port":8088,"path":"/snapshot","access":{"mode":"api_key","api_key":{"name":"http.api_key"}},"quality_policy":"payload","read_timeout_ms":5000,"write_timeout_ms":5000,"idle_timeout_ms":30000,"max_header_bytes":16384,"max_connections":64}}`
+const defaultHTTPConfigJSON = `{"trigger":{"mode":"interval","interval_ms":60000},"http":{"bind_address":"127.0.0.1","port":8088,"path":"/snapshot","access":{"mode":"api_key","api_key_header":"X-Api-Key"},"quality_policy":"payload","read_timeout_ms":5000,"write_timeout_ms":5000,"idle_timeout_ms":30000,"max_header_bytes":16384,"max_connections":64},"response":{"payload_template":"{\"publisher_id\":{{publisher_id}},\"published_at\":{{published_at}},\"values\":{}}"}}`
 const defaultMQTTConfigJSON = `{"trigger":{"mode":"interval","interval_ms":60000},"mqtt":{"broker_url":"mqtts://localhost:8883","auth":{},"tls":{},"publish":{"topic":"telemetry","qos":1,"retain":false,"payload_template":"{\"timestamp\":{{published_unix_ms}}}"},"diagnostics":[],"keep_alive_ms":30000,"connect_timeout_ms":10000,"publish_timeout_ms":10000,"reconnect_min_ms":1000,"reconnect_max_ms":60000,"queue_capacity":256,"diagnostic_history_depth":100}}`
 
 func TestPublisherDefinitionNormalizesStrictTriggerConfig(t *testing.T) {
 	t.Parallel()
 
 	registry, _ := NewDefaultDefinitionRegistry()
-	definition, _ := registry.Find(TypeModbusTCPServer)
+	definition, _ := registry.Find(TypeHTTPServer)
 	for _, test := range []struct {
 		name   string
 		config Config
-		want   string
+		want   TriggerConfig
 	}{
-		{name: "interval", config: Config(`{"trigger":{"mode":"interval","interval_ms":1000}}`), want: `{"trigger":{"mode":"interval","interval_ms":1000}}`},
-		{name: "interval default", config: Config(`{"trigger":{"mode":"interval"}}`), want: `{"trigger":{"mode":"interval","interval_ms":60000}}`},
-		{name: "on change", config: Config(`{"trigger":{"mode":"on_change","source_alias":"power","coalesce_ms":250}}`), want: `{"trigger":{"mode":"on_change","source_alias":"power","coalesce_ms":250}}`},
-		{name: "on change default coalesce", config: Config(`{"trigger":{"mode":"on_change","source_alias":"power"}}`), want: `{"trigger":{"mode":"on_change","source_alias":"power","coalesce_ms":100}}`},
+		{name: "interval", config: Config(`{"trigger":{"mode":"interval","interval_ms":1000}}`), want: TriggerConfig{Mode: TriggerModeInterval, IntervalMS: 1000}},
+		{name: "interval default", config: Config(`{"trigger":{"mode":"interval"}}`), want: TriggerConfig{Mode: TriggerModeInterval, IntervalMS: 60000}},
+		{name: "on change", config: Config(`{"trigger":{"mode":"on_change","source_alias":"power","coalesce_ms":250}}`), want: TriggerConfig{Mode: TriggerModeOnChange, SourceAlias: "power", CoalesceMS: 250}},
+		{name: "on change default coalesce", config: Config(`{"trigger":{"mode":"on_change","source_alias":"power"}}`), want: TriggerConfig{Mode: TriggerModeOnChange, SourceAlias: "power", CoalesceMS: 100}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			normalized, err := definition.NormalizeConfig(context.Background(), test.config)
-			if err != nil || string(normalized) != test.want {
-				t.Fatalf("NormalizeConfig() = %s, %v; want %s", normalized, err, test.want)
+			if err != nil {
+				t.Fatalf("NormalizeConfig() = %s, %v", normalized, err)
 			}
 			trigger, err := ParseTriggerConfig(normalized)
-			if err != nil || trigger.Mode == "" {
-				t.Fatalf("ParseTriggerConfig() = %#v, %v", trigger, err)
+			if err != nil || trigger != test.want {
+				t.Fatalf("ParseTriggerConfig() = %#v, %v; want %#v", trigger, err, test.want)
 			}
 		})
 	}

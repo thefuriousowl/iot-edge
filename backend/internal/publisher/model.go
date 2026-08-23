@@ -11,9 +11,9 @@ type Type string
 type Config = json.RawMessage
 
 const (
-	TypeHTTPServer      Type = "http_server"
-	TypeMQTT            Type = "mqtt"
-	TypeModbusTCPServer Type = "modbus_tcp_server"
+	TypeHTTPServer Type = "http_server"
+	TypeMQTT       Type = "mqtt"
+	TypeHTTPClient Type = "http_client"
 )
 
 type Publisher struct {

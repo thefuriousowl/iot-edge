@@ -26,12 +26,14 @@ const (
 	OutputTodayThermalEnergyKWh    plugin.OutputKey = "today.thermal_energy_kwh"
 	OutputTodayCOP                 plugin.OutputKey = "today.cop"
 	OutputTodayEstimatedCost       plugin.OutputKey = "today.estimated_cost"
+	OutputTodayCoveredCost         plugin.OutputKey = "today.covered_estimated_cost"
 	OutputTodayElectricalCoverage  plugin.OutputKey = "today.electrical_coverage_percent"
 	OutputTodayThermalCoverage     plugin.OutputKey = "today.thermal_coverage_percent"
 	OutputMonthElectricalEnergyKWh plugin.OutputKey = "month.electrical_energy_kwh"
 	OutputMonthThermalEnergyKWh    plugin.OutputKey = "month.thermal_energy_kwh"
 	OutputMonthCOP                 plugin.OutputKey = "month.cop"
 	OutputMonthEstimatedCost       plugin.OutputKey = "month.estimated_cost"
+	OutputMonthCoveredCost         plugin.OutputKey = "month.covered_estimated_cost"
 	OutputMonthElectricalCoverage  plugin.OutputKey = "month.electrical_coverage_percent"
 	OutputMonthThermalCoverage     plugin.OutputKey = "month.thermal_coverage_percent"
 )
@@ -46,12 +48,14 @@ func outputDescriptors() []plugin.OutputDescriptor {
 		windowedOutput(OutputTodayThermalEnergyKWh, "Today thermal energy", "Integrated thermal output since local day start", "kWh"),
 		windowedOutput(OutputTodayCOP, "Today COP", "Covered thermal energy divided by covered electrical energy since local day start", ""),
 		{Key: OutputTodayEstimatedCost, Name: "Today estimated cost", Description: "Fail-closed estimated electrical cost since local day start", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputTodayCoveredCost, Name: "Today covered estimated cost", Description: "Estimated electrical cost for covered local-day duration with explicit partial quality", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
 		windowedOutput(OutputTodayElectricalCoverage, "Today electrical coverage", "Covered electrical duration as a percentage of the local-day period", "%"),
 		windowedOutput(OutputTodayThermalCoverage, "Today thermal coverage", "Covered thermal duration as a percentage of the local-day period", "%"),
 		windowedOutput(OutputMonthElectricalEnergyKWh, "Month electrical energy", "Integrated electrical input since local month start", "kWh"),
 		windowedOutput(OutputMonthThermalEnergyKWh, "Month thermal energy", "Integrated thermal output since local month start", "kWh"),
 		windowedOutput(OutputMonthCOP, "Month COP", "Covered thermal energy divided by covered electrical energy since local month start", ""),
 		{Key: OutputMonthEstimatedCost, Name: "Month estimated cost", Description: "Fail-closed estimated electrical cost since local month start", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputMonthCoveredCost, Name: "Month covered estimated cost", Description: "Estimated electrical cost for covered local-month duration with explicit partial quality", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
 		windowedOutput(OutputMonthElectricalCoverage, "Month electrical coverage", "Covered electrical duration as a percentage of the local-month period", "%"),
 		windowedOutput(OutputMonthThermalCoverage, "Month thermal coverage", "Covered thermal duration as a percentage of the local-month period", "%"),
 	}
@@ -274,6 +278,7 @@ func periodOutputValues(period string, config Config, observedAt time.Time, metr
 		energyOutputValue(keys.thermalEnergy, metrics.Thermal, thermalCoverage, observedAt, metrics.From, metrics.To, thermalAttributes, thermalIssues),
 		failClosedRatioOutputValue(keys.cop, metrics.COP, "", observedAt, metrics.From, metrics.To, copAttributes, electricalCoverage, thermalCoverage, boundedOutputIssues(append(append([]plugin.OutputIssue(nil), electricalIssues...), thermalIssues...))),
 		failClosedRatioOutputValue(keys.cost, metrics.Cost, config.Tariff.Currency, observedAt, metrics.From, metrics.To, costAttributes, electricalCoverage, electricalCoverage, electricalIssues),
+		coveredRatioOutputValue(keys.coveredCost, metrics.Cost, config.Tariff.Currency, observedAt, metrics.From, metrics.To, costAttributes, electricalCoverage, electricalIssues),
 		coverageOutputValue(keys.electricalCoverage, electricalCoverage, observedAt, metrics.From, metrics.To, electricalAttributes, electricalIssues),
 		coverageOutputValue(keys.thermalCoverage, thermalCoverage, observedAt, metrics.From, metrics.To, thermalAttributes, thermalIssues),
 	}
@@ -284,15 +289,16 @@ type outputKeys struct {
 	thermalEnergy      plugin.OutputKey
 	cop                plugin.OutputKey
 	cost               plugin.OutputKey
+	coveredCost        plugin.OutputKey
 	electricalCoverage plugin.OutputKey
 	thermalCoverage    plugin.OutputKey
 }
 
 func periodOutputKeys(period string) outputKeys {
 	if period == "today" {
-		return outputKeys{OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputTodayElectricalCoverage, OutputTodayThermalCoverage}
+		return outputKeys{OutputTodayElectricalEnergyKWh, OutputTodayThermalEnergyKWh, OutputTodayCOP, OutputTodayEstimatedCost, OutputTodayCoveredCost, OutputTodayElectricalCoverage, OutputTodayThermalCoverage}
 	}
-	return outputKeys{OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost, OutputMonthElectricalCoverage, OutputMonthThermalCoverage}
+	return outputKeys{OutputMonthElectricalEnergyKWh, OutputMonthThermalEnergyKWh, OutputMonthCOP, OutputMonthEstimatedCost, OutputMonthCoveredCost, OutputMonthElectricalCoverage, OutputMonthThermalCoverage}
 }
 
 func demandOutputValue(key plugin.OutputKey, metric DemandMetric, at time.Time, attributes map[string]string) plugin.OutputValue {
@@ -348,6 +354,24 @@ func failClosedRatioOutputValue(key plugin.OutputKey, metric RatioMetric, unit s
 	}
 	value := ratioOutputValue(key, metric, unit, observedAt, from, to, attributes, nil)
 	value.CoveragePercent = floatPointer(coverage)
+	return value
+}
+
+func coveredRatioOutputValue(key plugin.OutputKey, metric RatioMetric, unit string, observedAt, from, to time.Time, attributes map[string]string, coverage float64, issues []plugin.OutputIssue) plugin.OutputValue {
+	if !metric.Valid || coverage <= 0 {
+		message := fallbackError(metric.Error, "covered cost is unavailable")
+		issues = append(append([]plugin.OutputIssue(nil), issues...), plugin.OutputIssue{Code: "calculation_unavailable", Message: message, Source: "energy"})
+		return badOutputValue(key, unit, message, observedAt, from, to, attributes, &coverage, boundedOutputIssues(issues))
+	}
+	value := baseOutputValue(key, unit, observedAt, from, to, attributes)
+	value.Value = metric.Value
+	value.CoveragePercent = floatPointer(coverage)
+	value.Issues = issues
+	if coverage == 100 && len(issues) == 0 {
+		value.Quality = plugin.OutputQualityGood
+	} else {
+		value.Quality = plugin.OutputQualityPartial
+	}
 	return value
 }
 

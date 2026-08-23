@@ -47,7 +47,6 @@ func NewDefaultDefinitionRegistry() (*DefinitionRegistry, error) {
 	return NewDefinitionRegistry(
 		publisherDefinition{publisherType: TypeHTTPServer},
 		publisherDefinition{publisherType: TypeMQTT},
-		publisherDefinition{publisherType: TypeModbusTCPServer},
 	)
 }
 
@@ -104,7 +103,9 @@ type publisherDefinition struct {
 
 func (definition publisherDefinition) Descriptor() DefinitionDescriptor {
 	version := uint(2)
-	if definition.publisherType == TypeHTTPServer || definition.publisherType == TypeMQTT {
+	if definition.publisherType == TypeHTTPServer {
+		version = 4
+	} else if definition.publisherType == TypeMQTT {
 		version = 3
 	}
 	return DefinitionDescriptor{Type: definition.publisherType, ConfigVersion: version}
@@ -127,20 +128,30 @@ func (definition publisherDefinition) NormalizeConfig(ctx context.Context, confi
 }
 
 func (definition publisherDefinition) ValidateSourceConfig(ctx context.Context, config Config, sources []ResolvedSource) error {
-	if definition.publisherType != TypeMQTT {
-		return nil
-	}
 	if ctx == nil {
-		return ErrInvalidMQTTConfig
+		return ErrInvalidPublisherConfig
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	parsed, err := ParseMQTTPublisherConfig(config)
-	if err != nil {
-		return err
+	var payloadTemplate string
+	switch definition.publisherType {
+	case TypeHTTPServer:
+		parsed, err := ParseHTTPPublisherConfig(config)
+		if err != nil {
+			return err
+		}
+		payloadTemplate = parsed.Response.PayloadTemplate
+	case TypeMQTT:
+		parsed, err := ParseMQTTPublisherConfig(config)
+		if err != nil {
+			return err
+		}
+		payloadTemplate = parsed.MQTT.Publish.PayloadTemplate
+	default:
+		return nil
 	}
-	_, err = NewJSONPayloadEngine().Compile(parsed.MQTT.Publish.PayloadTemplate, sources)
+	_, err := NewJSONPayloadEngine().Compile(payloadTemplate, sources)
 	return err
 }
 
@@ -148,12 +159,12 @@ func (definition publisherDefinition) Supports(descriptor SourceDescriptor) bool
 	if !validSourceDataType(descriptor.DataType) {
 		return false
 	}
-	return definition.publisherType != TypeModbusTCPServer || descriptor.DataType != SourceDataTypeString
+	return true
 }
 
 func validPublisherType(publisherType Type) bool {
 	switch publisherType {
-	case TypeHTTPServer, TypeMQTT, TypeModbusTCPServer:
+	case TypeHTTPServer, TypeMQTT, TypeHTTPClient:
 		return true
 	default:
 		return false

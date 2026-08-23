@@ -3,6 +3,7 @@ import type {
   DataPublisherListParams,
   DataPublisherListResponse,
   DataPublisher,
+  HTTPServerProbeResult,
   MQTTConnectionTestResult,
   MQTTDiagnosticEvent,
   PublisherRuntimeStatus,
@@ -85,6 +86,11 @@ export async function restartDataPublisher(id: string): Promise<{ id: string; ty
 export async function getDataPublisherStatus(id: string, signal?: AbortSignal): Promise<PublisherRuntimeStatus> {
   const response = await api.get<{ runtime: PublisherRuntimeStatus }>(`${publisherPath(id)}/status`, { signal });
   return response.data.runtime;
+}
+
+export async function probeHTTPServerListener(id: string): Promise<HTTPServerProbeResult> {
+  const response = await api.post<HTTPServerProbeResult>(`${publisherPath(id)}/probe-listener`);
+  return response.data;
 }
 
 export async function listPublisherDiagnostics(id: string, signal?: AbortSignal): Promise<MQTTDiagnosticEvent[]> {

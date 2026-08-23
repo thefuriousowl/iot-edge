@@ -549,7 +549,10 @@ func descriptorFromPluginOutput(instance plugin.Instance, output plugin.OutputDe
 }
 
 func currentFromSample(sample SourceSample) SourceCurrent {
-	return SourceCurrent{Quality: sample.Quality, Sequence: sample.Sequence, ObservedAt: cloneTime(sample.ObservedAt)}
+	return SourceCurrent{
+		Quality: sample.Quality, Sequence: sample.Sequence, ObservedAt: cloneTime(sample.ObservedAt),
+		PeriodStart: cloneTime(sample.PeriodStart), PeriodEnd: cloneTime(sample.PeriodEnd), CoveragePercent: cloneFloat(sample.CoveragePercent),
+	}
 }
 
 func latestTagValue(values TagSourceValueFeed, tagID uuid.UUID) (tag.TagValue, bool) {

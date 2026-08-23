@@ -30,22 +30,33 @@ const publisher: DataPublisher = {
   id: "publisher-1", type: "mqtt", name: "Plant telemetry", enabled: false, config_version: 1,
   source_count: 2, runtime, created_at: "2026-08-23T00:00:00Z", updated_at: "2026-08-23T00:00:00Z",
 };
+const httpPublisher: DataPublisher = {
+  id: "publisher-2", type: "http_server", name: "Plant snapshot", enabled: true, config_version: 2,
+  source_count: 3, runtime: {
+    ...runtime, publisher_id: "publisher-2", type: "http_server", state: "running", connected: true,
+    external_request_count: 24, rejected_request_count: 3, active_connections: 2, publish_count: 12,
+  },
+  created_at: "2026-08-23T00:00:00Z", updated_at: "2026-08-23T00:00:00Z",
+};
 
 describe("DataPublisherListPage", () => {
   beforeEach(() => {
-    mockedList.mockReset().mockResolvedValue({ data: [publisher], pagination: { page: 1, per_page: 20, total: 1, total_pages: 1 } });
+    mockedList.mockReset().mockResolvedValue({ data: [publisher, httpPublisher], pagination: { page: 1, per_page: 20, total: 2, total_pages: 1 } });
     mockedEnable.mockReset().mockResolvedValue({ ...publisher, enabled: true, runtime: { ...runtime, state: "running" } });
   });
 
   afterEach(() => cleanup());
 
-  it("lists MQTT runtime health and exposes safe lifecycle actions", async () => {
+  it("lists MQTT and HTTP runtime health with transport-specific configure routes", async () => {
     render(<MemoryRouter><DataPublisherListPage /></MemoryRouter>);
 
     expect(await screen.findByText("Plant telemetry")).toBeInTheDocument();
     expect(screen.getByText("8 delivered")).toBeInTheDocument();
     expect(screen.getByText("2 reconnects")).toBeInTheDocument();
+    expect(screen.getByText("24 requests")).toBeInTheDocument();
+    expect(screen.getByText("3 rejected · 12 snapshot updates")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Configure Plant telemetry" })).toHaveAttribute("href", "/data-publishers/publisher-1/mqtt");
+    expect(screen.getByRole("link", { name: "Configure Plant snapshot" })).toHaveAttribute("href", "/data-publishers/publisher-2/http-server");
     expect(screen.getByRole("button", { name: "Restart Plant telemetry" })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Enable Plant telemetry" }));
@@ -53,12 +64,12 @@ describe("DataPublisherListPage", () => {
     await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
   });
 
-  it("sends search and desired-state filters only to MQTT inventory", async () => {
-    render(<MemoryRouter initialEntries={["/data-publishers?enabled=false"]}><DataPublisherListPage /></MemoryRouter>);
+  it("sends optional transport, search, and desired-state filters", async () => {
+    render(<MemoryRouter initialEntries={["/data-publishers?type=http_server&enabled=false"]}><DataPublisherListPage /></MemoryRouter>);
     await screen.findByText("Plant telemetry");
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "plant" } });
     fireEvent.submit(screen.getByRole("search"));
 
-    await waitFor(() => expect(mockedList).toHaveBeenLastCalledWith(expect.objectContaining({ type: "mqtt", enabled: false, search: "plant" }), expect.any(AbortSignal)));
+    await waitFor(() => expect(mockedList).toHaveBeenLastCalledWith(expect.objectContaining({ type: "http_server", enabled: false, search: "plant" }), expect.any(AbortSignal)));
   });
 });

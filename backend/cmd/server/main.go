@@ -230,9 +230,13 @@ func main() {
 	}
 	publisherRepository := publisherpostgres.NewRepository(db)
 	publisherPayloadEngine := publisher.NewJSONPayloadEngine()
+	publisherHTTPProber, err := publisher.NewHTTPServerProber()
+	if err != nil {
+		log.Fatalf("failed to initialize HTTP Publisher listener probe: %v", err)
+	}
 	var publisherManager *publisher.Manager
 	var publisherRuntimeErrors <-chan error
-	publisherHandlerOptions := []publisherhttp.HandlerOption{}
+	publisherHandlerOptions := []publisherhttp.HandlerOption{publisherhttp.WithHTTPServerListenerProber(publisherHTTPProber)}
 	publisherServiceOptions := []publisher.ServiceOption{}
 	credentialHandler := credentialhttp.NewHandler(nil)
 	if len(cfg.PublisherMasterKey) != 0 {
@@ -269,7 +273,7 @@ func main() {
 			log.Fatalf("failed to initialize Publisher Credential resolver: %v", err)
 		}
 		publisherTransports := publisher.NewTransportRegistry()
-		httpPublisherFactory, err := publisher.NewHTTPTransportFactory(publisherSecretResolver)
+		httpPublisherFactory, err := publisher.NewHTTPTransportFactory(publisherSecretResolver, publisherPayloadEngine)
 		if err != nil {
 			log.Fatalf("failed to initialize HTTP Publisher transport: %v", err)
 		}

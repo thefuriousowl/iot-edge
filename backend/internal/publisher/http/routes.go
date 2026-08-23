@@ -12,6 +12,7 @@ func RegisterRoutes(router fiber.Router, handler *Handler) {
 	routes.Post("/:id/enable", handler.Enable)
 	routes.Post("/:id/disable", handler.Disable)
 	routes.Post("/:id/restart", handler.Restart)
+	routes.Post("/:id/probe-listener", handler.ProbeListener)
 	routes.Get("/:id/status", handler.Status)
 	routes.Get("/:id/diagnostics", handler.Diagnostics)
 	routes.Post("/:id/test-connection", handler.TestConnection)

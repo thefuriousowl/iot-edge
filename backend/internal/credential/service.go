@@ -37,7 +37,7 @@ func NewService(repository Repository, secrets SecretService) (*Service, error) 
 }
 
 func (service *Service) Create(ctx context.Context, input CreateInput) (*Profile, error) {
-	if service == nil || ctx == nil || input.Type != TypeMQTT {
+	if service == nil || ctx == nil || !validType(input.Type) {
 		return nil, ErrInvalidInput
 	}
 	name, description, err := normalize(input.Name, input.Description)
@@ -71,7 +71,7 @@ func (service *Service) List(ctx context.Context, input ListInput) ([]Profile, e
 		return nil, ErrInvalidInput
 	}
 	input.Search = strings.TrimSpace(input.Search)
-	if len(input.Search) > maxSearchLength || input.Type != nil && *input.Type != TypeMQTT {
+	if len(input.Search) > maxSearchLength || input.Type != nil && !validType(*input.Type) {
 		return nil, ErrInvalidInput
 	}
 	profiles, err := service.repository.List(ctx, input)
@@ -131,10 +131,16 @@ func (service *Service) ValidateCredential(ctx context.Context, id uuid.UUID, pu
 		}
 		return err
 	}
-	if profile.Type != TypeMQTT || publisherType != publisher.TypeMQTT {
+	compatible := profile.Type == TypeMQTT && publisherType == publisher.TypeMQTT ||
+		profile.Type == TypeHTTP && (publisherType == publisher.TypeHTTPServer || publisherType == publisher.TypeHTTPClient)
+	if !compatible {
 		return publisher.ErrCredentialIncompatible
 	}
 	return nil
+}
+
+func validType(profileType Type) bool {
+	return profileType == TypeMQTT || profileType == TypeHTTP
 }
 
 func (service *Service) PutSecret(ctx context.Context, id uuid.UUID, slot string, material publisher.SecretMaterial) (*publisher.SecretMetadata, error) {
