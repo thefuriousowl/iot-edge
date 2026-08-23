@@ -80,6 +80,39 @@ func TestServiceCreatesCanonicalManifestVersionedInstances(t *testing.T) {
 	}
 }
 
+func TestServiceResolvesImmutableOutputDescriptorsForPersistedInstance(t *testing.T) {
+	t.Parallel()
+
+	definition := validRegistryDefinition("energy_management")
+	definition.manifest.Capabilities = []Capability{CapabilityPluginOutputsPublish}
+	definition.manifest.Outputs = []OutputDescriptor{validOutputDescriptor("demand_kw")}
+	registry, err := NewRegistry(definition)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	repository := newPluginMemoryRepository()
+	service, _ := NewService(repository, registry)
+	instance, err := service.Create(context.Background(), CreateInput{Type: "energy_management", Name: "Plant", Config: Config(`{}`)})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	descriptors, err := service.OutputDescriptors(context.Background(), instance.ID)
+	if err != nil || len(descriptors) != 1 || descriptors[0].Key != "demand_kw" {
+		t.Fatalf("OutputDescriptors() = %#v, %v", descriptors, err)
+	}
+	descriptors[0].Name = "Changed"
+	again, err := service.OutputDescriptors(context.Background(), instance.ID)
+	if err != nil || again[0].Name != "Metric" {
+		t.Fatalf("OutputDescriptors(second) = %#v, %v", again, err)
+	}
+	if _, err := service.OutputDescriptors(context.Background(), uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("OutputDescriptors(nil ID) error = %v", err)
+	}
+	if _, err := service.OutputDescriptors(context.Background(), uuid.New()); !errors.Is(err, ErrInstanceNotFound) {
+		t.Errorf("OutputDescriptors(missing) error = %v", err)
+	}
+}
+
 func TestServiceRejectsInvalidDefinitionsConfigsAndSingleInstanceDuplicates(t *testing.T) {
 	t.Parallel()
 

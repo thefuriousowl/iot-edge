@@ -3,6 +3,7 @@ import {
   Route,
   Routes,
 } from "react-router-dom";
+import { lazy, Suspense } from "react";
 
 import AuthInitializer from "./components/common/AuthInitializer";
 import AuthRoute from "./components/common/AuthRoute";
@@ -19,6 +20,7 @@ import ReportBuilderPage from "./features/report/pages/ReportBuilderPage";
 import ReportDetailPage from "./features/report/pages/ReportDetailPage";
 import ReportListPage from "./features/report/pages/ReportListPage";
 import PluginListPage from "./features/plugin/pages/PluginListPage";
+import EnergyOverviewPage from "./features/plugin/pages/EnergyOverviewPage";
 import EnergyWizardPage from "./features/plugin/pages/EnergyWizardPage";
 import TagListPage from "./features/tag/pages/TagListPage";
 import TagDetailPage from "./features/tag/pages/TagDetailPage";
@@ -27,6 +29,8 @@ import TagLiveStream from "./features/tag/components/TagLiveStream";
 import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
+
+const EnergyHistoryPage = lazy(() => import("./features/plugin/pages/EnergyHistoryPage"));
 
 function App() {
   return (
@@ -161,6 +165,22 @@ function App() {
           element={
             <ProtectedRoute>
               <EnergyWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plugins/:id/energy"
+          element={
+            <ProtectedRoute>
+              <EnergyOverviewPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plugins/:id/energy/history"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<div role="status">Loading Energy history…</div>}><EnergyHistoryPage /></Suspense>
             </ProtectedRoute>
           }
         />

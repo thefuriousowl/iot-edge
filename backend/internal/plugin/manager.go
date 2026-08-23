@@ -348,7 +348,7 @@ func (manager *Manager) buildRuntime(ctx context.Context, instance Instance) (ru
 	if instance.ConfigVersion != manifest.ConfigVersion {
 		return nil, fmt.Errorf("%w: %s stored %d, implementation %d", ErrConfigVersionMismatch, instance.Type, instance.ConfigVersion, manifest.ConfigVersion)
 	}
-	host, err := newScopedHost(manager.host, manifest)
+	host, err := newScopedHost(manager.host, instance.ID, manifest)
 	if err != nil {
 		return nil, err
 	}

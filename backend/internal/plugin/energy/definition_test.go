@@ -28,7 +28,7 @@ func TestDefinitionManifestAndDependencies(t *testing.T) {
 		t.Fatalf("NewDefinition() error = %v", err)
 	}
 	manifest := definition.Manifest()
-	if manifest.Type != PluginType || manifest.Name != "Energy Management" || manifest.Version != "0.1.0" || manifest.ConfigVersion != 1 || !manifest.MultipleInstances || len(manifest.Capabilities) != 1 || manifest.Capabilities[0] != plugin.CapabilityLoggerCommittedBatches {
+	if manifest.Type != PluginType || manifest.Name != "Energy Management" || manifest.Version != "0.1.0" || manifest.ConfigVersion != 1 || !manifest.MultipleInstances || len(manifest.Capabilities) != 3 || manifest.Capabilities[0] != plugin.CapabilityLoggerCommittedBatches || manifest.Capabilities[1] != plugin.CapabilityLoggerHistoryBatches || manifest.Capabilities[2] != plugin.CapabilityPluginOutputsPublish || len(manifest.Outputs) != 16 {
 		t.Errorf("Manifest() = %#v", manifest)
 	}
 }
@@ -83,7 +83,7 @@ func TestDefinitionBuildsThroughDefaultAndInjectedFactories(t *testing.T) {
 		t.Errorf("NewRuntime(default missing capability) error = %v", err)
 	}
 	feed := newEnergyRuntimeFeed(datalogger.RawBatch{})
-	capabilityHost, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{plugin.CapabilityLoggerCommittedBatches: feed})
+	capabilityHost := newEnergyRuntimeHost(feed, &energyRuntimeOutputSink{})
 	if runtime, err := definition.NewRuntime(plugin.RuntimeSpec{InstanceID: instanceID, Config: raw}, capabilityHost); err != nil || runtime == nil {
 		t.Errorf("NewRuntime(default) = %T, %v", runtime, err)
 	}

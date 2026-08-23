@@ -13,6 +13,8 @@ import (
 var (
 	ErrCommittedBatchFeedUnavailable = errors.New("Energy committed Data Logger batch feed is unavailable")
 	ErrCommittedBatchFeedClosed      = errors.New("Energy committed Data Logger batch feed closed")
+	ErrHistoryFeedUnavailable        = errors.New("Energy Data Logger history feed is unavailable")
+	ErrOutputSinkUnavailable         = errors.New("Energy Plugin output sink is unavailable")
 )
 
 type defaultRuntimeFactory struct{}
@@ -27,6 +29,8 @@ type runtime struct {
 	calculator *Calculator
 	instanceID uuid.UUID
 	publisher  metricsPublisher
+	outputs    plugin.OutputSink
+	builder    *outputBuilder
 
 	mu        sync.RWMutex
 	latest    BatchMetrics
@@ -61,11 +65,31 @@ func newEnergyRuntime(spec plugin.RuntimeSpec, host plugin.Host, config Config, 
 	if !valid || isNil(feed) {
 		return nil, ErrCommittedBatchFeedUnavailable
 	}
+	historyCapability, exists := host.ResolveCapability(plugin.CapabilityLoggerHistoryBatches)
+	if !exists {
+		return nil, ErrHistoryFeedUnavailable
+	}
+	history, valid := historyCapability.(HistoryReader)
+	if !valid || isNil(history) {
+		return nil, ErrHistoryFeedUnavailable
+	}
+	outputCapability, exists := host.ResolveCapability(plugin.CapabilityPluginOutputsPublish)
+	if !exists {
+		return nil, ErrOutputSinkUnavailable
+	}
+	outputSink, valid := outputCapability.(plugin.OutputSink)
+	if !valid || isNil(outputSink) {
+		return nil, ErrOutputSinkUnavailable
+	}
 	calculator, err := NewCalculator(config)
 	if err != nil {
 		return nil, err
 	}
-	return &runtime{config: config, feed: feed, calculator: calculator, instanceID: spec.InstanceID, publisher: publisher}, nil
+	builder, err := newOutputBuilder(config, calculator, history)
+	if err != nil {
+		return nil, err
+	}
+	return &runtime{config: config, feed: feed, calculator: calculator, instanceID: spec.InstanceID, publisher: publisher, outputs: outputSink, builder: builder}, nil
 }
 
 func (runtime *runtime) Run(ctx context.Context) error {
@@ -79,7 +103,7 @@ func (runtime *runtime) Run(ctx context.Context) error {
 	defer subscription.Close()
 	latest, err := runtime.feed.Latest(ctx, runtime.config.LoggerID)
 	if err == nil {
-		if err := runtime.observe(*latest); err != nil {
+		if err := runtime.observe(ctx, *latest); err != nil {
 			return err
 		}
 	} else if !errors.Is(err, datalogger.ErrRawBatchNotFound) {
@@ -96,7 +120,7 @@ func (runtime *runtime) Run(ctx context.Context) error {
 				}
 				return ErrCommittedBatchFeedClosed
 			}
-			if err := runtime.observe(batch); err != nil {
+			if err := runtime.observe(ctx, batch); err != nil {
 				return err
 			}
 		}
@@ -115,7 +139,7 @@ func (runtime *runtime) Latest() (BatchMetrics, bool) {
 	return cloneBatchMetrics(runtime.latest), true
 }
 
-func (runtime *runtime) observe(batch datalogger.RawBatch) error {
+func (runtime *runtime) observe(ctx context.Context, batch datalogger.RawBatch) error {
 	metrics, err := runtime.calculator.Evaluate(batch)
 	if err != nil {
 		return err
@@ -128,6 +152,18 @@ func (runtime *runtime) observe(batch datalogger.RawBatch) error {
 		published = true
 	}
 	runtime.mu.Unlock()
+	if !published {
+		return nil
+	}
+	values, outputReady, err := runtime.builder.Build(ctx, metrics)
+	if err != nil {
+		return err
+	}
+	if outputReady {
+		if _, err := runtime.outputs.Publish(ctx, values); err != nil && !errors.Is(err, plugin.ErrOutputBatchNotNewer) {
+			return err
+		}
+	}
 	if published && runtime.publisher != nil {
 		runtime.publisher.Publish(runtime.instanceID, metrics)
 	}

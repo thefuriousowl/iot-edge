@@ -58,6 +58,21 @@ func (service *Service) Types() []Manifest {
 	return service.registry.List()
 }
 
+func (service *Service) OutputDescriptors(ctx context.Context, id uuid.UUID) ([]OutputDescriptor, error) {
+	if id == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
+	instance, err := service.repository.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := service.registry.Manifest(instance.Type)
+	if err != nil {
+		return nil, err
+	}
+	return append([]OutputDescriptor(nil), manifest.Outputs...), nil
+}
+
 func (service *Service) Create(ctx context.Context, input CreateInput) (*Instance, error) {
 	manifest, err := service.registry.Manifest(input.Type)
 	if err != nil {
@@ -200,3 +215,5 @@ func normalizeInstanceName(name string) (string, error) {
 	}
 	return name, nil
 }
+
+var _ OutputDescriptorResolver = (*Service)(nil)

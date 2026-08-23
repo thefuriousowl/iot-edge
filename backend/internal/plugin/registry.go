@@ -188,6 +188,13 @@ func validateManifest(manifest Manifest) error {
 		}
 		seen[capability] = struct{}{}
 	}
+	if err := ValidateOutputDescriptors(manifest.Outputs); err != nil {
+		return fmt.Errorf("%w: outputs: %v", ErrInvalidManifest, err)
+	}
+	_, publishesOutputs := seen[CapabilityPluginOutputsPublish]
+	if publishesOutputs != (len(manifest.Outputs) > 0) {
+		return fmt.Errorf("%w: output capability and descriptors must be declared together", ErrInvalidManifest)
+	}
 	return nil
 }
 

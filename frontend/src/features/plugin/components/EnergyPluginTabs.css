@@ -1,0 +1,26 @@
+.energy-plugin-tabs {
+  display: inline-flex;
+  gap: .25rem;
+  margin-top: 1.4rem;
+  padding: .25rem;
+  border: 1px solid var(--vgateway-border);
+  border-radius: .55rem;
+  background: rgba(11, 21, 29, .62);
+}
+
+.energy-plugin-tabs a {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  gap: .42rem;
+  padding: 0 .8rem;
+  border-radius: .35rem;
+  color: var(--vgateway-muted);
+  font-size: .76rem;
+  text-decoration: none;
+}
+
+.energy-plugin-tabs a.active {
+  background: rgba(48, 194, 255, .12);
+  color: var(--vgateway-accent);
+}

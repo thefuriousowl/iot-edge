@@ -27,6 +27,18 @@ func TestDefaultRuntimeFactoryRequiresCommittedBatchCapability(t *testing.T) {
 	if _, err := factory.NewRuntime(plugin.RuntimeSpec{}, invalidHost, config); !errors.Is(err, ErrCommittedBatchFeedUnavailable) {
 		t.Errorf("NewRuntime(wrong capability type) error = %v", err)
 	}
+	feed := newEnergyRuntimeFeed(datalogger.RawBatch{})
+	missingHistory, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{plugin.CapabilityLoggerCommittedBatches: feed})
+	if _, err := factory.NewRuntime(plugin.RuntimeSpec{}, missingHistory, config); !errors.Is(err, ErrHistoryFeedUnavailable) {
+		t.Errorf("NewRuntime(missing history) error = %v", err)
+	}
+	missingOutput, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{
+		plugin.CapabilityLoggerCommittedBatches: feed,
+		plugin.CapabilityLoggerHistoryBatches:   feed,
+	})
+	if _, err := factory.NewRuntime(plugin.RuntimeSpec{}, missingOutput, config); !errors.Is(err, ErrOutputSinkUnavailable) {
+		t.Errorf("NewRuntime(missing output) error = %v", err)
+	}
 }
 
 func TestEnergyRuntimeSubscribesBeforeLatestAndTracksOnlyNewerBatches(t *testing.T) {
@@ -35,7 +47,7 @@ func TestEnergyRuntimeSubscribesBeforeLatestAndTracksOnlyNewerBatches(t *testing
 	config := testEnergyConfig(loggerID, electricalID, thermalID, 60)
 	start := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
 	feed := newEnergyRuntimeFeed(energyRawBatch(loggerID, electricalID, thermalID, start, 2, 6))
-	host, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{plugin.CapabilityLoggerCommittedBatches: feed})
+	host := newEnergyRuntimeHost(feed, &energyRuntimeOutputSink{})
 	built, err := (defaultRuntimeFactory{}).NewRuntime(plugin.RuntimeSpec{InstanceID: uuid.New()}, host, config)
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
@@ -109,13 +121,54 @@ func TestEnergyRuntimePropagatesFeedFailures(t *testing.T) {
 	})
 }
 
+func TestEnergyRuntimeHandlesGenericOutputPersistenceResults(t *testing.T) {
+	t.Parallel()
+
+	loggerID, electricalID, thermalID := uuid.New(), uuid.New(), uuid.New()
+	config := testEnergyConfig(loggerID, electricalID, thermalID, 60)
+	at := time.Date(2026, time.August, 23, 1, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		sinkErr error
+		wantErr error
+	}{
+		{name: "duplicate restart output", sinkErr: plugin.ErrOutputBatchNotNewer},
+		{name: "persistence failure", sinkErr: errors.New("output database unavailable"), wantErr: errors.New("output database unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			feed := newEnergyRuntimeFeed(energyRawBatch(loggerID, electricalID, thermalID, at, 2, 6))
+			sink := &energyRuntimeOutputSink{err: test.sinkErr}
+			host := newEnergyRuntimeHost(feed, sink)
+			built, err := (defaultRuntimeFactory{}).NewRuntime(plugin.RuntimeSpec{InstanceID: uuid.New()}, host, config)
+			if err != nil {
+				t.Fatalf("NewRuntime() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			if test.wantErr == nil {
+				done := make(chan error, 1)
+				go func() { done <- built.Run(ctx) }()
+				waitEnergyRuntimeLatest(t, built.(*runtime), at)
+				cancel()
+				if err := <-done; err != nil {
+					t.Errorf("Run() error = %v", err)
+				}
+				return
+			}
+			defer cancel()
+			if err := built.Run(ctx); err == nil || err.Error() != test.wantErr.Error() {
+				t.Errorf("Run() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestEnergyRuntimePublishesCommittedMetricsThroughLiveHub(t *testing.T) {
 	t.Parallel()
 	loggerID, electricalID, thermalID, instanceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	config := testEnergyConfig(loggerID, electricalID, thermalID, 60)
 	start := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
 	feed := newEnergyRuntimeFeed(energyRawBatch(loggerID, electricalID, thermalID, start, 2, 6))
-	host, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{plugin.CapabilityLoggerCommittedBatches: feed})
+	host := newEnergyRuntimeHost(feed, &energyRuntimeOutputSink{})
 	hub, _ := NewLiveHub()
 	built, err := hub.NewRuntime(plugin.RuntimeSpec{InstanceID: instanceID}, host, config)
 	if err != nil {
@@ -155,6 +208,7 @@ type energyRuntimeFeed struct {
 	latestErr    error
 	subscription *energyRuntimeSubscription
 	order        []string
+	batches      []datalogger.RawBatch
 }
 
 func newEnergyRuntimeFeed(batch datalogger.RawBatch) *energyRuntimeFeed {
@@ -162,6 +216,7 @@ func newEnergyRuntimeFeed(batch datalogger.RawBatch) *energyRuntimeFeed {
 	if batch.LoggerID != uuid.Nil {
 		copy := batch
 		feed.latest = &copy
+		feed.batches = append(feed.batches, cloneEnergyRawBatch(batch))
 	}
 	return feed
 }
@@ -185,7 +240,26 @@ func (feed *energyRuntimeFeed) Subscribe(uuid.UUID) (datalogger.CommittedBatchSu
 	return feed.subscription, nil
 }
 
+func (feed *energyRuntimeFeed) LatestBatch(ctx context.Context, loggerID uuid.UUID) (*datalogger.RawBatch, error) {
+	return feed.Latest(ctx, loggerID)
+}
+
+func (feed *energyRuntimeFeed) ListBatches(_ context.Context, _ datalogger.RawBatchListInput) ([]datalogger.RawBatch, error) {
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	batches := make([]datalogger.RawBatch, len(feed.batches))
+	for index, batch := range feed.batches {
+		batches[index] = cloneEnergyRawBatch(batch)
+	}
+	return batches, nil
+}
+
 func (feed *energyRuntimeFeed) publish(batch datalogger.RawBatch) {
+	feed.mu.Lock()
+	if len(feed.batches) == 0 || feed.batches[len(feed.batches)-1].BatchAt.Before(batch.BatchAt) {
+		feed.batches = append(feed.batches, cloneEnergyRawBatch(batch))
+	}
+	feed.mu.Unlock()
 	feed.subscription.events <- batch
 }
 
@@ -234,12 +308,45 @@ func (subscription *energyRuntimeSubscription) isClosed() bool {
 
 func newTestEnergyRuntime(t *testing.T, config Config, feed *energyRuntimeFeed) *runtime {
 	t.Helper()
-	host, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{plugin.CapabilityLoggerCommittedBatches: feed})
+	host := newEnergyRuntimeHost(feed, &energyRuntimeOutputSink{})
 	built, err := (defaultRuntimeFactory{}).NewRuntime(plugin.RuntimeSpec{}, host, config)
 	if err != nil {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	return built.(*runtime)
+}
+
+type energyRuntimeOutputSink struct {
+	mu       sync.Mutex
+	values   [][]plugin.OutputValue
+	err      error
+	sequence uint64
+}
+
+func (sink *energyRuntimeOutputSink) Publish(_ context.Context, values []plugin.OutputValue) (*plugin.OutputBatch, error) {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.err != nil {
+		return nil, sink.err
+	}
+	sink.sequence++
+	cloned := append([]plugin.OutputValue(nil), values...)
+	sink.values = append(sink.values, cloned)
+	return &plugin.OutputBatch{InstanceID: uuid.New(), Sequence: sink.sequence, PublishedAt: time.Now().UTC(), Values: cloned}, nil
+}
+
+func newEnergyRuntimeHost(feed *energyRuntimeFeed, sink plugin.OutputSink) *plugin.CapabilityHost {
+	host, _ := plugin.NewCapabilityHost(map[plugin.Capability]any{
+		plugin.CapabilityLoggerCommittedBatches: feed,
+		plugin.CapabilityLoggerHistoryBatches:   feed,
+		plugin.CapabilityPluginOutputsPublish:   sink,
+	})
+	return host
+}
+
+func cloneEnergyRawBatch(batch datalogger.RawBatch) datalogger.RawBatch {
+	batch.Samples = append([]datalogger.RawSample(nil), batch.Samples...)
+	return batch
 }
 
 func waitEnergyRuntimeLatest(t *testing.T, runtime *runtime, at time.Time) BatchMetrics {
@@ -279,4 +386,6 @@ func energyRawBatch(loggerID, electricalID, thermalID uuid.UUID, at time.Time, e
 }
 
 var _ datalogger.CommittedBatchFeed = (*energyRuntimeFeed)(nil)
+var _ HistoryReader = (*energyRuntimeFeed)(nil)
 var _ datalogger.CommittedBatchSubscription = (*energyRuntimeSubscription)(nil)
+var _ plugin.OutputSink = (*energyRuntimeOutputSink)(nil)

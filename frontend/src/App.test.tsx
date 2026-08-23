@@ -90,6 +90,14 @@ vi.mock("./features/plugin/pages/EnergyWizardPage", () => ({
   default: () => <h1>Energy Configuration Wizard</h1>,
 }));
 
+vi.mock("./features/plugin/pages/EnergyOverviewPage", () => ({
+  default: () => <h1>Energy Overview Dashboard</h1>,
+}));
+
+vi.mock("./features/plugin/pages/EnergyHistoryPage", () => ({
+  default: () => <h1>Energy History Workspace</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedListVGateways = vi.mocked(listVGateways);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
@@ -370,6 +378,18 @@ describe("App", () => {
       expect(window.location.pathname).toBe(path);
     },
   );
+
+  it("protects and renders the Energy overview route", () => {
+    renderAuthenticatedApp("/plugins/plugin-id/energy");
+    expect(screen.getByRole("heading", { name: "Energy Overview Dashboard" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/plugins/plugin-id/energy");
+  });
+
+  it("protects and renders the Energy history route under the Plugin", async () => {
+    renderAuthenticatedApp("/plugins/plugin-id/energy/history");
+    expect(await screen.findByRole("heading", { name: "Energy History Workspace" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/plugins/plugin-id/energy/history");
+  });
 
   it.each(["/reports/new", "/reports/report-id/edit"])(
     "protects and renders the Report builder route at %s",

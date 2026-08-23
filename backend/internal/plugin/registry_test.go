@@ -54,7 +54,8 @@ func TestRegistryRegistersAndListsImmutableManifestsDeterministically(t *testing
 	t.Parallel()
 
 	energy := validRegistryDefinition("energy_management")
-	energy.manifest.Capabilities = []Capability{"logger.history", "logger.batches"}
+	energy.manifest.Capabilities = []Capability{"logger.history", "logger.batches", CapabilityPluginOutputsPublish}
+	energy.manifest.Outputs = []OutputDescriptor{validOutputDescriptor("electrical_demand_kw")}
 	mqtt := validRegistryDefinition("mqtt_publisher")
 	registry, err := NewRegistry(mqtt, energy)
 	if err != nil {
@@ -63,21 +64,23 @@ func TestRegistryRegistersAndListsImmutableManifestsDeterministically(t *testing
 
 	energy.manifest.Name = "Changed externally"
 	energy.manifest.Capabilities[0] = "tag.events"
+	energy.manifest.Outputs[0].Name = "Changed output"
 	manifests := registry.List()
 	if len(manifests) != 2 || manifests[0].Type != "energy_management" || manifests[1].Type != "mqtt_publisher" {
 		t.Fatalf("List() = %#v, want deterministic type ordering", manifests)
 	}
-	if manifests[0].Name != "Energy Management" || manifests[0].Capabilities[0] != "logger.history" {
+	if manifests[0].Name != "Energy Management" || manifests[0].Capabilities[0] != "logger.history" || manifests[0].Outputs[0].Name != "Metric" {
 		t.Fatalf("List() manifest = %#v, registration snapshot was mutated", manifests[0])
 	}
 
 	manifests[0].Name = "Changed return value"
 	manifests[0].Capabilities[0] = "secrets"
+	manifests[0].Outputs[0].Name = "Changed return output"
 	stored, err := registry.Manifest("energy_management")
 	if err != nil {
 		t.Fatalf("Manifest() error = %v", err)
 	}
-	if stored.Name != "Energy Management" || stored.Capabilities[0] != "logger.history" {
+	if stored.Name != "Energy Management" || stored.Capabilities[0] != "logger.history" || stored.Outputs[0].Name != "Metric" {
 		t.Fatalf("Manifest() = %#v, returned value aliases registry state", stored)
 	}
 	registered, err := registry.Definition("energy_management")
@@ -114,6 +117,10 @@ func TestRegistryRejectsInvalidDefinitionsAndManifests(t *testing.T) {
 		{name: "invalid capability", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Capabilities: []Capability{"Logger History"}})},
 		{name: "duplicate capability", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Capabilities: []Capability{"logger.history", "logger.history"}})},
 		{name: "too many capabilities", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Capabilities: tooManyCapabilities})},
+		{name: "invalid output", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Outputs: []OutputDescriptor{{}}})},
+		{name: "duplicate output", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Outputs: []OutputDescriptor{validOutputDescriptor("power"), validOutputDescriptor("power")}})},
+		{name: "outputs without capability", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Outputs: []OutputDescriptor{validOutputDescriptor("power")}})},
+		{name: "capability without outputs", definition: definitionWithManifest(Manifest{Type: "energy", Name: "Valid", Version: "1.0.0", ConfigVersion: 1, Capabilities: []Capability{CapabilityPluginOutputsPublish}})},
 	}
 
 	for _, test := range tests {

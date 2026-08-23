@@ -191,8 +191,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize Plugin service: %v", err)
 	}
+	pluginOutputBroker, err := plugin.NewOutputBroker()
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin output broker: %v", err)
+	}
+	pluginOutputStore, err := plugin.NewOutputStore(pluginpostgres.NewOutputRepository(db), pluginService, pluginOutputBroker)
+	if err != nil {
+		log.Fatalf("failed to initialize Plugin output store: %v", err)
+	}
 	pluginHost, err := plugin.NewCapabilityHost(map[plugin.Capability]any{
 		plugin.CapabilityLoggerCommittedBatches: dataLoggerBatchFeed,
+		plugin.CapabilityLoggerHistoryBatches:   dataLoggerHistory,
+		plugin.CapabilityPluginOutputsPublish:   pluginOutputStore,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize Plugin capability host: %v", err)

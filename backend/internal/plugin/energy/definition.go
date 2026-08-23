@@ -64,7 +64,12 @@ func (*Definition) Manifest() plugin.Manifest {
 		Type: PluginType, Name: "Energy Management",
 		Description: "Calculate electrical and thermal energy, cost, and COP from synchronized Data Logger batches",
 		Version:     "0.1.0", ConfigVersion: 1, MultipleInstances: true,
-		Capabilities: []plugin.Capability{plugin.CapabilityLoggerCommittedBatches},
+		Capabilities: []plugin.Capability{
+			plugin.CapabilityLoggerCommittedBatches,
+			plugin.CapabilityLoggerHistoryBatches,
+			plugin.CapabilityPluginOutputsPublish,
+		},
+		Outputs: outputDescriptors(),
 	}
 }
 

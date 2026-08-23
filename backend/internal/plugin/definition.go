@@ -12,7 +12,11 @@ type Type string
 type Capability string
 type Config = json.RawMessage
 
-const CapabilityLoggerCommittedBatches Capability = "logger.committed_batches"
+const (
+	CapabilityLoggerCommittedBatches Capability = "logger.committed_batches"
+	CapabilityLoggerHistoryBatches   Capability = "logger.history_batches"
+	CapabilityPluginOutputsPublish   Capability = "plugin.outputs.publish"
+)
 
 var (
 	ErrDefinitionRequired          = errors.New("plugin definition is required")
@@ -28,13 +32,14 @@ var (
 )
 
 type Manifest struct {
-	Type              Type         `json:"type"`
-	Name              string       `json:"name"`
-	Description       string       `json:"description,omitempty"`
-	Version           string       `json:"version"`
-	ConfigVersion     uint         `json:"config_version"`
-	MultipleInstances bool         `json:"multiple_instances"`
-	Capabilities      []Capability `json:"capabilities"`
+	Type              Type               `json:"type"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description,omitempty"`
+	Version           string             `json:"version"`
+	ConfigVersion     uint               `json:"config_version"`
+	MultipleInstances bool               `json:"multiple_instances"`
+	Capabilities      []Capability       `json:"capabilities"`
+	Outputs           []OutputDescriptor `json:"outputs,omitempty"`
 }
 
 type RuntimeSpec struct {
@@ -65,5 +70,6 @@ func cloneConfig(config Config) Config {
 
 func cloneManifest(manifest Manifest) Manifest {
 	manifest.Capabilities = append([]Capability(nil), manifest.Capabilities...)
+	manifest.Outputs = append([]OutputDescriptor(nil), manifest.Outputs...)
 	return manifest
 }

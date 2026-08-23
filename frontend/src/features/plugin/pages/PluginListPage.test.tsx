@@ -38,6 +38,7 @@ describe("PluginListPage", () => {
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.getByText("Enabled", { selector: ".plugin-desired" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New Energy instance" })).toHaveAttribute("href", "/plugins/new/energy");
+    expect(screen.getByRole("link", { name: "Open Plant Energy dashboard" })).toHaveAttribute("href", "/plugins/plugin-1/energy");
     expect(screen.getByRole("link", { name: "Configure Plant Energy" })).toHaveAttribute("href", "/plugins/plugin-1/configure");
   });
 
