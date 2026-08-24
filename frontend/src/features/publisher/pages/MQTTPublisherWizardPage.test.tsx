@@ -124,7 +124,10 @@ describe("MQTTPublisherWizardPage", () => {
     }]);
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it("renders an accessible connection step with independent TLS and credentials", async () => {
     const { container } = renderPage();
@@ -176,6 +179,23 @@ describe("MQTTPublisherWizardPage", () => {
     await screen.findByText("Energy today");
     expect(screen.getByRole("progressbar", { name: "Coverage 82.5 percent" })).toBeInTheDocument();
     expect(screen.getByLabelText("Period from 2026-08-23T00:00:00Z to 2026-08-23T08:35:25.573Z")).toBeInTheDocument();
+  });
+
+  it("adds an Energy output when randomUUID is unavailable", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.fill(7);
+        return bytes;
+      },
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+
+    await addCatalogSource("Energy today");
+
+    expect(screen.getByLabelText("Alias for Energy today")).toHaveValue("energy_today");
+    expect(screen.getByLabelText("Period for energy_today")).toHaveValue("windowed");
+    expect(screen.getByLabelText("Period for energy_today")).toBeDisabled();
   });
 
   it("keeps the payload freely editable and inserts source syntax at the cursor", async () => {

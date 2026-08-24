@@ -23,6 +23,7 @@ services:
     image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
     build:
       context: ../backend
+      network: host
     network_mode: host
     entrypoint: ["/usr/local/bin/iot-edge-migrate"]
     environment:
@@ -38,6 +39,7 @@ services:
     image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
     build:
       context: ../backend
+      network: host
     restart: unless-stopped
     network_mode: host
     environment:
@@ -71,6 +73,7 @@ services:
     image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
     build:
       context: ../backend
+      network: host
     network_mode: host
     entrypoint: ["/usr/local/bin/iot-edge-reset-password"]
     environment:
@@ -89,6 +92,7 @@ services:
     image: ${IOT_EDGE_FRONTEND_IMAGE:-iot-edge-frontend}:${IOT_EDGE_VERSION:-0.1.0}
     build:
       context: ../frontend
+      network: host
     restart: unless-stopped
     network_mode: host
     environment:

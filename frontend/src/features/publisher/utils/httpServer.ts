@@ -8,6 +8,7 @@ import type {
   PublisherSourceDraft,
 } from "../../../types/publisher";
 import { previewPayloadTemplate, validateSourceAliases } from "./mqtt";
+import { createPublisherDraftID } from "./shared";
 
 const headerPattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
 
@@ -104,7 +105,7 @@ export function importHTTPServerPublisherDraft(
     const descriptor = descriptorByReference.get(referenceKey(selection.reference));
     if (!descriptor) throw new Error(`Publisher source is no longer available: ${selection.alias}`);
     return {
-      id: crypto.randomUUID(),
+      id: createPublisherDraftID(),
       alias: selection.alias,
       reference: selection.reference,
       name: descriptor.name,

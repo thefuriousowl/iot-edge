@@ -97,7 +97,10 @@ describe("HTTPServerPublisherWizardPage", () => {
     mockedStatus.mockReset().mockResolvedValue(runtime);
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it("starts secure and blocks API-key access until a matching profile is selected", async () => {
     renderPage();
@@ -125,6 +128,25 @@ describe("HTTPServerPublisherWizardPage", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /I understand this endpoint has no authentication/ }));
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
     expect(screen.getByRole("heading", { name: "Sources and snapshot trigger" })).toBeInTheDocument();
+  });
+
+  it("adds an Energy output when randomUUID is unavailable", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.fill(9);
+        return bytes;
+      },
+    });
+    renderPage();
+    fireEvent.change(await screen.findByLabelText("HTTP Credential Profile"), { target: { value: "credential-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+
+    const sourceTitle = await screen.findByText("Today covered cost");
+    fireEvent.click(within(sourceTitle.closest("article")!).getByRole("button", { name: "Add" }));
+
+    expect(screen.getByLabelText("Alias for Today covered cost")).toHaveValue("today_covered_cost");
+    expect(screen.getByLabelText("Period for today_covered_cost")).toHaveValue("windowed");
+    expect(screen.getByLabelText("Period for today_covered_cost")).toBeDisabled();
   });
 
   it("keeps JSON operator-authored, validates it, and creates a disabled HTTP Server", async () => {

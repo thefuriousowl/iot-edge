@@ -7,6 +7,7 @@ import type {
   PublisherSourceCatalogEntry,
   PublisherSourceDraft,
 } from "../../../types/publisher";
+import { createPublisherDraftID } from "./shared";
 
 const aliasPattern = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 const helperSpecs: Record<string, { minimum: number; maximum: number; source: boolean }> = {
@@ -101,8 +102,8 @@ export function initialMQTTPublisherDraft(): MQTTPublisherDraft {
 }`,
       },
       diagnostics: [
-        { id: crypto.randomUUID(), label: "ack", topic_filter: "site/edge/ack", qos: 1 },
-        { id: crypto.randomUUID(), label: "error", topic_filter: "site/edge/error", qos: 1 },
+        { id: createPublisherDraftID(), label: "ack", topic_filter: "site/edge/ack", qos: 1 },
+        { id: createPublisherDraftID(), label: "error", topic_filter: "site/edge/error", qos: 1 },
       ],
       keep_alive_ms: 30_000,
       connect_timeout_ms: 10_000,
@@ -124,7 +125,7 @@ export function importMQTTPublisherDraft(entity: DataPublisher, catalog: Publish
     const descriptor = descriptorByReference.get(sourceReferenceKey(selection.reference));
     if (!descriptor) throw new Error(`Publisher source is no longer available: ${selection.alias}`);
     return {
-      id: crypto.randomUUID(), alias: selection.alias, reference: selection.reference,
+      id: createPublisherDraftID(), alias: selection.alias, reference: selection.reference,
       name: descriptor.name, owner_name: descriptor.owner_name ?? "Core", kind: descriptor.reference.kind,
       data_type: descriptor.data_type, unit: descriptor.unit ?? "", period_kind: descriptor.period_kind,
     };
@@ -156,7 +157,7 @@ export function importMQTTPublisherDraft(entity: DataPublisher, catalog: Publish
         server_name: config.mqtt.tls.server_name ?? "",
       },
       publish: { ...config.mqtt.publish },
-      diagnostics: config.mqtt.diagnostics.map((diagnostic) => ({ id: crypto.randomUUID(), ...diagnostic })),
+      diagnostics: config.mqtt.diagnostics.map((diagnostic) => ({ id: createPublisherDraftID(), ...diagnostic })),
       keep_alive_ms: config.mqtt.keep_alive_ms,
       connect_timeout_ms: config.mqtt.connect_timeout_ms,
       publish_timeout_ms: config.mqtt.publish_timeout_ms,

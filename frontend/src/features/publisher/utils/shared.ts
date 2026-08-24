@@ -5,6 +5,24 @@ import type {
   PublisherSourceSelection,
 } from "../../../types/publisher";
 
+let fallbackDraftIDSequence = 0;
+
+export function createPublisherDraftID(): string {
+  const webCrypto = globalThis.crypto as Crypto | undefined;
+  if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
+
+  if (typeof webCrypto?.getRandomValues === "function") {
+    const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+  }
+
+  fallbackDraftIDSequence += 1;
+  return `publisher-draft-${Date.now().toString(36)}-${fallbackDraftIDSequence.toString(36)}`;
+}
+
 export function publisherSourceReferenceKey(reference: PublisherSourceReference): string {
   return reference.kind === "tag"
     ? `tag:${reference.tag_id}`
@@ -31,7 +49,7 @@ export function nextPublisherSourceAlias(name: string, existing: PublisherSource
 export function publisherSourceDraft(entry: PublisherSourceCatalogEntry, existing: PublisherSourceDraft[]): PublisherSourceDraft {
   const { descriptor } = entry;
   return {
-    id: crypto.randomUUID(),
+    id: createPublisherDraftID(),
     alias: nextPublisherSourceAlias(descriptor.name, existing),
     reference: descriptor.reference,
     name: descriptor.name,
