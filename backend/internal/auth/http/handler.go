@@ -63,7 +63,7 @@ func (h *AuthHandler) SetupStatus(c *fiber.Ctx) error {
 func (h *AuthHandler) Setup(c *fiber.Ctx) error {
 	var request auth.SetupRequest
 
-	if err := c.BodyParser(&request); err != nil {
+	if err := decodeStrictJSON(c.Body(), &request); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "VALIDATION_ERROR",
@@ -127,7 +127,7 @@ func (h *AuthHandler) Setup(c *fiber.Ctx) error {
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	var request auth.LoginRequest
 
-	if err := c.BodyParser(&request); err != nil {
+	if err := decodeStrictJSON(c.Body(), &request); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": fiber.Map{
 				"code":    "VALIDATION_ERROR",

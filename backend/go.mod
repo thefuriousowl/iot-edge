@@ -1,6 +1,6 @@
 module github.com/thefuriousowl/iot-edge
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/aldas/go-modbus-client v0.5.0

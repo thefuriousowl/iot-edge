@@ -52,10 +52,26 @@ jobs:
       - name: Run tests
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/iotedge_test?sslmode=disable
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Enforce backend coverage
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          awk -v total="$total" 'BEGIN { if (total + 0 < 70) { printf "backend coverage %.1f%% is below 70%%\n", total; exit 1 } }'
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Install pinned Go security scanners
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+
+      - name: Run Go vulnerability scan
+        run: govulncheck ./...
+
+      - name: Run Go static security scan
+        run: gosec -quiet -exclude=G101,G115,G404 ./...
 
   frontend:
     name: Frontend
@@ -88,8 +104,37 @@ jobs:
       - name: Run lint
         run: pnpm lint
 
-      - name: Run tests
-        run: pnpm test
+      - name: Run tests with coverage gate
+        run: pnpm test:coverage
+
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
 
       - name: Build
         run: pnpm build
+
+  secrets:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned pre-commit
+        run: python -m pip install pre-commit==4.6.0
+
+      - name: Run tracked-file secret scan
+        run: pre-commit run gitleaks --all-files

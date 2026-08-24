@@ -131,6 +131,33 @@ func TestRequireAuth_InvalidAuthorizationHeaderReturnsUnauthorized(t *testing.T)
 	}
 }
 
+func TestRequireAuth_RejectsDuplicateAuthorizationHeaders(t *testing.T) {
+	parser := &fakeAccessTokenParser{}
+	app := fiber.New()
+	handlerCalled := false
+	app.Get("/protected", RequireAuth(parser), func(c *fiber.Ctx) error {
+		handlerCalled = true
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	request.Header.Add(fiber.HeaderAuthorization, "Bearer first.jwt.value")
+	request.Header.Add(fiber.HeaderAuthorization, "Bearer second.jwt.value")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("app.Test() error: %v", err)
+	}
+	defer response.Body.Close()
+
+	assertUnauthorized(t, response)
+	if handlerCalled {
+		t.Error("protected handler was called")
+	}
+	if parser.callCount != 0 {
+		t.Errorf("ParseToken() calls = %d, want 0", parser.callCount)
+	}
+}
+
 func TestRequireAuth_InvalidClaimsReturnUnauthorized(t *testing.T) {
 	tests := []struct {
 		name   string

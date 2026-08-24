@@ -197,6 +197,85 @@ func TestParseToken_RejectsInvalidTokens(t *testing.T) {
 			t.Fatalf("ParseToken() error = %v, want ErrInvalidToken", err)
 		}
 	})
+
+	t.Run("unsigned none algorithm", func(t *testing.T) {
+		claims := TokenClaims{
+			Username:  user.Username,
+			TokenType: TokenTypeAccess,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   user.ID.String(),
+				IssuedAt:  jwt.NewNumericDate(now),
+				ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			},
+		}
+		rawToken, err := jwt.NewWithClaims(jwt.SigningMethodNone, claims).SignedString(jwt.UnsafeAllowNoneSignatureType)
+		if err != nil {
+			t.Fatalf("signing unsigned token: %v", err)
+		}
+		_, err = service.ParseToken(rawToken, TokenTypeAccess)
+		if !errors.Is(err, ErrInvalidToken) {
+			t.Fatalf("ParseToken() error = %v, want ErrInvalidToken", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		expected string
+		claims   TokenClaims
+	}{
+		{
+			name: "missing expiration",
+			claims: TokenClaims{Username: user.Username, TokenType: TokenTypeAccess, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: user.ID.String(), IssuedAt: jwt.NewNumericDate(now),
+			}},
+		},
+		{
+			name: "missing issued at",
+			claims: TokenClaims{Username: user.Username, TokenType: TokenTypeAccess, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: user.ID.String(), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}},
+		},
+		{
+			name: "invalid subject",
+			claims: TokenClaims{Username: user.Username, TokenType: TokenTypeAccess, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: "not-a-uuid", IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}},
+		},
+		{
+			name: "access missing username",
+			claims: TokenClaims{TokenType: TokenTypeAccess, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: user.ID.String(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}},
+		},
+		{
+			name:     "refresh missing jti",
+			expected: TokenTypeRefresh,
+			claims: TokenClaims{TokenType: TokenTypeRefresh, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: user.ID.String(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}},
+		},
+		{
+			name: "negative session version",
+			claims: TokenClaims{Username: user.Username, TokenType: TokenTypeAccess, SessionVersion: -1, RegisteredClaims: jwt.RegisteredClaims{
+				Subject: user.ID.String(), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+			}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rawToken, err := service.signToken(test.claims)
+			if err != nil {
+				t.Fatalf("signToken() error: %v", err)
+			}
+			expected := test.expected
+			if expected == "" {
+				expected = TokenTypeAccess
+			}
+			_, err = service.ParseToken(rawToken, expected)
+			if !errors.Is(err, ErrInvalidToken) {
+				t.Fatalf("ParseToken() error = %v, want ErrInvalidToken", err)
+			}
+		})
+	}
 }
 
 func TestGenerateTokenPair_RejectsInvalidUser(t *testing.T) {

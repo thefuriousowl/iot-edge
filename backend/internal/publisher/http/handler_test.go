@@ -180,6 +180,8 @@ func TestPublisherHandlerMapsStableSanitizedErrors(t *testing.T) {
 		{publisher.ErrUnsupportedPublisherType, fiber.StatusBadRequest, "PUB003", "Data Publisher type is unavailable"},
 		{publisher.ErrSourceNotFound, fiber.StatusBadRequest, "PUB004", "Selected Publisher source was not found"},
 		{publisher.ErrIncompatibleSource, fiber.StatusBadRequest, "PUB005", "Selected source is incompatible with this Publisher"},
+		{publisher.ErrCredentialNotFound, fiber.StatusBadRequest, "PUB019", "Selected Credential Profile was not found"},
+		{publisher.ErrCredentialIncompatible, fiber.StatusBadRequest, "PUB020", "Selected Credential Profile is incompatible with this Publisher"},
 		{publisher.ErrConfigVersionMismatch, fiber.StatusConflict, "PUB006", "Data Publisher configuration must be updated"},
 		{publisher.ErrMQTTConnectionDNSFailed, fiber.StatusBadGateway, "PUB021", "MQTT broker hostname could not be resolved"},
 		{publisher.ErrMQTTConnectionTCPFailed, fiber.StatusBadGateway, "PUB022", "MQTT broker TCP connection failed"},
@@ -241,6 +243,43 @@ func TestPublisherHandlerLifecycleStatusAndGenericDiagnostics(t *testing.T) {
 	if diagnosticsBody.Data == nil || len(diagnosticsBody.Data) != 0 {
 		t.Fatalf("empty diagnostics = %#v, want non-nil empty array", diagnosticsBody.Data)
 	}
+
+	response, _ = app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/disable", nil))
+	if response.StatusCode != fiber.StatusOK || service.enabledID != publisherID || service.enabled || manager.reconcileCount != 2 {
+		t.Fatalf("disable = %d %s %v reconcile=%d", response.StatusCode, service.enabledID, service.enabled, manager.reconcileCount)
+	}
+	response.Body.Close()
+}
+
+func TestPublisherHandlerLifecycleRuntimeAndReconciliationFallbacks(t *testing.T) {
+	publisherID := uuid.New()
+	entity := &publisher.Publisher{ID: publisherID, Type: publisher.TypeMQTT, Name: "MQTT", Enabled: true, ConfigVersion: 3}
+	service := &handlerService{entity: entity}
+	app := publisherTestApp(service, &handlerSources{}, publisher.NewJSONPayloadEngine())
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/api/data-publishers/" + publisherID.String() + "/disable"},
+		{"GET", "/api/data-publishers/" + publisherID.String() + "/status"},
+		{"POST", "/api/data-publishers/" + publisherID.String() + "/restart"},
+	} {
+		response, _ := app.Test(httptest.NewRequest(route.method, route.path, nil))
+		assertAPIError(t, response, fiber.StatusServiceUnavailable, "PUB010", "Data Publisher runtime is unavailable")
+	}
+
+	manager := &handlerManager{err: errors.New("runtime reconcile failed")}
+	app = publisherTestAppWithOptions(service, &handlerSources{}, publisher.NewJSONPayloadEngine(), WithRuntimeManager(manager))
+	response, _ := app.Test(httptest.NewRequest("POST", "/api/data-publishers/"+publisherID.String()+"/disable", nil))
+	assertAPIError(t, response, fiber.StatusServiceUnavailable, "PUB011", "Data Publisher was saved but runtime reconciliation is pending")
+	if service.enabledID != publisherID || service.enabled || manager.reconcileCount != 1 {
+		t.Fatalf("pending disable = %s %v reconcile=%d", service.enabledID, service.enabled, manager.reconcileCount)
+	}
+
+	app = publisherTestAppWithOptions(nil, &handlerSources{}, publisher.NewJSONPayloadEngine(), WithRuntimeManager(&handlerManager{}))
+	response, _ = app.Test(httptest.NewRequest("GET", "/api/data-publishers/", nil))
+	assertAPIError(t, response, fiber.StatusServiceUnavailable, "PUB010", "Data Publisher API is unavailable")
 }
 
 func TestPublisherHandlerOverlaysPersistedMetadataOnEmptyStoppedRuntime(t *testing.T) {

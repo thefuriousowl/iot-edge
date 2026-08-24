@@ -143,6 +143,7 @@ func TestRepositoryListFiltersLiteralSearchAndPagination_Integration(t *testing.
 	assertReportList(t, repository, report.ListInput{Search: "%", Page: 1, PerPage: 20}, []uuid.UUID{alpha.ID, beta.ID, percent.ID})
 	assertReportList(t, repository, report.ListInput{Search: "_", Page: 1, PerPage: 20}, []uuid.UUID{percent.ID, underscore.ID, backslash.ID})
 	assertReportList(t, repository, report.ListInput{Search: `\`, Page: 1, PerPage: 20}, []uuid.UUID{underscore.ID, backslash.ID})
+	assertReportList(t, repository, report.ListInput{Search: `' UNION SELECT NULL --`, Page: 1, PerPage: 20}, []uuid.UUID{})
 	assertReportList(t, repository, report.ListInput{LoggerID: &loggerPercent, Page: 1, PerPage: 20}, []uuid.UUID{alpha.ID, beta.ID})
 	aggregate := datalogger.QueryModeAggregate
 	assertReportList(t, repository, report.ListInput{Mode: &aggregate, Page: 1, PerPage: 20}, []uuid.UUID{beta.ID, underscore.ID})

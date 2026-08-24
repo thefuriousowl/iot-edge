@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +64,22 @@ func TestLoad_MissingDatabaseURL_ReturnsError(t *testing.T) {
 	}
 	if err.Error() != "DATABASE_URL is required" {
 		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+func TestLoad_InvalidEnvironmentFileReturnsError(t *testing.T) {
+	setupEnv(t, validEnv())
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir(".env", 0o700); err != nil {
+		t.Fatalf("creating invalid environment path: %v", err)
+	}
+
+	cfg, err := Load()
+	if err == nil || cfg != nil {
+		t.Fatalf("Load() = %#v, %v; want environment-file error", cfg, err)
+	}
+	if !strings.Contains(err.Error(), "load environment file") {
+		t.Errorf("Load() error = %q", err)
 	}
 }
 

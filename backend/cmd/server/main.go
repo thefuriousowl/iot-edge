@@ -48,6 +48,8 @@ import (
 	vgatewaypostgres "github.com/thefuriousowl/iot-edge/internal/vgateway/postgres"
 )
 
+const maxAPIRequestBodyBytes = 1 << 20
+
 func main() {
 	// Load application configuration
 	cfg, err := config.Load()
@@ -395,16 +397,18 @@ func main() {
 		authService,
 	)
 	protectedAPI := app.Group("/api", authhttp.RequireAuth(authService))
-	systemhttp.RegisterRoutes(protectedAPI, systemHandler)
-	vgatewayhttp.RegisterRoutes(protectedAPI, vgatewayHandler)
-	devicehttp.RegisterRoutes(protectedAPI, deviceHandler)
-	taghttp.RegisterRoutes(protectedAPI, tagHandler)
-	dataloggerhttp.RegisterRoutes(protectedAPI, dataLoggerHandler)
-	pluginhttp.RegisterRoutes(protectedAPI, pluginHandler)
-	energyhttp.RegisterRoutes(protectedAPI, energyHandler)
-	reporthttp.RegisterRoutes(protectedAPI, reportHandler)
-	credentialhttp.RegisterRoutes(protectedAPI, credentialHandler)
-	publisherhttp.RegisterRoutes(protectedAPI, publisherHandler)
+	registerProtectedAPIRoutes(protectedAPI, protectedAPIHandlers{
+		system:     systemHandler,
+		vgateway:   vgatewayHandler,
+		device:     deviceHandler,
+		tag:        tagHandler,
+		datalogger: dataLoggerHandler,
+		plugin:     pluginHandler,
+		energy:     energyHandler,
+		report:     reportHandler,
+		credential: credentialHandler,
+		publisher:  publisherHandler,
+	})
 
 	// Start HTTP server
 	address := ":" + cfg.Port
@@ -422,10 +426,43 @@ func main() {
 	stopSignal()
 }
 
+type protectedAPIHandlers struct {
+	system     *systemhttp.Handler
+	vgateway   *vgatewayhttp.Handler
+	device     *devicehttp.Handler
+	tag        *taghttp.Handler
+	datalogger *dataloggerhttp.Handler
+	plugin     *pluginhttp.Handler
+	energy     *energyhttp.Handler
+	report     *reporthttp.Handler
+	credential *credentialhttp.Handler
+	publisher  *publisherhttp.Handler
+}
+
+func registerProtectedAPIRoutes(router fiber.Router, handlers protectedAPIHandlers) {
+	systemhttp.RegisterRoutes(router, handlers.system)
+	vgatewayhttp.RegisterRoutes(router, handlers.vgateway)
+	devicehttp.RegisterRoutes(router, handlers.device)
+	taghttp.RegisterRoutes(router, handlers.tag)
+	dataloggerhttp.RegisterRoutes(router, handlers.datalogger)
+	pluginhttp.RegisterRoutes(router, handlers.plugin)
+	energyhttp.RegisterRoutes(router, handlers.energy)
+	reporthttp.RegisterRoutes(router, handlers.report)
+	credentialhttp.RegisterRoutes(router, handlers.credential)
+	publisherhttp.RegisterRoutes(router, handlers.publisher)
+}
+
 func newApp(corsAllowOrigins string) *fiber.App {
-	app := fiber.New()
+	app := fiber.New(fiber.Config{BodyLimit: maxAPIRequestBodyBytes})
 
 	app.Use(logger.New())
+	app.Use(func(c *fiber.Ctx) error {
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("Referrer-Policy", "no-referrer")
+		return c.Next()
+	})
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     corsAllowOrigins,
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, Last-Event-ID",

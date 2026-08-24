@@ -24,7 +24,11 @@ type AccessTokenParser interface {
 
 func RequireAuth(parser AccessTokenParser) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		authorization := c.Get(fiber.HeaderAuthorization)
+		authorizationHeaders := c.Context().Request.Header.PeekAll(fiber.HeaderAuthorization)
+		if len(authorizationHeaders) != 1 {
+			return unauthorized(c)
+		}
+		authorization := string(authorizationHeaders[0])
 		parts := strings.Fields(authorization)
 
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {

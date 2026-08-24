@@ -62,13 +62,63 @@ describe("PublisherSourceSelector", () => {
     fireEvent.click(within(row!).getByRole("button", { name: "Add" }));
     expect(onAdd).toHaveBeenCalledWith(catalog[0]);
   });
+
+  it("preserves legacy rows for repair and exposes every editable descriptor field", () => {
+    const onUpdate = vi.fn();
+    const legacySource: PublisherSourceDraft = {
+      ...sources[0],
+      id: "legacy-1",
+      alias: "legacy_power",
+      kind: "plugin_output",
+      period_kind: "windowed",
+      reference: undefined,
+    };
+
+    render(<PublisherSourceSelector catalog={[]} catalogState="error" search="power" kind="plugin_output" sources={[legacySource]}
+      onSearchChange={vi.fn()} onKindChange={vi.fn()} onAdd={vi.fn()} onUpdate={onUpdate} onRemove={vi.fn()} />);
+
+    expect(screen.getByText(/legacy schema-only rows/)).toBeInTheDocument();
+    expect(screen.getByText(/Source catalog unavailable/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Display name for legacy_power")).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("Display name for legacy_power"), { target: { value: "Legacy demand" } });
+    fireEvent.change(screen.getByLabelText("Kind for legacy_power"), { target: { value: "tag" } });
+    fireEvent.change(screen.getByLabelText("Data type for legacy_power"), { target: { value: "float32" } });
+    fireEvent.change(screen.getByLabelText("Unit for legacy_power"), { target: { value: "W" } });
+    fireEvent.change(screen.getByLabelText("Period for legacy_power"), { target: { value: "instantaneous" } });
+
+    expect(onUpdate).toHaveBeenCalledWith("legacy-1", { name: "Legacy demand" });
+    expect(onUpdate).toHaveBeenCalledWith("legacy-1", { kind: "tag", period_kind: "instantaneous" });
+    expect(onUpdate).toHaveBeenCalledWith("legacy-1", { data_type: "float32" });
+    expect(onUpdate).toHaveBeenCalledWith("legacy-1", { unit: "W" });
+    expect(onUpdate).toHaveBeenCalledWith("legacy-1", { period_kind: "instantaneous" });
+  });
+
+  it("distinguishes loading and empty ready catalog states", () => {
+    const props = {
+      catalog: [], search: "", kind: "" as const, sources: [],
+      onSearchChange: vi.fn(), onKindChange: vi.fn(), onAdd: vi.fn(), onUpdate: vi.fn(), onRemove: vi.fn(),
+    };
+    const { rerender } = render(<PublisherSourceSelector {...props} catalogState="loading" />);
+
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByText(/No enabled sources/)).not.toBeInTheDocument();
+
+    rerender(<PublisherSourceSelector {...props} catalogState="ready" />);
+    expect(screen.getByText("No enabled sources match this filter.")).toBeInTheDocument();
+  });
 });
 
 describe("PublisherTriggerSetup", () => {
   it("makes asynchronous interval and on-change semantics explicit", () => {
+    const triggerSources = [
+      sources[0],
+      { ...sources[0], id: "source-2", alias: "thermal_kw", name: "Thermal power" },
+    ];
+
     function Harness() {
       const [trigger, setTrigger] = useState<MQTTPublisherDraft["trigger"]>({ mode: "interval", interval_ms: 60_000, source_alias: "stale_alias", coalesce_ms: 500 });
-      return <PublisherTriggerSetup trigger={trigger} sources={sources} onChange={setTrigger} />;
+      return <PublisherTriggerSetup trigger={trigger} sources={triggerSources} onChange={setTrigger} />;
     }
     render(<Harness />);
 
@@ -78,8 +128,12 @@ describe("PublisherTriggerSetup", () => {
     fireEvent.click(screen.getByRole("button", { name: /On source change/ }));
     expect(screen.getByText(/retaining other sources at their own timestamps/)).toBeInTheDocument();
     expect(screen.getByLabelText("Trigger source")).toHaveValue("active_power");
+    fireEvent.change(screen.getByLabelText("Trigger source"), { target: { value: "thermal_kw" } });
+    expect(screen.getByLabelText("Trigger source")).toHaveValue("thermal_kw");
     fireEvent.change(screen.getByLabelText("Coalesce window"), { target: { value: "250" } });
     expect(screen.getByLabelText("Coalesce window")).toHaveValue(250);
+    fireEvent.click(screen.getByRole("button", { name: /Fixed interval/ }));
+    expect(screen.getByLabelText("Trigger interval")).toHaveValue(5000);
   });
 });
 

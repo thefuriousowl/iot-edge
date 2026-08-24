@@ -47,6 +47,16 @@ func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
 		t.Errorf("Content-Type = %q, want application/json", contentType)
 	}
+	for header, want := range map[string]string{
+		fiber.HeaderCacheControl:        "no-store",
+		fiber.HeaderXContentTypeOptions: "nosniff",
+		"X-Frame-Options":               "DENY",
+		"Referrer-Policy":               "no-referrer",
+	} {
+		if got := response.Header.Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
 
 	var body struct {
 		Status  string `json:"status"`
@@ -61,6 +71,25 @@ func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	}
 	if body.Version != "0.1.0" {
 		t.Errorf("version = %q, want %q", body.Version, "0.1.0")
+	}
+}
+
+func TestAPIRejectsOversizedRequestBodies(t *testing.T) {
+	app := newApp("http://localhost:5173")
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/auth/login",
+		strings.NewReader(strings.Repeat("x", maxAPIRequestBodyBytes+1)),
+	)
+	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+
+	response, err := app.Test(request, -1)
+	if response != nil {
+		response.Body.Close()
+		t.Fatalf("oversized request returned response status %d", response.StatusCode)
+	}
+	if err == nil || !strings.Contains(err.Error(), "body size exceeds the given limit") {
+		t.Errorf("error = %v, want body-size limit error", err)
 	}
 }
 

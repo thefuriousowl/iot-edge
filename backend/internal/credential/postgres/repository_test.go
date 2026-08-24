@@ -71,6 +71,7 @@ func TestRepositoryCRUDFiltersUsageAndSecretRedaction_Integration(t *testing.T) 
 	assertCredentialList(t, repository, credential.ListInput{Search: "%"}, []uuid.UUID{profiles[0].ID})
 	assertCredentialList(t, repository, credential.ListInput{Search: "_"}, []uuid.UUID{profiles[1].ID})
 	assertCredentialList(t, repository, credential.ListInput{Search: `\`}, []uuid.UUID{profiles[2].ID})
+	assertCredentialList(t, repository, credential.ListInput{Search: `' OR 1=1 --`}, []uuid.UUID{})
 	assertCredentialList(t, repository, credential.ListInput{Search: "PLANT"}, []uuid.UUID{profiles[0].ID, profiles[3].ID})
 	assertCredentialList(t, repository, credential.ListInput{}, []uuid.UUID{profiles[0].ID, profiles[1].ID, profiles[2].ID, profiles[3].ID})
 

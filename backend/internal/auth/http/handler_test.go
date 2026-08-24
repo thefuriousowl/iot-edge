@@ -435,6 +435,16 @@ func TestAuthHandlerSetup_RejectsMalformedAndInvalidRequests(t *testing.T) {
 			wantMessage: "Invalid request body",
 		},
 		{
+			name:        "unknown field",
+			requestBody: `{"username":"admin","password":"SecureP@ss123","confirm_password":"SecureP@ss123","role":"root"}`,
+			wantMessage: "Invalid request body",
+		},
+		{
+			name:        "multiple documents",
+			requestBody: `{"username":"admin","password":"SecureP@ss123","confirm_password":"SecureP@ss123"}{}`,
+			wantMessage: "Invalid request body",
+		},
+		{
 			name: "password confirmation mismatch",
 			requestBody: `{
 				"username":"admin",
@@ -676,6 +686,16 @@ func TestAuthHandlerLogin_RejectsMalformedAndInvalidRequests(t *testing.T) {
 		{
 			name:        "malformed JSON",
 			requestBody: `{"username":`,
+			wantMessage: "Invalid request body",
+		},
+		{
+			name:        "unknown field",
+			requestBody: `{"username":"admin","password":"SecureP@ss123","redirect":"https://evil.example"}`,
+			wantMessage: "Invalid request body",
+		},
+		{
+			name:        "multiple documents",
+			requestBody: `{"username":"admin","password":"SecureP@ss123"}{}`,
 			wantMessage: "Invalid request body",
 		},
 		{

@@ -195,6 +195,7 @@ func TestRepositoryInventoryFiltersSearchPaginationAndCounts_Integration(t *test
 	assertDeviceInventory(t, repository, device.DeviceInventoryInput{Search: "%", Page: 1, PerPage: 20}, []uuid.UUID{alpha.ID, beta.ID, percent.ID})
 	assertDeviceInventory(t, repository, device.DeviceInventoryInput{Search: "_", Page: 1, PerPage: 20}, []uuid.UUID{underscore.ID})
 	assertDeviceInventory(t, repository, device.DeviceInventoryInput{Search: `\`, Page: 1, PerPage: 20}, []uuid.UUID{backslash.ID})
+	assertDeviceInventory(t, repository, device.DeviceInventoryInput{Search: `'; DROP TABLE devices; --`, Page: 1, PerPage: 20}, []uuid.UUID{})
 	assertDeviceInventory(t, repository, device.DeviceInventoryInput{VGatewayID: &gatewayPercent, Enabled: boolPointer(true), Page: 1, PerPage: 20}, []uuid.UUID{alpha.ID, beta.ID})
 	deviceType := device.DeviceTypeModbus
 	assertDeviceInventory(t, repository, device.DeviceInventoryInput{Type: &deviceType, Page: 2, PerPage: 2}, []uuid.UUID{percent.ID, backslash.ID})
