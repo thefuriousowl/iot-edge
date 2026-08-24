@@ -44,6 +44,12 @@ type AuthService interface {
 		ctx context.Context,
 		userID uuid.UUID,
 	) (*User, error)
+	ChangePassword(
+		ctx context.Context,
+		userID uuid.UUID,
+		currentPassword string,
+		newPassword string,
+	) error
 }
 
 type ServiceConfig struct {

@@ -39,3 +39,7 @@ type Repository interface {
 	Update(context.Context, *Logger, []uuid.UUID) error
 	Delete(context.Context, uuid.UUID) error
 }
+
+type RetentionRuntimeRepository interface {
+	ListRetentionLoggerIDs(context.Context) ([]uuid.UUID, error)
+}

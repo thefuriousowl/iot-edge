@@ -39,6 +39,16 @@ export interface LogoutResponse {
   message: string;
 }
 
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
+export interface ChangePasswordResponse {
+  message: string;
+}
+
 export interface ApiErrorResponse {
   error: {
     code: string;

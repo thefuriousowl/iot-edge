@@ -256,6 +256,102 @@ func TestUserRepository_CreateInitialUserConcurrent_Integration(t *testing.T) {
 	}
 }
 
+func TestUserRepository_ChangePasswordAtomicallyResetsAuthStateAndPrunesHistory_Integration(t *testing.T) {
+	repository := newTestUserRepository(t)
+	ctx := context.Background()
+	lockedUntil := time.Now().Add(time.Hour).UTC()
+	user := &auth.User{Username: "password-owner", PasswordHash: "current-hash", IsLocked: true, FailedAttempts: 12, LockedUntil: &lockedUntil}
+	if err := repository.Create(ctx, user); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for _, hash := range []string{"oldest-hash", "middle-hash", "newest-hash"} {
+		if err := repository.AddPasswordHistory(ctx, user.ID, hash); err != nil {
+			t.Fatalf("AddPasswordHistory(%q) error = %v", hash, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := repository.ChangePassword(ctx, user.ID, "current-hash", "replacement-hash", 2); err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	updated, err := repository.FindByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if updated.PasswordHash != "replacement-hash" || updated.SessionVersion != 1 || updated.IsLocked || updated.FailedAttempts != 0 || updated.LockedUntil != nil {
+		t.Errorf("updated auth state = %#v", updated)
+	}
+	hashes, err := repository.RecentPasswordHashes(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatalf("RecentPasswordHashes() error = %v", err)
+	}
+	want := []string{"current-hash", "newest-hash"}
+	if len(hashes) != len(want) {
+		t.Fatalf("history = %#v, want %#v", hashes, want)
+	}
+	for index := range want {
+		if hashes[index] != want[index] {
+			t.Errorf("history[%d] = %q, want %q", index, hashes[index], want[index])
+		}
+	}
+	if err := repository.ChangePassword(ctx, user.ID, "current-hash", "must-not-apply", 2); !errors.Is(err, auth.ErrPasswordChangeConflict) {
+		t.Fatalf("ChangePassword(stale) error = %v", err)
+	}
+	afterConflict, err := repository.FindByID(ctx, user.ID)
+	if err != nil || afterConflict.PasswordHash != "replacement-hash" || afterConflict.SessionVersion != 1 {
+		t.Errorf("auth state after conflict = %#v, %v", afterConflict, err)
+	}
+	afterHashes, err := repository.RecentPasswordHashes(ctx, user.ID, 10)
+	if err != nil || len(afterHashes) != 2 {
+		t.Errorf("history after conflict = %#v, %v", afterHashes, err)
+	}
+}
+
+func TestUserRepository_ConcurrentPasswordChangesAllowOneWinner_Integration(t *testing.T) {
+	repository := newTestUserRepository(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	user := &auth.User{Username: "concurrent-password-owner", PasswordHash: "current-hash"}
+	if err := repository.Create(ctx, user); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, newHash := range []string{"replacement-one", "replacement-two"} {
+		workers.Add(1)
+		go func(hash string) {
+			defer workers.Done()
+			<-start
+			results <- repository.ChangePassword(ctx, user.ID, "current-hash", hash, 2)
+		}(newHash)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	successes, conflicts := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, auth.ErrPasswordChangeConflict):
+			conflicts++
+		default:
+			t.Errorf("ChangePassword() error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Errorf("results = %d successes/%d conflicts", successes, conflicts)
+	}
+	updated, err := repository.FindByID(ctx, user.ID)
+	if err != nil || updated.SessionVersion != 1 || updated.PasswordHash == "current-hash" {
+		t.Errorf("updated user = %#v, %v", updated, err)
+	}
+	hashes, err := repository.RecentPasswordHashes(ctx, user.ID, 10)
+	if err != nil || len(hashes) != 1 || hashes[0] != "current-hash" {
+		t.Errorf("password history = %#v, %v", hashes, err)
+	}
+}
+
 func newTestUserRepository(t *testing.T) auth.UserRepository {
 	t.Helper()
 
@@ -303,12 +399,14 @@ func newTestUserRepository(t *testing.T) auth.UserRepository {
 		}
 	})
 
-	migration, err := os.ReadFile("../../../migrations/000001_create_users.up.sql")
-	if err != nil {
-		t.Fatalf("reading users migration: %v", err)
-	}
-	if err := db.Exec(string(migration)).Error; err != nil {
-		t.Fatalf("applying users migration: %v", err)
+	for _, migrationPath := range []string{"../../../migrations/000001_create_users.up.sql", "../../../migrations/000017_add_auth_session_version.up.sql"} {
+		migration, err := os.ReadFile(migrationPath)
+		if err != nil {
+			t.Fatalf("reading users migration: %v", err)
+		}
+		if err := db.Exec(string(migration)).Error; err != nil {
+			t.Fatalf("applying users migration: %v", err)
+		}
 	}
 
 	return NewUserRepository(db)

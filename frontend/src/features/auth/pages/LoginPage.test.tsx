@@ -66,6 +66,16 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
   });
 
+  it.each([
+    [{ passwordChanged: true }, "Password changed successfully. Sign in again with your new password."],
+    [{ sessionExpired: true }, "Your session expired. Sign in again."],
+  ])("shows a safe re-authentication notice for %o", (state, message) => {
+    renderLoginPage(state);
+
+    expect(screen.getByRole("status")).toHaveTextContent(message);
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+  });
+
   it("validates credentials before calling the API", async () => {
     renderLoginPage();
 

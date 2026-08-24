@@ -2,12 +2,14 @@ package authpostgres
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/thefuriousowl/iot-edge/internal/auth"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type userRepository struct {
@@ -113,10 +115,56 @@ func (r *userRepository) RecentPasswordHashes(
 	err := r.db.WithContext(ctx).
 		Model(&passwordHistoryRecord{}).
 		Where("user_id = ?", userID).
-		Order("created_at DESC").
+		Order("created_at DESC, id DESC").
 		Limit(limit).
 		Pluck("password_hash", &hashes).Error
 	return hashes, err
+}
+
+func (r *userRepository) ChangePassword(ctx context.Context, userID uuid.UUID, expectedHash, newHash string, previousPasswordLimit int) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user auth.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, "id = ?", userID).Error; err != nil {
+			return mapUserError(err)
+		}
+		if subtle.ConstantTimeCompare([]byte(user.PasswordHash), []byte(expectedHash)) != 1 {
+			return auth.ErrPasswordChangeConflict
+		}
+		if err := tx.Create(&passwordHistoryRecord{UserID: userID, PasswordHash: user.PasswordHash}).Error; err != nil {
+			return err
+		}
+		if previousPasswordLimit >= 0 {
+			if err := tx.Exec(`
+				DELETE FROM password_history
+				WHERE user_id = ?
+				AND id NOT IN (
+					SELECT id FROM password_history
+					WHERE user_id = ?
+					ORDER BY created_at DESC, id DESC
+					LIMIT ?
+				)
+			`, userID, userID, previousPasswordLimit).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Model(&auth.User{}).
+			Where("id = ? AND password_hash = ?", userID, expectedHash).
+			Updates(map[string]any{
+				"password_hash":   newHash,
+				"session_version": gorm.Expr("session_version + 1"),
+				"is_locked":       false,
+				"failed_attempts": 0,
+				"locked_until":    nil,
+				"updated_at":      gorm.Expr("CURRENT_TIMESTAMP"),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return auth.ErrPasswordChangeConflict
+		}
+		return nil
+	})
 }
 
 func (r *userRepository) RevokeToken(

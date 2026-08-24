@@ -261,10 +261,10 @@ function VGatewayListPage() {
             <Puzzle aria-hidden="true" size={21} />
             Plugins
           </span>
-          <span aria-disabled="true">
+          <NavLink to="/settings">
             <Settings aria-hidden="true" size={21} />
             Settings
-          </span>
+          </NavLink>
         </nav>
 
         <Link className="vgateway-health-link" to="/dashboard">

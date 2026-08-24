@@ -21,6 +21,9 @@ type Service interface {
 	List(context.Context, datalogger.ListInput) (*datalogger.ListResult, error)
 	ListHistory(context.Context, uuid.UUID, datalogger.RawValueListInput) (*datalogger.RawValueListResult, error)
 	QueryHistory(context.Context, uuid.UUID, datalogger.QueryInput) (*datalogger.QueryResult, error)
+	ManagementOverview(context.Context, time.Time) (*datalogger.DataManagementOverview, error)
+	Retention(context.Context, uuid.UUID, time.Time) (*datalogger.RetentionStatus, error)
+	CleanupRetention(context.Context, uuid.UUID, datalogger.RetentionCleanupInput) (*datalogger.RetentionCleanupResult, error)
 	Update(context.Context, uuid.UUID, datalogger.UpdateInput) (*datalogger.Logger, error)
 	Delete(context.Context, uuid.UUID) error
 }
@@ -28,29 +31,36 @@ type Service interface {
 type Handler struct{ service Service }
 
 type createRequest struct {
-	Name         string          `json:"name"`
-	Description  *string         `json:"description"`
-	Enabled      *bool           `json:"enabled"`
-	Timezone     string          `json:"timezone"`
-	Mode         datalogger.Mode `json:"mode"`
-	StartAt      time.Time       `json:"start_at"`
-	EndAt        *time.Time      `json:"end_at"`
-	MaxSizeBytes *int64          `json:"max_size_bytes"`
-	Config       json.RawMessage `json:"config"`
-	TagIDs       []uuid.UUID     `json:"tag_ids"`
+	Name          string          `json:"name"`
+	Description   *string         `json:"description"`
+	Enabled       *bool           `json:"enabled"`
+	Timezone      string          `json:"timezone"`
+	Mode          datalogger.Mode `json:"mode"`
+	StartAt       time.Time       `json:"start_at"`
+	EndAt         *time.Time      `json:"end_at"`
+	MaxSizeBytes  *int64          `json:"max_size_bytes"`
+	MaxAgeSeconds *int64          `json:"max_age_seconds"`
+	Config        json.RawMessage `json:"config"`
+	TagIDs        []uuid.UUID     `json:"tag_ids"`
 }
 
 type updateRequest struct {
-	Name         *string          `json:"name"`
-	Description  json.RawMessage  `json:"description"`
-	Enabled      *bool            `json:"enabled"`
-	Timezone     *string          `json:"timezone"`
-	Mode         *datalogger.Mode `json:"mode"`
-	StartAt      *time.Time       `json:"start_at"`
-	EndAt        json.RawMessage  `json:"end_at"`
-	MaxSizeBytes json.RawMessage  `json:"max_size_bytes"`
-	Config       json.RawMessage  `json:"config"`
-	TagIDs       *[]uuid.UUID     `json:"tag_ids"`
+	Name          *string          `json:"name"`
+	Description   json.RawMessage  `json:"description"`
+	Enabled       *bool            `json:"enabled"`
+	Timezone      *string          `json:"timezone"`
+	Mode          *datalogger.Mode `json:"mode"`
+	StartAt       *time.Time       `json:"start_at"`
+	EndAt         json.RawMessage  `json:"end_at"`
+	MaxSizeBytes  json.RawMessage  `json:"max_size_bytes"`
+	MaxAgeSeconds json.RawMessage  `json:"max_age_seconds"`
+	Config        json.RawMessage  `json:"config"`
+	TagIDs        *[]uuid.UUID     `json:"tag_ids"`
+}
+
+type retentionCleanupRequest struct {
+	Confirm    bool `json:"confirm"`
+	BatchLimit int  `json:"batch_limit"`
 }
 
 func NewHandler(service Service) *Handler { return &Handler{service: service} }
@@ -61,7 +71,7 @@ func (handler *Handler) Create(c *fiber.Ctx) error {
 		return validation(c, "Invalid request body")
 	}
 	result, err := handler.service.Create(c.UserContext(), datalogger.CreateInput{
-		Name: request.Name, Description: request.Description, Enabled: request.Enabled, Timezone: request.Timezone, Mode: request.Mode, StartAt: request.StartAt, EndAt: request.EndAt, MaxSizeBytes: request.MaxSizeBytes, Config: request.Config, TagIDs: request.TagIDs,
+		Name: request.Name, Description: request.Description, Enabled: request.Enabled, Timezone: request.Timezone, Mode: request.Mode, StartAt: request.StartAt, EndAt: request.EndAt, MaxSizeBytes: request.MaxSizeBytes, MaxAgeSeconds: request.MaxAgeSeconds, Config: request.Config, TagIDs: request.TagIDs,
 	})
 	if err != nil {
 		return handleError(c, err)
@@ -138,6 +148,57 @@ func (handler *Handler) Query(c *fiber.Ctx) error {
 	})
 }
 
+func (handler *Handler) ManagementOverview(c *fiber.Ctx) error {
+	result, err := handler.service.ManagementOverview(c.UserContext(), time.Time{})
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(result)
+}
+
+func (handler *Handler) RetentionStatus(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Logger ID")
+	}
+	result, err := handler.service.Retention(c.UserContext(), id, time.Time{})
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(result)
+}
+
+func (handler *Handler) RetentionPreview(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Logger ID")
+	}
+	result, err := handler.service.Retention(c.UserContext(), id, time.Time{})
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(result.Plan)
+}
+
+func (handler *Handler) RetentionCleanup(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Data Logger ID")
+	}
+	var request retentionCleanupRequest
+	if err := decode(c.Body(), &request); err != nil {
+		return validation(c, "Invalid retention cleanup request")
+	}
+	if !request.Confirm {
+		return validation(c, "Retention cleanup requires confirm=true")
+	}
+	result, err := handler.service.CleanupRetention(c.UserContext(), id, datalogger.RetentionCleanupInput{BatchLimit: request.BatchLimit})
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(result)
+}
+
 func (handler *Handler) Update(c *fiber.Ctx) error {
 	id, err := parseID(c.Params("id"))
 	if err != nil {
@@ -176,6 +237,16 @@ func (handler *Handler) Update(c *fiber.Ctx) error {
 				return validation(c, "Invalid max_size_bytes")
 			}
 			input.MaxSizeBytes.Value = &maxSizeBytes
+		}
+	}
+	if request.MaxAgeSeconds != nil {
+		input.MaxAgeSeconds.Set = true
+		if !isJSONNull(request.MaxAgeSeconds) {
+			var maxAgeSeconds int64
+			if err := json.Unmarshal(request.MaxAgeSeconds, &maxAgeSeconds); err != nil {
+				return validation(c, "Invalid max_age_seconds")
+			}
+			input.MaxAgeSeconds.Value = &maxAgeSeconds
 		}
 	}
 	result, err := handler.service.Update(c.UserContext(), id, input)
@@ -330,6 +401,8 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusBadRequest, "DLG003", "Selected Tag not found")
 	case errors.Is(err, datalogger.ErrStorageLimitTooSmall):
 		return apiError(c, fiber.StatusBadRequest, "DLG004", "Data Logger storage limit cannot hold one complete synchronized batch")
+	case errors.Is(err, datalogger.ErrRetentionCleanup):
+		return apiError(c, fiber.StatusInternalServerError, "DLG005", "Data Logger retention cleanup failed")
 	case errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrInvalidLogger), errors.Is(err, datalogger.ErrInvalidLoggerTag), errors.Is(err, datalogger.ErrInvalidRawBatch), errors.Is(err, datalogger.ErrInvalidQuery), errors.Is(err, datalogger.ErrRawTagNotSelected):
 		return validation(c, "Invalid Data Logger configuration")
 	default:

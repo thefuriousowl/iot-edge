@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	ErrUserNotFound      = errors.New("user not found")
-	ErrInitialUserExists = errors.New("initial user already exists")
+	ErrUserNotFound           = errors.New("user not found")
+	ErrInitialUserExists      = errors.New("initial user already exists")
+	ErrPasswordChangeConflict = errors.New("password changed concurrently")
 )
 
 type UserRepository interface {
@@ -21,6 +22,7 @@ type UserRepository interface {
 	Update(ctx context.Context, user *User) error
 	AddPasswordHistory(ctx context.Context, userID uuid.UUID, passwordHash string) error
 	RecentPasswordHashes(ctx context.Context, userID uuid.UUID, limit int) ([]string, error)
+	ChangePassword(ctx context.Context, userID uuid.UUID, expectedHash, newHash string, previousPasswordLimit int) error
 	RevokeToken(ctx context.Context, jti string, userID uuid.UUID, expiresAt time.Time) error
 	IsTokenRevoked(ctx context.Context, jti string) (bool, error)
 	CreateInitialUser(ctx context.Context, user *User) error

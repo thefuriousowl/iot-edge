@@ -17,15 +17,19 @@ import (
 
 type routeAuthService struct {
 	authcore.AuthService
-	userID                uuid.UUID
-	parseErr              error
-	receivedToken         string
-	receivedExpectedType  string
-	receivedLogoutUserID  uuid.UUID
-	receivedRefreshToken  string
-	receivedCurrentUserID uuid.UUID
-	logoutCalls           int
-	currentUserCalls      int
+	userID                  uuid.UUID
+	parseErr                error
+	receivedToken           string
+	receivedExpectedType    string
+	receivedLogoutUserID    uuid.UUID
+	receivedRefreshToken    string
+	receivedCurrentUserID   uuid.UUID
+	receivedChangeUserID    uuid.UUID
+	receivedCurrentPassword string
+	receivedNewPassword     string
+	logoutCalls             int
+	currentUserCalls        int
+	changePasswordCalls     int
 }
 
 func (r *routeAuthService) IsSetupRequired(context.Context) (bool, error) {
@@ -91,6 +95,14 @@ func (r *routeAuthService) CurrentUser(
 		ID:       userID,
 		Username: "admin",
 	}, nil
+}
+
+func (r *routeAuthService) ChangePassword(_ context.Context, userID uuid.UUID, currentPassword, newPassword string) error {
+	r.changePasswordCalls++
+	r.receivedChangeUserID = userID
+	r.receivedCurrentPassword = currentPassword
+	r.receivedNewPassword = newPassword
+	return nil
 }
 
 func TestRegisterAuthRoutes_RegistersSetupStatusGETRoute(t *testing.T) {
@@ -392,4 +404,39 @@ func TestRegisterAuthRoutes_AuthenticatedLogoutReachesHandler(t *testing.T) {
 	if auth.receivedRefreshToken != "test-refresh-token" {
 		t.Errorf("Logout() refresh token = %q, want test-refresh-token", auth.receivedRefreshToken)
 	}
+}
+
+func TestRegisterAuthRoutes_ProtectsAndDispatchesChangePassword(t *testing.T) {
+	userID := uuid.New()
+	t.Run("missing authentication", func(t *testing.T) {
+		auth := &routeAuthService{userID: userID}
+		app := fiber.New()
+		RegisterAuthRoutes(app.Group("/api"), NewAuthHandler(auth), auth)
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatalf("app.Test() error = %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != fiber.StatusUnauthorized || auth.changePasswordCalls != 0 {
+			t.Errorf("status/calls = %d/%d", response.StatusCode, auth.changePasswordCalls)
+		}
+	})
+	t.Run("authenticated", func(t *testing.T) {
+		auth := &routeAuthService{userID: userID}
+		app := fiber.New()
+		RegisterAuthRoutes(app.Group("/api"), NewAuthHandler(auth), auth)
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		request.Header.Set(fiber.HeaderAuthorization, "Bearer valid-access-token")
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatalf("app.Test() error = %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != fiber.StatusOK || auth.changePasswordCalls != 1 || auth.receivedChangeUserID != userID || auth.receivedCurrentPassword != "CurrentP@ss1" || auth.receivedNewPassword != "FreshP@ss3" {
+			t.Errorf("status/service = %d/%#v", response.StatusCode, auth)
+		}
+	})
 }

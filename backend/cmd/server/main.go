@@ -180,6 +180,19 @@ func main() {
 		tagValues.Stop()
 		log.Fatalf("failed to start Data Logger runtime: %v", err)
 	}
+	dataLoggerRetentionRuntime, err := datalogger.NewRetentionRuntime(dataLoggerRepository, dataLoggerService)
+	if err != nil {
+		dataLoggerRuntime.Stop()
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to initialize Data Logger retention runtime: %v", err)
+	}
+	if err := dataLoggerRetentionRuntime.Start(runtimeContext); err != nil {
+		dataLoggerRuntime.Stop()
+		acquisitionRuntime.Stop()
+		tagValues.Stop()
+		log.Fatalf("failed to start Data Logger retention runtime: %v", err)
+	}
 	energyLiveHub, err := pluginenergy.NewLiveHub()
 	if err != nil {
 		log.Fatalf("failed to initialize Energy live hub: %v", err)
@@ -328,6 +341,7 @@ func main() {
 		if err := pluginManager.Stop(shutdownContext); err != nil {
 			log.Printf("failed to stop Plugin manager: %v", err)
 		}
+		dataLoggerRetentionRuntime.Stop()
 		dataLoggerRuntime.Stop()
 		acquisitionRuntime.Stop()
 		tagValues.Stop()
@@ -343,6 +357,8 @@ func main() {
 				log.Printf("Tag value persistence: %v", persistenceError)
 			case loggerError := <-dataLoggerRuntime.Errors():
 				log.Printf("Data Logger runtime: %v", loggerError)
+			case retentionError := <-dataLoggerRetentionRuntime.Errors():
+				log.Printf("Data Logger retention runtime: %v", retentionError)
 			case pluginError := <-pluginManager.Errors():
 				log.Printf("Plugin runtime: %v", pluginError)
 			case publisherError := <-publisherRuntimeErrors:

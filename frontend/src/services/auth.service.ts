@@ -7,6 +7,8 @@ import type {
     SetupResponse,
     SetupStatusResponse,
     AuthUser,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     LogoutResponse,
     RefreshResponse,
 } from "../types/auth";
@@ -50,6 +52,15 @@ export async function logout(): Promise<LogoutResponse> {
     );
 
     return response.data
+}
+
+export async function changePassword(data: ChangePasswordRequest): Promise<ChangePasswordResponse> {
+    const response = await api.post<ChangePasswordResponse>(
+        "/auth/change-password",
+        data,
+    );
+
+    return response.data;
 }
 
 export async function getMe(): Promise<AuthUser> {

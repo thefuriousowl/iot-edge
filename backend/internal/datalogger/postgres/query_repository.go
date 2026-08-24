@@ -29,6 +29,9 @@ type aggregateQueryRow struct {
 }
 
 func (repository *historyRepository) Query(ctx context.Context, input datalogger.QueryInput) (*datalogger.QueryResult, error) {
+	if ctx == nil {
+		return nil, datalogger.ErrInvalidQuery
+	}
 	if err := validateQueryInput(input); err != nil {
 		return nil, err
 	}
@@ -39,10 +42,23 @@ func (repository *historyRepository) Query(ctx context.Context, input datalogger
 }
 
 func validateQueryInput(input datalogger.QueryInput) error {
-	if input.LoggerID == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.Page < 1 || input.PerPage < 1 || input.PerPage > maxHistoryPerPage || len(input.TagIDs) == 0 {
+	if input.LoggerID == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.To.Sub(input.From) > datalogger.MaxQueryRange || input.Page < 1 || input.Page > datalogger.MaxQueryPage || input.PerPage < 1 || input.PerPage > datalogger.MaxQueryPerPage || len(input.TagIDs) == 0 || len(input.TagIDs) > datalogger.MaxQueryTags {
 		return datalogger.ErrInvalidQuery
 	}
+	seen := make(map[uuid.UUID]struct{}, len(input.TagIDs))
+	for _, tagID := range input.TagIDs {
+		if tagID == uuid.Nil {
+			return datalogger.ErrInvalidQuery
+		}
+		if _, duplicate := seen[tagID]; duplicate {
+			return datalogger.ErrInvalidQuery
+		}
+		seen[tagID] = struct{}{}
+	}
 	if input.Mode == datalogger.QueryModeRaw {
+		if input.Bucket != "" || input.Aggregate != "" || len(input.Aggregates) > 0 {
+			return datalogger.ErrInvalidQuery
+		}
 		return nil
 	}
 	if input.Mode != datalogger.QueryModeAggregate || input.Bucket.Seconds() == 0 {
@@ -54,11 +70,15 @@ func validateQueryInput(input datalogger.QueryInput) error {
 		}
 		return nil
 	}
+	if input.Aggregate != "" {
+		return datalogger.ErrInvalidQuery
+	}
 	if len(input.Aggregates) != len(input.TagIDs) {
 		return datalogger.ErrInvalidQuery
 	}
 	for _, tagID := range input.TagIDs {
-		if !input.Aggregates[tagID].Valid() {
+		function, exists := input.Aggregates[tagID]
+		if !exists || !function.Valid() {
 			return datalogger.ErrInvalidQuery
 		}
 	}

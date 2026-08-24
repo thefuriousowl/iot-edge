@@ -35,7 +35,7 @@ func TestReportsMigrationConstraintsAndDown_Integration(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "SET search_path TO "+schema+", public"); err != nil {
 		t.Fatalf("setting search path: %v", err)
 	}
-	for _, migration := range []string{"000002_create_vgateways.up.sql", "000003_create_devices_datasources.up.sql", "000004_create_tags.up.sql", "000006_create_data_loggers.up.sql", "000007_create_tag_values_raw.up.sql", "000008_add_data_logger_storage_limits.up.sql", "000009_create_reports.up.sql"} {
+	for _, migration := range []string{"000002_create_vgateways.up.sql", "000003_create_devices_datasources.up.sql", "000004_create_tags.up.sql", "000006_create_data_loggers.up.sql", "000007_create_tag_values_raw.up.sql", "000008_add_data_logger_storage_limits.up.sql", "000009_create_reports.up.sql", "000015_add_data_logger_age_retention.up.sql"} {
 		applyMigrationFile(t, ctx, conn, migration)
 	}
 	loggerID, tagID := insertRawMigrationFixture(t, ctx, conn)

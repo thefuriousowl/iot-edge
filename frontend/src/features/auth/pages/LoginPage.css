@@ -138,6 +138,26 @@
   margin-top: 0.0625rem;
 }
 
+.login-request-success {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin-bottom: -0.5rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid rgba(34, 199, 238, 0.42);
+  border-radius: 0.625rem;
+  background: rgba(34, 199, 238, 0.08);
+  color: #b9effb;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.login-request-success svg {
+  flex: 0 0 auto;
+  margin-top: 0.0625rem;
+  color: var(--login-accent);
+}
+
 .login-field {
   display: grid;
   gap: 0.625rem;

@@ -78,6 +78,19 @@ func TestRefresh_ReturnsNewAccessToken(t *testing.T) {
 	}
 }
 
+func TestRefresh_RejectsRefreshTokenFromEarlierSessionVersion(t *testing.T) {
+	now := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	user := &User{ID: uuid.New(), Username: "admin", SessionVersion: 3}
+	users := &refreshUserRepository{user: user}
+	auth := newRefreshTestService(t, users, now)
+	refreshToken, _ := newRefreshTestToken(t, auth, user, now)
+	users.user.SessionVersion++
+	result, err := auth.Refresh(context.Background(), refreshToken)
+	if !errors.Is(err, ErrSessionExpired) || result != nil {
+		t.Fatalf("Refresh() = %#v, %v; want session expired", result, err)
+	}
+}
+
 func TestRefresh_MapsInvalidTokensToSessionExpired(t *testing.T) {
 	now := time.Date(2026, time.August, 21, 10, 0, 0, 0, time.UTC)
 	user := &User{ID: uuid.New(), Username: "admin"}

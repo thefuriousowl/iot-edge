@@ -17,6 +17,7 @@ type RetryableRequestConfig = InternalAxiosRequestConfig & {
 
 const authEndpointsWithoutRefresh = new Set([
   "/auth/login",
+  "/auth/change-password",
   "/auth/refresh",
   "/auth/setup",
   "/auth/setup/status",

@@ -2,6 +2,7 @@ package dataloggerpostgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,7 +77,8 @@ type rawHistoryOverview struct {
 }
 
 type loggerStoragePolicy struct {
-	MaxSizeBytes *int64 `gorm:"column:max_size_bytes"`
+	MaxSizeBytes  *int64 `gorm:"column:max_size_bytes"`
+	MaxAgeSeconds *int64 `gorm:"column:max_age_seconds"`
 }
 
 type batchStorageRow struct {
@@ -91,6 +93,29 @@ type storageOverview struct {
 	EstimatedSizeBytes int64      `gorm:"column:estimated_size_bytes"`
 	OldestBatchAt      *time.Time `gorm:"column:oldest_batch_at"`
 	NewestBatchAt      *time.Time `gorm:"column:newest_batch_at"`
+}
+
+type managementLoggerCounts struct {
+	LoggerCount        int64 `gorm:"column:logger_count"`
+	EnabledLoggerCount int64 `gorm:"column:enabled_logger_count"`
+	PolicyLoggerCount  int64 `gorm:"column:policy_logger_count"`
+}
+
+type physicalStorageOverview struct {
+	RawHistoryBytes      int64 `gorm:"column:raw_history_bytes"`
+	BatchAccountingBytes int64 `gorm:"column:batch_accounting_bytes"`
+}
+
+type retentionSelection struct {
+	Plan       datalogger.RetentionPlan
+	Candidates []batchStorageRow
+}
+
+type retentionStatusRow struct {
+	LastStartedAt   time.Time       `gorm:"column:last_started_at"`
+	LastCompletedAt time.Time       `gorm:"column:last_completed_at"`
+	LastResult      json.RawMessage `gorm:"column:last_result"`
+	LastError       *string         `gorm:"column:last_error"`
 }
 
 func NewHistoryRepository(db *gorm.DB, options ...HistoryRepositoryOption) datalogger.HistoryRepository {
@@ -141,7 +166,7 @@ func (repository *historyRepository) WriteBatch(ctx context.Context, batch datal
 		if err := refreshBatchStorage(tx, batch.LoggerID, batch.BatchAt); err != nil {
 			return err
 		}
-		if err := enforceStorageLimit(tx, batch.LoggerID, policy.MaxSizeBytes); err != nil {
+		if err := enforceRetention(tx, batch.LoggerID, policy, time.Now().UTC()); err != nil {
 			return err
 		}
 		if !inserted {
@@ -269,6 +294,54 @@ func decodeSelectedBatchRawValue(row selectedBatchRawValueRow) (datalogger.RawVa
 	})
 }
 
+func (repository *historyRepository) ManagementOverview(ctx context.Context, evaluatedAt time.Time) (*datalogger.DataManagementOverview, error) {
+	if ctx == nil || evaluatedAt.IsZero() {
+		return nil, datalogger.ErrInvalidInput
+	}
+	overview := &datalogger.DataManagementOverview{EvaluatedAt: evaluatedAt.UTC()}
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var counts managementLoggerCounts
+		if err := tx.Raw(`
+			SELECT COUNT(*) AS logger_count,
+				COUNT(*) FILTER (WHERE enabled) AS enabled_logger_count,
+				COUNT(*) FILTER (WHERE max_size_bytes IS NOT NULL OR max_age_seconds IS NOT NULL) AS policy_logger_count
+			FROM data_loggers
+		`).Scan(&counts).Error; err != nil {
+			return err
+		}
+		var logical storageOverview
+		if err := tx.Table("data_logger_batches").
+			Select("COALESCE(SUM(row_count), 0) AS row_count, COUNT(*) AS batch_count, COALESCE(SUM(estimated_size_bytes), 0) AS estimated_size_bytes, MIN(batch_at) AS oldest_batch_at, MAX(batch_at) AS newest_batch_at").
+			Scan(&logical).Error; err != nil {
+			return err
+		}
+		var physical physicalStorageOverview
+		if err := tx.Raw(`
+			SELECT
+				COALESCE((SELECT SUM(pg_total_relation_size(relid)) FROM pg_partition_tree('tag_values_raw'::regclass)), 0)::BIGINT AS raw_history_bytes,
+				pg_total_relation_size('data_logger_batches'::regclass)::BIGINT AS batch_accounting_bytes
+		`).Scan(&physical).Error; err != nil {
+			return err
+		}
+		overview.LoggerCount = counts.LoggerCount
+		overview.EnabledLoggerCount = counts.EnabledLoggerCount
+		overview.PolicyLoggerCount = counts.PolicyLoggerCount
+		overview.LogicalHistory = datalogger.RetentionMetrics{
+			RowCount: logical.RowCount, BatchCount: logical.BatchCount, EstimatedSizeBytes: logical.EstimatedSizeBytes,
+			OldestBatchAt: utcTimePointer(logical.OldestBatchAt), NewestBatchAt: utcTimePointer(logical.NewestBatchAt),
+		}
+		overview.PostgreSQLPhysicalAllocation = datalogger.PostgreSQLPhysicalAllocation{
+			RawHistoryBytes: physical.RawHistoryBytes, BatchAccountingBytes: physical.BatchAccountingBytes,
+			TotalBytes: physical.RawHistoryBytes + physical.BatchAccountingBytes,
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, mapHistoryError(err)
+	}
+	return overview, nil
+}
+
 func (repository *historyRepository) Storage(ctx context.Context, loggerID uuid.UUID, tagCount int, maxSizeBytes *int64) (*datalogger.StorageStats, error) {
 	if loggerID == uuid.Nil || tagCount < 0 {
 		return nil, datalogger.ErrInvalidInput
@@ -304,7 +377,87 @@ func (repository *historyRepository) Storage(ctx context.Context, loggerID uuid.
 	return stats, nil
 }
 
-func (repository *historyRepository) EnforceStorageLimit(ctx context.Context, loggerID uuid.UUID, maxSizeBytes *int64) error {
+func (repository *historyRepository) Retention(ctx context.Context, loggerID uuid.UUID, evaluatedAt time.Time) (*datalogger.RetentionStatus, error) {
+	if loggerID == uuid.Nil || evaluatedAt.IsZero() {
+		return nil, datalogger.ErrInvalidInput
+	}
+	var status datalogger.RetentionStatus
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		policy, err := readLoggerStoragePolicy(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		batches, err := listBatchStorage(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		selection, err := selectRetention(policy, batches, evaluatedAt.UTC())
+		if err != nil {
+			return err
+		}
+		status.Plan = selection.Plan
+		status.LastRun, err = readRetentionRunStatus(tx, loggerID)
+		return err
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, mapHistoryError(err)
+	}
+	return &status, nil
+}
+
+func (repository *historyRepository) CleanupRetention(ctx context.Context, loggerID uuid.UUID, input datalogger.RetentionCleanupInput) (*datalogger.RetentionCleanupResult, error) {
+	if loggerID == uuid.Nil || input.EvaluatedAt.IsZero() || input.BatchLimit < 1 || input.BatchLimit > datalogger.MaxRetentionBatchLimit {
+		return nil, datalogger.ErrInvalidInput
+	}
+	startedAt := time.Now().UTC()
+	var cleanupResult *datalogger.RetentionCleanupResult
+	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		policy, err := lockLoggerStoragePolicy(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		batches, err := listBatchStorage(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		selection, err := selectRetention(policy, batches, input.EvaluatedAt.UTC())
+		if err != nil {
+			return err
+		}
+		remove := selection.Candidates
+		if len(remove) > input.BatchLimit {
+			remove = remove[:input.BatchLimit]
+		}
+		if err := deleteRetentionBatches(tx, loggerID, remove); err != nil {
+			return err
+		}
+		retainedBatches, err := listBatchStorage(tx, loggerID)
+		if err != nil {
+			return err
+		}
+		remaining, err := selectRetention(policy, retainedBatches, input.EvaluatedAt.UTC())
+		if err != nil {
+			return err
+		}
+		completedAt := time.Now().UTC()
+		cleanupResult = &datalogger.RetentionCleanupResult{
+			StartedAt: startedAt, CompletedAt: completedAt, EvaluatedAt: input.EvaluatedAt.UTC(), CutoffAt: selection.Plan.CutoffAt,
+			Policy: selection.Plan.Policy, Deleted: retentionMetrics(remove), Retained: retentionMetrics(retainedBatches),
+			RemainingRemoval: remaining.Plan.Remove, Complete: remaining.Plan.Remove.BatchCount == 0,
+		}
+		return writeRetentionSuccess(tx, loggerID, *cleanupResult)
+	})
+	if err == nil {
+		return cleanupResult, nil
+	}
+	mapped := mapHistoryError(err)
+	if !errors.Is(mapped, datalogger.ErrLoggerNotFound) {
+		repository.writeRetentionFailure(ctx, loggerID, startedAt, mapped)
+	}
+	return nil, publicRetentionError(mapped)
+}
+
+func (repository *historyRepository) EnforceRetention(ctx context.Context, loggerID uuid.UUID, expected datalogger.RetentionPolicy) error {
 	if loggerID == uuid.Nil {
 		return datalogger.ErrInvalidInput
 	}
@@ -313,10 +466,10 @@ func (repository *historyRepository) EnforceStorageLimit(ctx context.Context, lo
 		if err != nil {
 			return err
 		}
-		if maxSizeBytes != nil && (policy.MaxSizeBytes == nil || *policy.MaxSizeBytes != *maxSizeBytes) {
+		if !equalOptionalInt64(policy.MaxSizeBytes, expected.MaxSizeBytes) || !equalOptionalInt64(policy.MaxAgeSeconds, expected.MaxAgeSeconds) {
 			return datalogger.ErrInvalidInput
 		}
-		return enforceStorageLimit(tx, loggerID, policy.MaxSizeBytes)
+		return enforceRetention(tx, loggerID, policy, time.Now().UTC())
 	})
 	return mapHistoryError(err)
 }
@@ -546,7 +699,19 @@ func publishCommittedBatch(publisher datalogger.CommittedBatchPublisher, batch d
 
 func lockLoggerStoragePolicy(tx *gorm.DB, loggerID uuid.UUID) (loggerStoragePolicy, error) {
 	var policy loggerStoragePolicy
-	result := tx.Raw("SELECT max_size_bytes FROM data_loggers WHERE id = ? FOR UPDATE", loggerID).Scan(&policy)
+	result := tx.Raw("SELECT max_size_bytes, max_age_seconds FROM data_loggers WHERE id = ? FOR UPDATE", loggerID).Scan(&policy)
+	if result.Error != nil {
+		return loggerStoragePolicy{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return loggerStoragePolicy{}, datalogger.ErrLoggerNotFound
+	}
+	return policy, nil
+}
+
+func readLoggerStoragePolicy(tx *gorm.DB, loggerID uuid.UUID) (loggerStoragePolicy, error) {
+	var policy loggerStoragePolicy
+	result := tx.Raw("SELECT max_size_bytes, max_age_seconds FROM data_loggers WHERE id = ?", loggerID).Scan(&policy)
 	if result.Error != nil {
 		return loggerStoragePolicy{}, result.Error
 	}
@@ -569,40 +734,217 @@ func refreshBatchStorage(tx *gorm.DB, loggerID uuid.UUID, batchAt time.Time) err
 	`, estimatedIndexBytesPerRawRow, loggerID, batchAt).Error
 }
 
-func enforceStorageLimit(tx *gorm.DB, loggerID uuid.UUID, maxSizeBytes *int64) error {
-	if maxSizeBytes == nil {
-		return nil
+func enforceRetention(tx *gorm.DB, loggerID uuid.UUID, policy loggerStoragePolicy, evaluatedAt time.Time) error {
+	batches, err := listBatchStorage(tx, loggerID)
+	if err != nil {
+		return err
 	}
+	selection, err := selectRetention(policy, batches, evaluatedAt)
+	if err != nil {
+		return err
+	}
+	remove := selection.Candidates
+	if len(remove) > datalogger.MaxRetentionBatchLimit {
+		remove = remove[:datalogger.MaxRetentionBatchLimit]
+	}
+	return deleteRetentionBatches(tx, loggerID, remove)
+}
+
+func listBatchStorage(tx *gorm.DB, loggerID uuid.UUID) ([]batchStorageRow, error) {
 	batches := make([]batchStorageRow, 0)
-	if err := tx.Table("data_logger_batches").
+	err := tx.Table("data_logger_batches").
 		Select("batch_at, row_count, estimated_size_bytes").
 		Where("logger_id = ?", loggerID).
 		Order("batch_at DESC").
-		Scan(&batches).Error; err != nil {
-		return err
+		Scan(&batches).Error
+	return batches, err
+}
+
+func selectRetention(policy loggerStoragePolicy, batches []batchStorageRow, evaluatedAt time.Time) (retentionSelection, error) {
+	evaluatedAt = evaluatedAt.UTC()
+	remove := make(map[int]struct{}, len(batches))
+	var cutoffAt *time.Time
+	if policy.MaxAgeSeconds != nil {
+		cutoff := evaluatedAt.Add(-time.Duration(*policy.MaxAgeSeconds) * time.Second)
+		cutoffAt = &cutoff
+		for index, batch := range batches {
+			if batch.BatchAt.Before(cutoff) {
+				remove[index] = struct{}{}
+			}
+		}
 	}
+	if policy.MaxSizeBytes != nil {
+		retainedBytes := int64(0)
+		newestRetained := -1
+		for index, batch := range batches {
+			if _, expired := remove[index]; expired {
+				continue
+			}
+			if newestRetained == -1 {
+				newestRetained = index
+			}
+			retainedBytes += batch.EstimatedSizeBytes
+		}
+		if newestRetained >= 0 && batches[newestRetained].EstimatedSizeBytes > *policy.MaxSizeBytes {
+			return retentionSelection{}, datalogger.ErrStorageLimitTooSmall
+		}
+		for index := len(batches) - 1; index >= 0 && retainedBytes > *policy.MaxSizeBytes; index-- {
+			if _, expired := remove[index]; expired {
+				continue
+			}
+			remove[index] = struct{}{}
+			retainedBytes -= batches[index].EstimatedSizeBytes
+		}
+	}
+	candidates := make([]batchStorageRow, 0, len(remove))
+	retained := make([]batchStorageRow, 0, len(batches)-len(remove))
+	for index, batch := range batches {
+		if _, selected := remove[index]; selected {
+			continue
+		}
+		retained = append(retained, batch)
+	}
+	for index := len(batches) - 1; index >= 0; index-- {
+		if _, selected := remove[index]; selected {
+			candidates = append(candidates, batches[index])
+		}
+	}
+	return retentionSelection{
+		Plan: datalogger.RetentionPlan{
+			EvaluatedAt: evaluatedAt,
+			CutoffAt:    cutoffAt,
+			Policy: datalogger.RetentionPolicy{
+				MaxSizeBytes: policy.MaxSizeBytes, MaxAgeSeconds: policy.MaxAgeSeconds,
+			},
+			Current:           retentionMetrics(batches),
+			Remove:            retentionMetrics(candidates),
+			EstimatedRetained: retentionMetrics(retained),
+		},
+		Candidates: candidates,
+	}, nil
+}
+
+func retentionMetrics(batches []batchStorageRow) datalogger.RetentionMetrics {
+	metrics := datalogger.RetentionMetrics{}
+	for _, batch := range batches {
+		batchAt := batch.BatchAt.UTC()
+		metrics.RowCount += batch.RowCount
+		metrics.BatchCount++
+		metrics.EstimatedSizeBytes += batch.EstimatedSizeBytes
+		if metrics.OldestBatchAt == nil || batchAt.Before(*metrics.OldestBatchAt) {
+			value := batchAt
+			metrics.OldestBatchAt = &value
+		}
+		if metrics.NewestBatchAt == nil || batchAt.After(*metrics.NewestBatchAt) {
+			value := batchAt
+			metrics.NewestBatchAt = &value
+		}
+	}
+	return metrics
+}
+
+func deleteRetentionBatches(tx *gorm.DB, loggerID uuid.UUID, batches []batchStorageRow) error {
 	if len(batches) == 0 {
 		return nil
 	}
-	if batches[0].EstimatedSizeBytes > *maxSizeBytes {
-		return datalogger.ErrStorageLimitTooSmall
-	}
-	retainedBytes := int64(0)
-	remove := make([]time.Time, 0)
+	batchTimes := make([]time.Time, 0, len(batches))
 	for _, batch := range batches {
-		if retainedBytes+batch.EstimatedSizeBytes <= *maxSizeBytes {
-			retainedBytes += batch.EstimatedSizeBytes
-			continue
-		}
-		remove = append(remove, batch.BatchAt)
+		batchTimes = append(batchTimes, batch.BatchAt.UTC())
 	}
-	if len(remove) == 0 {
-		return nil
-	}
-	if err := tx.Exec("DELETE FROM tag_values_raw WHERE logger_id = ? AND batch_at IN ?", loggerID, remove).Error; err != nil {
+	if err := tx.Exec("DELETE FROM tag_values_raw WHERE logger_id = ? AND batch_at IN ?", loggerID, batchTimes).Error; err != nil {
 		return err
 	}
-	return tx.Exec("DELETE FROM data_logger_batches WHERE logger_id = ? AND batch_at IN ?", loggerID, remove).Error
+	return tx.Exec("DELETE FROM data_logger_batches WHERE logger_id = ? AND batch_at IN ?", loggerID, batchTimes).Error
+}
+
+func readRetentionRunStatus(tx *gorm.DB, loggerID uuid.UUID) (*datalogger.RetentionRunStatus, error) {
+	var row retentionStatusRow
+	result := tx.Table("data_logger_retention_status").
+		Select("last_started_at, last_completed_at, last_result, last_error").
+		Where("logger_id = ?", loggerID).
+		Scan(&row)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	status := &datalogger.RetentionRunStatus{
+		StartedAt: row.LastStartedAt.UTC(), CompletedAt: row.LastCompletedAt.UTC(), Error: row.LastError,
+	}
+	if len(row.LastResult) > 0 {
+		var cleanupResult datalogger.RetentionCleanupResult
+		if err := json.Unmarshal(row.LastResult, &cleanupResult); err != nil {
+			return nil, err
+		}
+		status.Result = &cleanupResult
+	}
+	return status, nil
+}
+
+func writeRetentionSuccess(tx *gorm.DB, loggerID uuid.UUID, result datalogger.RetentionCleanupResult) error {
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return tx.Exec(`
+		INSERT INTO data_logger_retention_status (
+			logger_id, last_started_at, last_completed_at, last_result, last_error, updated_at
+		) VALUES (?, ?, ?, ?::jsonb, NULL, CURRENT_TIMESTAMP)
+		ON CONFLICT (logger_id) DO UPDATE SET
+			last_started_at = EXCLUDED.last_started_at,
+			last_completed_at = EXCLUDED.last_completed_at,
+			last_result = EXCLUDED.last_result,
+			last_error = NULL,
+			updated_at = CURRENT_TIMESTAMP
+	`, loggerID, result.StartedAt, result.CompletedAt, string(payload)).Error
+}
+
+func (repository *historyRepository) writeRetentionFailure(ctx context.Context, loggerID uuid.UUID, startedAt time.Time, cleanupError error) {
+	statusContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	completedAt := time.Now().UTC()
+	message := sanitizedRetentionError(cleanupError)
+	_ = repository.db.WithContext(statusContext).Exec(`
+		INSERT INTO data_logger_retention_status (
+			logger_id, last_started_at, last_completed_at, last_result, last_error, updated_at
+		) VALUES (?, ?, ?, NULL, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (logger_id) DO UPDATE SET
+			last_started_at = EXCLUDED.last_started_at,
+			last_completed_at = EXCLUDED.last_completed_at,
+			last_result = NULL,
+			last_error = EXCLUDED.last_error,
+			updated_at = CURRENT_TIMESTAMP
+	`, loggerID, startedAt, completedAt, message).Error
+}
+
+func sanitizedRetentionError(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "retention cleanup canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "retention cleanup timed out"
+	case errors.Is(err, datalogger.ErrStorageLimitTooSmall):
+		return "storage limit cannot hold the newest retained batch"
+	default:
+		return "retention cleanup failed"
+	}
+}
+
+func publicRetentionError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, datalogger.ErrLoggerNotFound), errors.Is(err, datalogger.ErrInvalidInput), errors.Is(err, datalogger.ErrStorageLimitTooSmall):
+		return err
+	default:
+		return datalogger.ErrRetentionCleanup
+	}
+}
+
+func equalOptionalInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func utcTimePointer(value *time.Time) *time.Time {

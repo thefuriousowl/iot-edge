@@ -152,7 +152,7 @@ func newReportDatabase(t *testing.T) (*gorm.DB, []uuid.UUID) {
 		t.Fatalf("getting SQL DB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	for _, path := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql", "../../../migrations/000008_add_data_logger_storage_limits.up.sql", "../../../migrations/000009_create_reports.up.sql"} {
+	for _, path := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql", "../../../migrations/000008_add_data_logger_storage_limits.up.sql", "../../../migrations/000009_create_reports.up.sql", "../../../migrations/000015_add_data_logger_age_retention.up.sql"} {
 		migration, readErr := os.ReadFile(path)
 		if readErr != nil {
 			t.Fatalf("reading migration %s: %v", path, readErr)

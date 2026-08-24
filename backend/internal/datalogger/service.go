@@ -18,8 +18,6 @@ const (
 	defaultPerPage      = 20
 	maxPerPage          = 100
 	defaultQueryPerPage = 100
-	maxQueryPerPage     = 500
-	maxQueryTags        = 100
 )
 
 var (
@@ -28,16 +26,17 @@ var (
 )
 
 type CreateInput struct {
-	Name         string
-	Description  *string
-	Enabled      *bool
-	Timezone     string
-	Mode         Mode
-	StartAt      time.Time
-	EndAt        *time.Time
-	MaxSizeBytes *int64
-	Config       json.RawMessage
-	TagIDs       []uuid.UUID
+	Name          string
+	Description   *string
+	Enabled       *bool
+	Timezone      string
+	Mode          Mode
+	StartAt       time.Time
+	EndAt         *time.Time
+	MaxSizeBytes  *int64
+	MaxAgeSeconds *int64
+	Config        json.RawMessage
+	TagIDs        []uuid.UUID
 }
 
 type OptionalString struct {
@@ -56,16 +55,17 @@ type OptionalInt64 struct {
 }
 
 type UpdateInput struct {
-	Name         *string
-	Description  OptionalString
-	Enabled      *bool
-	Timezone     *string
-	Mode         *Mode
-	StartAt      *time.Time
-	EndAt        OptionalTime
-	MaxSizeBytes OptionalInt64
-	Config       json.RawMessage
-	TagIDs       *[]uuid.UUID
+	Name          *string
+	Description   OptionalString
+	Enabled       *bool
+	Timezone      *string
+	Mode          *Mode
+	StartAt       *time.Time
+	EndAt         OptionalTime
+	MaxSizeBytes  OptionalInt64
+	MaxAgeSeconds OptionalInt64
+	Config        json.RawMessage
+	TagIDs        *[]uuid.UUID
 }
 
 type Service struct {
@@ -90,15 +90,16 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (*Logger,
 		enabled = *input.Enabled
 	}
 	entity := Logger{
-		Name:         input.Name,
-		Description:  input.Description,
-		Enabled:      enabled,
-		Timezone:     input.Timezone,
-		Mode:         input.Mode,
-		StartAt:      input.StartAt,
-		EndAt:        input.EndAt,
-		MaxSizeBytes: input.MaxSizeBytes,
-		Config:       input.Config,
+		Name:          input.Name,
+		Description:   input.Description,
+		Enabled:       enabled,
+		Timezone:      input.Timezone,
+		Mode:          input.Mode,
+		StartAt:       input.StartAt,
+		EndAt:         input.EndAt,
+		MaxSizeBytes:  input.MaxSizeBytes,
+		MaxAgeSeconds: input.MaxAgeSeconds,
+		Config:        input.Config,
 	}
 	tagIDs, err := normalizeLogger(&entity, input.TagIDs)
 	if err != nil {
@@ -161,7 +162,7 @@ func (service *Service) ListHistory(ctx context.Context, id uuid.UUID, input Raw
 }
 
 func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input QueryInput) (*QueryResult, error) {
-	if id == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.To.Sub(input.From) > 366*24*time.Hour {
+	if id == uuid.Nil || input.From.IsZero() || input.To.IsZero() || !input.To.After(input.From) || input.To.Sub(input.From) > MaxQueryRange {
 		return nil, ErrInvalidQuery
 	}
 	if service.history == nil {
@@ -177,8 +178,14 @@ func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input Qu
 	if input.Mode != QueryModeRaw && input.Mode != QueryModeAggregate {
 		return nil, ErrInvalidQuery
 	}
-	if input.Mode == QueryModeAggregate && (input.Bucket.Seconds() == 0 || !input.Aggregate.Valid()) {
-		return nil, ErrInvalidQuery
+	if input.Mode == QueryModeRaw {
+		if input.Bucket != "" || input.Aggregate != "" || len(input.Aggregates) > 0 {
+			return nil, ErrInvalidQuery
+		}
+	} else {
+		if input.Bucket.Seconds() == 0 || len(input.Aggregates) == 0 && !input.Aggregate.Valid() || len(input.Aggregates) > 0 && input.Aggregate != "" {
+			return nil, ErrInvalidQuery
+		}
 	}
 	if input.Page < 1 {
 		input.Page = 1
@@ -186,7 +193,7 @@ func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input Qu
 	if input.PerPage < 1 {
 		input.PerPage = defaultQueryPerPage
 	}
-	if input.PerPage > maxQueryPerPage {
+	if input.Page > MaxQueryPage || input.PerPage > MaxQueryPerPage {
 		return nil, ErrInvalidQuery
 	}
 	selected := make(map[uuid.UUID]struct{}, len(entity.Tags))
@@ -199,7 +206,7 @@ func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input Qu
 			input.TagIDs = append(input.TagIDs, tag.ID)
 		}
 	}
-	if len(input.TagIDs) == 0 || len(input.TagIDs) > maxQueryTags {
+	if len(input.TagIDs) == 0 || len(input.TagIDs) > MaxQueryTags {
 		return nil, ErrInvalidQuery
 	}
 	seen := make(map[uuid.UUID]struct{}, len(input.TagIDs))
@@ -215,10 +222,64 @@ func (service *Service) QueryHistory(ctx context.Context, id uuid.UUID, input Qu
 		}
 		seen[tagID] = struct{}{}
 	}
+	if len(input.Aggregates) > 0 {
+		if len(input.Aggregates) != len(input.TagIDs) {
+			return nil, ErrInvalidQuery
+		}
+		for _, tagID := range input.TagIDs {
+			function, exists := input.Aggregates[tagID]
+			if !exists || !function.Valid() {
+				return nil, ErrInvalidQuery
+			}
+		}
+	}
 	input.LoggerID = id
 	input.From = input.From.UTC()
 	input.To = input.To.UTC()
 	return service.history.Query(ctx, input)
+}
+
+func (service *Service) ManagementOverview(ctx context.Context, evaluatedAt time.Time) (*DataManagementOverview, error) {
+	if service.history == nil {
+		return nil, ErrHistoryRepositoryRequired
+	}
+	if evaluatedAt.IsZero() {
+		evaluatedAt = time.Now()
+	}
+	return service.history.ManagementOverview(ctx, evaluatedAt.UTC())
+}
+
+func (service *Service) Retention(ctx context.Context, id uuid.UUID, evaluatedAt time.Time) (*RetentionStatus, error) {
+	if id == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
+	if service.history == nil {
+		return nil, ErrHistoryRepositoryRequired
+	}
+	if evaluatedAt.IsZero() {
+		evaluatedAt = time.Now()
+	}
+	return service.history.Retention(ctx, id, evaluatedAt.UTC())
+}
+
+func (service *Service) CleanupRetention(ctx context.Context, id uuid.UUID, input RetentionCleanupInput) (*RetentionCleanupResult, error) {
+	if id == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
+	if service.history == nil {
+		return nil, ErrHistoryRepositoryRequired
+	}
+	if input.EvaluatedAt.IsZero() {
+		input.EvaluatedAt = time.Now()
+	}
+	if input.BatchLimit == 0 {
+		input.BatchLimit = DefaultRetentionBatchLimit
+	}
+	if input.BatchLimit < 1 || input.BatchLimit > MaxRetentionBatchLimit {
+		return nil, ErrInvalidInput
+	}
+	input.EvaluatedAt = input.EvaluatedAt.UTC()
+	return service.history.CleanupRetention(ctx, id, input)
 }
 
 func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateInput) (*Logger, error) {
@@ -253,6 +314,9 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 	if input.MaxSizeBytes.Set {
 		current.MaxSizeBytes = input.MaxSizeBytes.Value
 	}
+	if input.MaxAgeSeconds.Set {
+		current.MaxAgeSeconds = input.MaxAgeSeconds.Value
+	}
 	if input.Config != nil {
 		current.Config = input.Config
 	}
@@ -276,7 +340,7 @@ func (service *Service) Update(ctx context.Context, id uuid.UUID, input UpdateIn
 		return nil, err
 	}
 	if service.history != nil {
-		if err := service.history.EnforceStorageLimit(ctx, id, current.MaxSizeBytes); err != nil {
+		if err := service.history.EnforceRetention(ctx, id, RetentionPolicy{MaxSizeBytes: current.MaxSizeBytes, MaxAgeSeconds: current.MaxAgeSeconds}); err != nil {
 			return nil, err
 		}
 	}
@@ -319,6 +383,9 @@ func normalizeLogger(entity *Logger, tagIDs []uuid.UUID) ([]uuid.UUID, error) {
 	}
 	if entity.MaxSizeBytes != nil && (*entity.MaxSizeBytes < MinStorageSizeBytes || *entity.MaxSizeBytes > MaxStorageSizeBytes) {
 		return nil, fmt.Errorf("%w: max_size_bytes is outside the supported range", ErrInvalidInput)
+	}
+	if entity.MaxAgeSeconds != nil && (*entity.MaxAgeSeconds < MinRetentionAgeSeconds || *entity.MaxAgeSeconds > MaxRetentionAgeSeconds) {
+		return nil, fmt.Errorf("%w: max_age_seconds is outside the supported range", ErrInvalidInput)
 	}
 	config, err := normalizeConfig(entity.Mode, entity.Config)
 	if err != nil {

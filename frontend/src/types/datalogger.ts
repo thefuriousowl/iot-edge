@@ -34,6 +34,7 @@ export interface DataLogger {
   start_at: string;
   end_at: string | null;
   max_size_bytes: number | null;
+  max_age_seconds?: number | null;
   config: DataLoggerConfig;
   tag_count: number;
   tags?: DataLoggerTagReference[];
@@ -51,6 +52,70 @@ export interface DataLoggerStorageStats {
   estimated_capacity_batches: number | null;
   oldest_batch_at: string | null;
   newest_batch_at: string | null;
+}
+
+export interface RetentionMetrics {
+  row_count: number;
+  batch_count: number;
+  estimated_size_bytes: number;
+  oldest_batch_at: string | null;
+  newest_batch_at: string | null;
+}
+
+export interface DataManagementOverview {
+  evaluated_at: string;
+  logger_count: number;
+  enabled_logger_count: number;
+  policy_logger_count: number;
+  logical_history: RetentionMetrics;
+  postgresql_physical_allocation: {
+    raw_history_bytes: number;
+    batch_accounting_bytes: number;
+    total_bytes: number;
+  };
+}
+
+export interface RetentionPolicy {
+  max_size_bytes: number | null;
+  max_age_seconds: number | null;
+}
+
+export interface RetentionPlan {
+  evaluated_at: string;
+  cutoff_at: string | null;
+  policy: RetentionPolicy;
+  current: RetentionMetrics;
+  remove: RetentionMetrics;
+  estimated_retained: RetentionMetrics;
+}
+
+export interface RetentionCleanupResult {
+  started_at: string;
+  completed_at: string;
+  evaluated_at: string;
+  cutoff_at: string | null;
+  policy: RetentionPolicy;
+  deleted: RetentionMetrics;
+  retained: RetentionMetrics;
+  remaining_removal: RetentionMetrics;
+  complete: boolean;
+}
+
+export interface RetentionRunStatus {
+  started_at: string;
+  completed_at: string;
+  result: RetentionCleanupResult | null;
+  error: string | null;
+}
+
+export interface RetentionStatus {
+  plan: RetentionPlan;
+  last_run: RetentionRunStatus | null;
+}
+
+export interface RetentionCleanupRequest {
+  confirm: true;
+  batch_limit?: number;
 }
 
 export interface DataLoggerPagination {
@@ -149,6 +214,7 @@ export interface SaveDataLoggerRequest {
   start_at: string;
   end_at: string | null;
   max_size_bytes: number | null;
+  max_age_seconds?: number | null;
   config: DataLoggerConfig;
   tag_ids: string[];
 }

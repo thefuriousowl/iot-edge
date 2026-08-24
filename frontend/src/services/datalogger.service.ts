@@ -1,5 +1,6 @@
 import type {
   CreateDataLoggerRequest,
+  DataManagementOverview,
   DataLogger,
   DataLoggerHistoryParams,
   DataLoggerHistoryResponse,
@@ -7,6 +8,10 @@ import type {
   DataLoggerListResponse,
   DataLoggerQueryParams,
   DataLoggerQueryResponse,
+  RetentionCleanupRequest,
+  RetentionCleanupResult,
+  RetentionPlan,
+  RetentionStatus,
   UpdateDataLoggerRequest,
 } from "../types/datalogger";
 import api from "./api";
@@ -20,6 +25,26 @@ export async function listDataLoggers(
   signal?: AbortSignal,
 ): Promise<DataLoggerListResponse> {
   const response = await api.get<DataLoggerListResponse>("/data-loggers", { params, signal });
+  return response.data;
+}
+
+export async function getDataManagementOverview(signal?: AbortSignal): Promise<DataManagementOverview> {
+  const response = await api.get<DataManagementOverview>("/data-management/overview", { signal });
+  return response.data;
+}
+
+export async function getDataLoggerRetention(id: string, signal?: AbortSignal): Promise<RetentionStatus> {
+  const response = await api.get<RetentionStatus>(`${dataLoggerPath(id)}/retention`, { signal });
+  return response.data;
+}
+
+export async function previewDataLoggerRetention(id: string, signal?: AbortSignal): Promise<RetentionPlan> {
+  const response = await api.get<RetentionPlan>(`${dataLoggerPath(id)}/retention/preview`, { signal });
+  return response.data;
+}
+
+export async function cleanupDataLoggerRetention(id: string, data: RetentionCleanupRequest): Promise<RetentionCleanupResult> {
+  const response = await api.post<RetentionCleanupResult>(`${dataLoggerPath(id)}/retention/cleanup`, data);
   return response.data;
 }
 

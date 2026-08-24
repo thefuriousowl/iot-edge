@@ -1,7 +1,10 @@
 package authhttp
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"time"
 
@@ -326,6 +329,71 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 		"message": "Logged out successfully",
 	})
 }
+
+func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
+	userID, ok := c.Locals(LocalUserID).(uuid.UUID)
+	if !ok || userID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": fiber.Map{"code": "AUTH004", "message": "Invalid token"},
+		})
+	}
+	var request auth.ChangePasswordRequest
+	if err := decodeStrictJSON(c.Body(), &request); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{"code": "VALIDATION_ERROR", "message": "Invalid request body"},
+		})
+	}
+	if err := h.validate.Struct(request); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fiber.Map{"code": "VALIDATION_ERROR", "message": "Invalid request data"},
+		})
+	}
+	err := h.auth.ChangePassword(c.UserContext(), userID, request.CurrentPassword, request.NewPassword)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrInvalidCredentials):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": fiber.Map{"code": "AUTH001", "message": "Invalid credentials"},
+			})
+		case errors.Is(err, auth.ErrAccountLocked):
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": fiber.Map{"code": "AUTH002", "message": "Account locked"},
+			})
+		case errors.Is(err, auth.ErrSessionExpired):
+			h.clearRefreshTokenCookie(c)
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": fiber.Map{"code": "AUTH005", "message": "Session expired"},
+			})
+		case errors.Is(err, auth.ErrPasswordRequirements):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": fiber.Map{"code": "AUTH006", "message": "Password requirements not met"},
+			})
+		case errors.Is(err, auth.ErrPasswordRecentlyUsed):
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": fiber.Map{"code": "AUTH007", "message": "Password recently used"},
+			})
+		default:
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": fiber.Map{"code": "INTERNAL_ERROR", "message": "Internal server error"},
+			})
+		}
+	}
+	h.clearRefreshTokenCookie(c)
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Password changed successfully"})
+}
+
+func decodeStrictJSON(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request must contain one JSON document")
+	}
+	return nil
+}
+
 func (h *AuthHandler) clearRefreshTokenCookie(c *fiber.Ctx) {
 	c.Cookie(&fiber.Cookie{
 		Name:     refreshTokenCookieName,

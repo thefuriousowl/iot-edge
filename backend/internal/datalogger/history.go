@@ -18,6 +18,7 @@ var (
 	ErrRawBatchNotFound     = errors.New("Data Logger batch not found")
 	ErrRawTagNotSelected    = errors.New("Tag is not selected by Data Logger")
 	ErrStorageLimitTooSmall = errors.New("Data Logger storage limit cannot hold one complete batch")
+	ErrRetentionCleanup     = errors.New("Data Logger retention cleanup failed")
 )
 
 type RawSample struct {
@@ -79,9 +80,12 @@ type HistoryRepository interface {
 	ListBatches(context.Context, RawBatchListInput) ([]RawBatch, error)
 	ListValues(context.Context, RawValueListInput) (*RawValueListResult, error)
 	Query(context.Context, QueryInput) (*QueryResult, error)
+	ManagementOverview(context.Context, time.Time) (*DataManagementOverview, error)
 	Storage(context.Context, uuid.UUID, int, *int64) (*StorageStats, error)
+	Retention(context.Context, uuid.UUID, time.Time) (*RetentionStatus, error)
+	CleanupRetention(context.Context, uuid.UUID, RetentionCleanupInput) (*RetentionCleanupResult, error)
 	ValidateStorageLimit(context.Context, uuid.UUID, *int64) error
-	EnforceStorageLimit(context.Context, uuid.UUID, *int64) error
+	EnforceRetention(context.Context, uuid.UUID, RetentionPolicy) error
 }
 
 func validHistoryDataType(value string) bool {

@@ -7,6 +7,12 @@
 .datalogger-storage-controls>label:last-child{display:grid;gap:.4rem;color:#c8d3dc;font-size:.8rem}
 .datalogger-storage-controls input[type=number]{width:100%;min-height:2.9rem;box-sizing:border-box;padding:.7rem .8rem;border:1px solid var(--vgateway-border);border-radius:.4rem;background:#08131b;color:var(--vgateway-text);font:inherit}
 .datalogger-storage-controls input:disabled{cursor:not-allowed;opacity:.45}
+.datalogger-age-controls{margin-top:1rem;padding-top:1rem;border-top:1px solid rgba(48,67,82,.7)}
+.datalogger-duration-field{display:grid;grid-template-columns:minmax(0,1fr) minmax(7rem,.65fr);gap:.6rem}
+.datalogger-duration-field label{display:grid;gap:.4rem;color:#c8d3dc;font-size:.8rem}
+.datalogger-duration-field select{width:100%;min-height:2.9rem;box-sizing:border-box;padding:.7rem .8rem;border:1px solid var(--vgateway-border);border-radius:.4rem;background:#08131b;color:var(--vgateway-text);font:inherit}
+.datalogger-duration-field select:disabled{cursor:not-allowed;opacity:.45}
+.datalogger-duration-field>small{grid-column:1/-1}
 .datalogger-storage-estimate{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:1rem;border:1px solid rgba(48,67,82,.7);border-radius:.4rem}
 .datalogger-storage-estimate span{padding:.8rem;color:var(--vgateway-muted);font-size:.75rem}
 .datalogger-storage-estimate span+span{border-left:1px solid rgba(48,67,82,.7)}

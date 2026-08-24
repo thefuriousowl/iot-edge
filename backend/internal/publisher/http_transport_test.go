@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +77,143 @@ func TestHTTPTransportRendersImmutableAnonymousSnapshot(t *testing.T) {
 	metrics := transport.Metrics()
 	if metrics.ExternalRequestCount != 5 || metrics.RejectedRequestCount != 4 || metrics.LastExternalRequestAt == nil {
 		t.Fatalf("HTTP metrics = %#v", metrics)
+	}
+}
+
+func TestHTTPTransportEnforcesConcurrentConnectionLimit(t *testing.T) {
+	publisherID := uuid.New()
+	resolver := &secretTestResolver{publisherID: publisherID, materials: map[string]secretTestResolved{}}
+	factory, err := NewHTTPTransportFactory(resolver, NewJSONPayloadEngine(), WithHTTPListenFunc(loopbackEphemeralHTTPListener))
+	if err != nil {
+		t.Fatalf("NewHTTPTransportFactory() error = %v", err)
+	}
+	entity, sources := httpTransportPublisher(t, publisherID, HTTPAccessConfig{Mode: HTTPAccessAnonymous, AnonymousAcknowledged: true}, HTTPQualityPayload)
+	entity = httpTransportPublisherWithMaxConnections(t, entity, 2)
+	created, err := factory.NewResolvedTransport(context.Background(), entity, sources)
+	if err != nil {
+		t.Fatalf("NewResolvedTransport() error = %v", err)
+	}
+	transport := created.(*httpSnapshotTransport)
+	t.Cleanup(func() { _ = transport.Close(context.Background()) })
+
+	capturedAt := time.Now().UTC()
+	if err := transport.Publish(context.Background(), SourceSnapshot{CapturedAt: capturedAt, Samples: []SourceSample{{
+		Alias: "power", Reference: sources[0].Descriptor.Reference, Available: true, SchemaVersion: 1,
+		DataType: SourceDataTypeFloat64, Unit: "kW", Value: 42.5, Quality: SourceQualityGood, ObservedAt: &capturedAt,
+	}}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	first := dialHTTPTransport(t, transport.Address())
+	defer first.Close()
+	second := dialHTTPTransport(t, transport.Address())
+	defer second.Close()
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool { return metrics.ActiveConnections == 2 })
+
+	rejected := dialHTTPTransport(t, transport.Address())
+	_ = rejected.SetDeadline(time.Now().Add(time.Second))
+	_, _ = io.WriteString(rejected, "GET /snapshot HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	buffer := make([]byte, 1)
+	if _, err := rejected.Read(buffer); err == nil {
+		t.Fatal("connection beyond max_connections remained open")
+	}
+	_ = rejected.Close()
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool {
+		return metrics.ActiveConnections == 2 && metrics.RejectedRequestCount == 1
+	})
+
+	_ = first.Close()
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool { return metrics.ActiveConnections == 1 })
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 2 * time.Second}
+	response, err := client.Get("http://" + transport.Address() + "/snapshot")
+	if err != nil {
+		t.Fatalf("GET after releasing connection permit: %v", err)
+	}
+	assertHTTPResponse(t, response, http.StatusOK, true)
+	_ = response.Body.Close()
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool { return metrics.ActiveConnections == 1 })
+
+	_ = second.Close()
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool { return metrics.ActiveConnections == 0 })
+}
+
+func TestHTTPTransportGracefulShutdownDrainsInFlightResponse(t *testing.T) {
+	publisherID := uuid.New()
+	resolver := &secretTestResolver{publisherID: publisherID, materials: map[string]secretTestResolved{}}
+	serverConnection, clientConnection := net.Pipe()
+	blockedConnection := &blockingHTTPWriteConnection{
+		Conn: serverConnection, writeStarted: make(chan struct{}), releaseWrites: make(chan struct{}),
+	}
+	listener := newSingleHTTPConnectionListener(blockedConnection)
+	factory, err := NewHTTPTransportFactory(resolver, NewJSONPayloadEngine(), WithHTTPListenFunc(func(string, string) (net.Listener, error) {
+		return listener, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewHTTPTransportFactory() error = %v", err)
+	}
+	entity, sources := httpTransportPublisher(t, publisherID, HTTPAccessConfig{Mode: HTTPAccessAnonymous, AnonymousAcknowledged: true}, HTTPQualityPayload)
+	created, err := factory.NewResolvedTransport(context.Background(), entity, sources)
+	if err != nil {
+		t.Fatalf("NewResolvedTransport() error = %v", err)
+	}
+	transport := created.(*httpSnapshotTransport)
+	t.Cleanup(func() {
+		_ = clientConnection.Close()
+		_ = transport.Close(context.Background())
+	})
+
+	capturedAt := time.Now().UTC()
+	if err := transport.Publish(context.Background(), SourceSnapshot{CapturedAt: capturedAt, Samples: []SourceSample{{
+		Alias: "power", Reference: sources[0].Descriptor.Reference, Available: true, SchemaVersion: 1,
+		DataType: SourceDataTypeFloat64, Unit: "kW", Value: 42.5, Quality: SourceQualityGood, ObservedAt: &capturedAt,
+	}}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if _, err := io.WriteString(clientConnection, "GET /snapshot HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("writing request: %v", err)
+	}
+	select {
+	case <-blockedConnection.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for in-flight response")
+	}
+
+	type responseResult struct {
+		response *http.Response
+		err      error
+	}
+	responseResults := make(chan responseResult, 1)
+	go func() {
+		response, err := http.ReadResponse(bufio.NewReader(clientConnection), &http.Request{Method: http.MethodGet})
+		responseResults <- responseResult{response: response, err: err}
+	}()
+	closeResults := make(chan error, 1)
+	closeContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { closeResults <- transport.Close(closeContext) }()
+	select {
+	case err := <-closeResults:
+		t.Fatalf("Close() returned before draining in-flight response: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(blockedConnection.releaseWrites)
+
+	result := <-responseResults
+	if result.err != nil {
+		t.Fatalf("reading drained response: %v", result.err)
+	}
+	assertHTTPResponse(t, result.response, http.StatusOK, true)
+	_ = result.response.Body.Close()
+	if err := <-closeResults; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := transport.Close(context.Background()); err != nil {
+		t.Fatalf("repeated Close() error = %v", err)
+	}
+	waitHTTPTransportMetrics(t, transport, func(metrics TransportMetrics) bool { return metrics.ActiveConnections == 0 })
+	if connection, err := net.DialTimeout("tcp", transport.Address(), 50*time.Millisecond); err == nil {
+		_ = connection.Close()
+		t.Fatal("listener accepted connection after graceful shutdown")
 	}
 }
 
@@ -314,6 +453,91 @@ func httpTransportPublisher(t *testing.T, publisherID uuid.UUID, access HTTPAcce
 
 func loopbackEphemeralHTTPListener(_, _ string) (net.Listener, error) {
 	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+func httpTransportPublisherWithMaxConnections(t *testing.T, entity Publisher, maximum int) Publisher {
+	t.Helper()
+	config, err := ParseHTTPPublisherConfig(entity.Config)
+	if err != nil {
+		t.Fatalf("ParseHTTPPublisherConfig() error = %v", err)
+	}
+	config.HTTP.MaxConnections = maximum
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshalling HTTP config: %v", err)
+	}
+	entity.Config, err = normalizeHTTPPublisherConfig(encoded)
+	if err != nil {
+		t.Fatalf("normalizing HTTP config: %v", err)
+	}
+	return entity
+}
+
+func dialHTTPTransport(t *testing.T, address string) net.Conn {
+	t.Helper()
+	connection, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		t.Fatalf("dialing HTTP transport: %v", err)
+	}
+	return connection
+}
+
+func waitHTTPTransportMetrics(t *testing.T, transport *httpSnapshotTransport, matches func(TransportMetrics) bool) TransportMetrics {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		metrics := transport.Metrics()
+		if matches(metrics) {
+			return metrics
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for HTTP metrics; latest = %#v", metrics)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+type singleHTTPConnectionListener struct {
+	connections chan net.Conn
+	closed      chan struct{}
+	closeOnce   sync.Once
+}
+
+func newSingleHTTPConnectionListener(connection net.Conn) *singleHTTPConnectionListener {
+	connections := make(chan net.Conn, 1)
+	connections <- connection
+	return &singleHTTPConnectionListener{connections: connections, closed: make(chan struct{})}
+}
+
+func (listener *singleHTTPConnectionListener) Accept() (net.Conn, error) {
+	select {
+	case connection := <-listener.connections:
+		return connection, nil
+	case <-listener.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (listener *singleHTTPConnectionListener) Close() error {
+	listener.closeOnce.Do(func() { close(listener.closed) })
+	return nil
+}
+
+func (listener *singleHTTPConnectionListener) Addr() net.Addr {
+	return testHTTPAddress("127.0.0.1:0")
+}
+
+type blockingHTTPWriteConnection struct {
+	net.Conn
+	writeStarted  chan struct{}
+	releaseWrites chan struct{}
+	writeOnce     sync.Once
+}
+
+func (connection *blockingHTTPWriteConnection) Write(data []byte) (int, error) {
+	connection.writeOnce.Do(func() { close(connection.writeStarted) })
+	<-connection.releaseWrites
+	return connection.Conn.Write(data)
 }
 
 func httpRequest(t *testing.T, method, endpoint string, body io.Reader, headers map[string]string) *http.Response {

@@ -14,7 +14,7 @@ func TestGenerateAndParseTokenPair(t *testing.T) {
 	service := newTestAuthService(t)
 	now := time.Date(2026, time.August, 20, 8, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
-	user := &User{ID: uuid.New(), Username: "admin"}
+	user := &User{ID: uuid.New(), Username: "admin", SessionVersion: 7}
 
 	pair, err := service.GenerateTokenPair(user)
 	if err != nil {
@@ -43,6 +43,9 @@ func TestGenerateAndParseTokenPair(t *testing.T) {
 	if accessClaims.TokenType != TokenTypeAccess || accessClaims.ID != "" {
 		t.Errorf("access token type/JTI = %q/%q, want access with no JTI", accessClaims.TokenType, accessClaims.ID)
 	}
+	if accessClaims.SessionVersion != 0 {
+		t.Errorf("access session version = %d, want omitted zero", accessClaims.SessionVersion)
+	}
 
 	refreshClaims, err := service.ParseToken(pair.RefreshToken, TokenTypeRefresh)
 	if err != nil {
@@ -53,6 +56,9 @@ func TestGenerateAndParseTokenPair(t *testing.T) {
 	}
 	if refreshClaims.TokenType != TokenTypeRefresh {
 		t.Errorf("refresh token type = %q, want %q", refreshClaims.TokenType, TokenTypeRefresh)
+	}
+	if refreshClaims.SessionVersion != user.SessionVersion {
+		t.Errorf("refresh session version = %d, want %d", refreshClaims.SessionVersion, user.SessionVersion)
 	}
 	if _, err := uuid.Parse(refreshClaims.ID); err != nil {
 		t.Errorf("refresh token JTI = %q, want UUID: %v", refreshClaims.ID, err)
@@ -199,6 +205,7 @@ func TestGenerateTokenPair_RejectsInvalidUser(t *testing.T) {
 		nil,
 		{Username: "admin"},
 		{ID: uuid.New()},
+		{ID: uuid.New(), Username: "admin", SessionVersion: -1},
 	}
 	for _, user := range tests {
 		if _, err := service.GenerateTokenPair(user); !errors.Is(err, ErrInvalidTokenUser) {

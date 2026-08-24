@@ -1,9 +1,9 @@
 import type { AxiosResponse } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DataLogger, DataLoggerHistoryResponse, DataLoggerListResponse, DataLoggerQueryResponse, SaveDataLoggerRequest } from "../types/datalogger";
+import type { DataLogger, DataLoggerHistoryResponse, DataLoggerListResponse, DataLoggerQueryResponse, DataManagementOverview, RetentionCleanupResult, RetentionPlan, RetentionStatus, SaveDataLoggerRequest } from "../types/datalogger";
 import api from "./api";
-import { createDataLogger, deleteDataLogger, getDataLogger, getDataLoggerHistory, listDataLoggers, queryDataLogger, updateDataLogger } from "./datalogger.service";
+import { cleanupDataLoggerRetention, createDataLogger, deleteDataLogger, getDataLogger, getDataLoggerHistory, getDataLoggerRetention, getDataManagementOverview, listDataLoggers, previewDataLoggerRetention, queryDataLogger, updateDataLogger } from "./datalogger.service";
 
 vi.mock("./api", () => ({
   default: {
@@ -29,6 +29,7 @@ const logger: DataLogger = {
   start_at: "2026-08-22T01:00:00Z",
   end_at: null,
   max_size_bytes: null,
+  max_age_seconds: 86400,
   config: { interval_seconds: 60 },
   tag_count: 1,
   created_at: "2026-08-22T00:00:00Z",
@@ -44,6 +45,7 @@ const request: SaveDataLoggerRequest = {
   start_at: logger.start_at,
   end_at: null,
   max_size_bytes: null,
+  max_age_seconds: 86400,
   config: logger.config,
   tag_ids: ["tag-1"],
 };
@@ -68,6 +70,44 @@ describe("Data Logger service", () => {
 
     await expect(listDataLoggers(params, controller.signal)).resolves.toEqual(expected);
     expect(mockedGet).toHaveBeenCalledWith("/data-loggers", { params, signal: controller.signal });
+  });
+
+  it("loads the protected Data Management overview with cancellation", async () => {
+    const controller = new AbortController();
+    const expected: DataManagementOverview = {
+      evaluated_at: "2026-08-24T08:00:00Z",
+      logger_count: 2,
+      enabled_logger_count: 1,
+      policy_logger_count: 1,
+      logical_history: { row_count: 20, batch_count: 10, estimated_size_bytes: 4096, oldest_batch_at: null, newest_batch_at: null },
+      postgresql_physical_allocation: { raw_history_bytes: 8192, batch_accounting_bytes: 4096, total_bytes: 12288 },
+    };
+    mockedGet.mockResolvedValue(responseWith(expected));
+
+    await expect(getDataManagementOverview(controller.signal)).resolves.toEqual(expected);
+    expect(mockedGet).toHaveBeenCalledWith("/data-management/overview", { signal: controller.signal });
+  });
+
+  it("loads retention status and a fresh preview through encoded paths", async () => {
+    const controller = new AbortController();
+    const metrics = { row_count: 20, batch_count: 10, estimated_size_bytes: 4096, oldest_batch_at: null, newest_batch_at: null };
+    const plan: RetentionPlan = { evaluated_at: "2026-08-24T08:00:00Z", cutoff_at: null, policy: { max_size_bytes: null, max_age_seconds: 86400 }, current: metrics, remove: { ...metrics, row_count: 4, batch_count: 2 }, estimated_retained: { ...metrics, row_count: 16, batch_count: 8 } };
+    const status: RetentionStatus = { plan, last_run: null };
+    mockedGet.mockResolvedValueOnce(responseWith(status)).mockResolvedValueOnce(responseWith(plan));
+
+    await expect(getDataLoggerRetention("logger with/slash", controller.signal)).resolves.toEqual(status);
+    expect(mockedGet).toHaveBeenNthCalledWith(1, "/data-loggers/logger%20with%2Fslash/retention", { signal: controller.signal });
+    await expect(previewDataLoggerRetention("logger with/slash", controller.signal)).resolves.toEqual(plan);
+    expect(mockedGet).toHaveBeenNthCalledWith(2, "/data-loggers/logger%20with%2Fslash/retention/preview", { signal: controller.signal });
+  });
+
+  it("sends an explicit confirmed retention cleanup request", async () => {
+    const metrics = { row_count: 0, batch_count: 0, estimated_size_bytes: 0, oldest_batch_at: null, newest_batch_at: null };
+    const result: RetentionCleanupResult = { started_at: "2026-08-24T08:00:00Z", completed_at: "2026-08-24T08:00:01Z", evaluated_at: "2026-08-24T08:00:00Z", cutoff_at: null, policy: { max_size_bytes: null, max_age_seconds: 86400 }, deleted: metrics, retained: metrics, remaining_removal: metrics, complete: true };
+    mockedPost.mockResolvedValue(responseWith(result));
+
+    await expect(cleanupDataLoggerRetention("logger with/slash", { confirm: true, batch_limit: 250 })).resolves.toEqual(result);
+    expect(mockedPost).toHaveBeenCalledWith("/data-loggers/logger%20with%2Fslash/retention/cleanup", { confirm: true, batch_limit: 250 });
   });
 
   it("creates and fetches definitions without transforming schedule data", async () => {

@@ -47,6 +47,9 @@ func (s *authService) Refresh(
 	if user == nil {
 		return nil, ErrSessionExpired
 	}
+	if claims.SessionVersion != user.SessionVersion {
+		return nil, ErrSessionExpired
+	}
 
 	now := s.now().UTC()
 

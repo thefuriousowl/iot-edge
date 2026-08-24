@@ -19,16 +19,8 @@ import { setup } from "../../../services/auth.service";
 import { useAuthStore } from "../../../stores/auth.store";
 import type { ApiErrorResponse } from "../../../types/auth";
 import AuthBrand from "../components/AuthBrand";
+import { passwordLength, passwordRequirementStates } from "../utils/password";
 import "./LoginPage.css";
-
-function countPasswordClasses(password: string): number {
-    return [
-        /[A-Z]/.test(password),
-        /[a-z]/.test(password),
-        /\d/.test(password),
-        /[^A-Za-z0-9]/.test(password),
-    ].filter(Boolean).length;
-}
 
 const setupSchema = z
     .object({
@@ -40,30 +32,31 @@ const setupSchema = z
             .max(50, "Username must be at most 50 characters"),
         password: z
             .string()
-            .min(1, "Password is required")
-            .min(8, "Password must be at least 8 characters")
-            .max(128, "Password must be at most 128 characters"),
+            .min(1, "Password is required"),
         confirm_password: z.string().min(1, "Confirm password is required"),
     })
     .superRefine((values, context) => {
-        if (countPasswordClasses(values.password) < 3) {
+        const length = passwordLength(values.password);
+        const requirements = passwordRequirementStates(values.password, values.username);
+        if (values.password.length > 0 && length < 8) {
             context.addIssue({
                 code: "custom",
-                message: "Password must contain at least 3 character types",
+                message: "Password must be at least 8 characters",
                 path: ["password"],
             });
         }
-
-        const username = values.username.trim().toLowerCase();
-        if (
-            username.length > 0 &&
-            values.password.toLowerCase().includes(username)
-        ) {
+        if (length > 128) {
             context.addIssue({
                 code: "custom",
-                message: "Password must not contain your username",
+                message: "Password must be at most 128 characters",
                 path: ["password"],
             });
+        }
+        if (!requirements[1].valid) {
+            context.addIssue({ code: "custom", message: "Password must contain at least 3 character types", path: ["password"] });
+        }
+        if (values.username.trim().length > 0 && values.password.length > 0 && !requirements[2].valid) {
+            context.addIssue({ code: "custom", message: "Password must not contain your username", path: ["password"] });
         }
 
         if (values.confirm_password !== values.password) {
@@ -111,23 +104,7 @@ function SetupPage() {
 
     const username = useWatch({ control, name: "username" });
     const password = useWatch({ control, name: "password" });
-    const passwordRequirements = [
-        {
-            label: "8–128 characters",
-            valid: password.length >= 8 && password.length <= 128,
-        },
-        {
-            label: "At least 3 of: uppercase, lowercase, number, special character",
-            valid: countPasswordClasses(password) >= 3,
-        },
-        {
-            label: "Does not contain your username",
-            valid:
-                username.trim().length > 0 &&
-                password.length > 0 &&
-                !password.toLowerCase().includes(username.trim().toLowerCase()),
-        },
-    ];
+    const passwordRequirements = passwordRequirementStates(password, username);
 
     const onSubmit = handleSubmit(async (values) => {
         setRequestError(null);

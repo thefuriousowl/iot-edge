@@ -98,6 +98,8 @@ func TestServiceRejectsInvalidLoggerContracts(t *testing.T) {
 		{name: "end before start", input: withEnd(validCreate(tagID, startAt, `{}`), &endBefore)},
 		{name: "storage below minimum", input: withMaxSize(validCreate(tagID, startAt, `{}`), int64Pointer(MinStorageSizeBytes-1))},
 		{name: "storage above maximum", input: withMaxSize(validCreate(tagID, startAt, `{}`), int64Pointer(MaxStorageSizeBytes+1))},
+		{name: "age below minimum", input: withMaxAge(validCreate(tagID, startAt, `{}`), int64Pointer(MinRetentionAgeSeconds-1))},
+		{name: "age above maximum", input: withMaxAge(validCreate(tagID, startAt, `{}`), int64Pointer(MaxRetentionAgeSeconds+1))},
 		{name: "no tags", input: withTags(validCreate(tagID, startAt, `{}`), nil)},
 		{name: "nil tag", input: withTags(validCreate(tagID, startAt, `{}`), []uuid.UUID{uuid.Nil})},
 		{name: "duplicate tag", input: withTags(validCreate(tagID, startAt, `{}`), []uuid.UUID{tagID, tagID})},
@@ -159,6 +161,103 @@ func TestServiceHydratesStorageAndEnforcesUpdatedLimit(t *testing.T) {
 	}
 	if updated.MaxSizeBytes == nil || *updated.MaxSizeBytes != updatedLimit || history.validatedLimit == nil || *history.validatedLimit != updatedLimit || history.enforcedLimit == nil || *history.enforcedLimit != updatedLimit {
 		t.Errorf("updated storage = %#v, validated/enforced = %v/%v", updated, history.validatedLimit, history.enforcedLimit)
+	}
+}
+
+func TestServicePreservesAndClearsAgeRetention(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	tag := repository.addTag("Power")
+	maxAge := int64(24 * 60 * 60)
+	history := &memoryHistoryRepository{}
+	service, err := NewService(repository, history)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	entity, err := service.Create(context.Background(), withMaxAge(validCreate(tag.ID, time.Now(), `{}`), &maxAge))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if entity.MaxAgeSeconds == nil || *entity.MaxAgeSeconds != maxAge {
+		t.Fatalf("created max age = %#v", entity.MaxAgeSeconds)
+	}
+
+	name := "Preserved age"
+	updated, err := service.Update(context.Background(), entity.ID, UpdateInput{Name: &name})
+	if err != nil {
+		t.Fatalf("Update(omitted age) error = %v", err)
+	}
+	if updated.MaxAgeSeconds == nil || *updated.MaxAgeSeconds != maxAge {
+		t.Errorf("omitted max age = %#v", updated.MaxAgeSeconds)
+	}
+
+	updatedAge := int64(7 * 24 * 60 * 60)
+	updated, err = service.Update(context.Background(), entity.ID, UpdateInput{MaxAgeSeconds: OptionalInt64{Set: true, Value: &updatedAge}})
+	if err != nil {
+		t.Fatalf("Update(max age) error = %v", err)
+	}
+	if updated.MaxAgeSeconds == nil || *updated.MaxAgeSeconds != updatedAge {
+		t.Errorf("updated max age = %#v", updated.MaxAgeSeconds)
+	}
+	if history.enforcedAge == nil || *history.enforcedAge != updatedAge {
+		t.Errorf("enforced max age = %#v", history.enforcedAge)
+	}
+
+	updated, err = service.Update(context.Background(), entity.ID, UpdateInput{MaxAgeSeconds: OptionalInt64{Set: true}})
+	if err != nil {
+		t.Fatalf("Update(clear age) error = %v", err)
+	}
+	if updated.MaxAgeSeconds != nil {
+		t.Errorf("cleared max age = %#v", updated.MaxAgeSeconds)
+	}
+	if history.enforcedAge != nil {
+		t.Errorf("cleared enforced max age = %#v", history.enforcedAge)
+	}
+}
+
+func TestServiceNormalizesRetentionPreviewAndBoundedCleanup(t *testing.T) {
+	t.Parallel()
+	repository := newMemoryRepository()
+	tag := repository.addTag("Power")
+	evaluatedAt := time.Date(2026, time.August, 24, 19, 0, 0, 0, time.FixedZone("ICT", 7*60*60))
+	managementOverview := &DataManagementOverview{EvaluatedAt: evaluatedAt.UTC(), LoggerCount: 1}
+	status := &RetentionStatus{Plan: RetentionPlan{EvaluatedAt: evaluatedAt.UTC()}}
+	cleanupResult := &RetentionCleanupResult{EvaluatedAt: evaluatedAt.UTC(), Complete: true}
+	history := &memoryHistoryRepository{managementOverview: managementOverview, retentionStatus: status, cleanupResult: cleanupResult}
+	service, err := NewService(repository, history)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	entity, err := service.Create(context.Background(), validCreate(tag.ID, evaluatedAt, `{}`))
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	overview, err := service.ManagementOverview(context.Background(), evaluatedAt)
+	if err != nil || overview != managementOverview || !history.managementAt.Equal(evaluatedAt.UTC()) {
+		t.Fatalf("ManagementOverview() = %#v, %v; repository = %#v", overview, err, history)
+	}
+	preview, err := service.Retention(context.Background(), entity.ID, evaluatedAt)
+	if err != nil || preview != status || !history.retentionAt.Equal(evaluatedAt.UTC()) || history.retentionID != entity.ID {
+		t.Fatalf("Retention() = %#v, %v; repository = %#v", preview, err, history)
+	}
+	cleanup, err := service.CleanupRetention(context.Background(), entity.ID, RetentionCleanupInput{EvaluatedAt: evaluatedAt})
+	if err != nil || cleanup != cleanupResult || history.cleanupInput.BatchLimit != DefaultRetentionBatchLimit || !history.cleanupInput.EvaluatedAt.Equal(evaluatedAt.UTC()) || history.cleanupID != entity.ID {
+		t.Fatalf("CleanupRetention() = %#v, %v; repository = %#v", cleanup, err, history)
+	}
+	for _, input := range []RetentionCleanupInput{{BatchLimit: -1}, {BatchLimit: MaxRetentionBatchLimit + 1}} {
+		if _, err := service.CleanupRetention(context.Background(), entity.ID, input); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("CleanupRetention(%#v) error = %v", input, err)
+		}
+	}
+	if _, err := service.Retention(context.Background(), uuid.Nil, evaluatedAt); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("Retention(nil) error = %v", err)
+	}
+	serviceWithoutHistory := newTestService(t, repository)
+	if _, err := serviceWithoutHistory.ManagementOverview(context.Background(), evaluatedAt); !errors.Is(err, ErrHistoryRepositoryRequired) {
+		t.Errorf("ManagementOverview(no history) error = %v", err)
+	}
+	if _, err := serviceWithoutHistory.Retention(context.Background(), entity.ID, evaluatedAt); !errors.Is(err, ErrHistoryRepositoryRequired) {
+		t.Errorf("Retention(no history) error = %v", err)
 	}
 }
 
@@ -278,6 +377,13 @@ func TestServiceQueriesSelectedLoggerTagsAndNormalizesDefaults(t *testing.T) {
 	if history.queryInput.LoggerID != entity.ID || history.queryInput.Page != 1 || history.queryInput.PerPage != 100 || len(history.queryInput.TagIDs) != 2 || history.queryInput.TagIDs[0] != first.ID || !history.queryInput.From.Equal(from.UTC()) {
 		t.Errorf("query input = %#v", history.queryInput)
 	}
+	perTagAggregates := map[uuid.UUID]AggregateFunction{first.ID: AggregateAvg, second.ID: AggregateMax}
+	if _, err := service.QueryHistory(context.Background(), entity.ID, QueryInput{TagIDs: []uuid.UUID{first.ID, second.ID}, From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket1Hour, Aggregates: perTagAggregates}); err != nil {
+		t.Fatalf("QueryHistory(per-Tag aggregates) error = %v", err)
+	}
+	if len(history.queryInput.Aggregates) != 2 || history.queryInput.Aggregates[first.ID] != AggregateAvg || history.queryInput.Aggregate != "" {
+		t.Errorf("per-Tag aggregate input = %#v", history.queryInput)
+	}
 	if _, err := service.QueryHistory(context.Background(), entity.ID, QueryInput{TagIDs: []uuid.UUID{uuid.New()}, From: from, To: to}); !errors.Is(err, ErrRawTagNotSelected) {
 		t.Errorf("QueryHistory(unselected Tag) error = %v", err)
 	}
@@ -287,7 +393,11 @@ func TestServiceQueriesSelectedLoggerTagsAndNormalizesDefaults(t *testing.T) {
 		{From: from, To: to, Mode: "invalid"},
 		{From: from, To: to, Mode: QueryModeAggregate, Bucket: "2m", Aggregate: AggregateAvg},
 		{From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket1Hour, Aggregate: "median"},
-		{From: from, To: to, PerPage: 501},
+		{From: from, To: to, Mode: QueryModeRaw, Aggregate: AggregateAvg},
+		{From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket1Hour, Aggregate: AggregateAvg, Aggregates: perTagAggregates},
+		{TagIDs: []uuid.UUID{first.ID}, From: from, To: to, Mode: QueryModeAggregate, Bucket: QueryBucket1Hour, Aggregates: perTagAggregates},
+		{From: from, To: to, Page: MaxQueryPage + 1},
+		{From: from, To: to, PerPage: MaxQueryPerPage + 1},
 	}
 	for _, input := range invalid {
 		if _, err := service.QueryHistory(context.Background(), entity.ID, input); !errors.Is(err, ErrInvalidQuery) {
@@ -304,16 +414,25 @@ type memoryRepository struct {
 }
 
 type memoryHistoryRepository struct {
-	input           RawValueListInput
-	result          *RawValueListResult
-	queryInput      QueryInput
-	queryResult     *QueryResult
-	storage         *StorageStats
-	storageTagCount int
-	storageLimit    *int64
-	validatedLimit  *int64
-	enforcedLimit   *int64
-	err             error
+	input              RawValueListInput
+	result             *RawValueListResult
+	queryInput         QueryInput
+	queryResult        *QueryResult
+	storage            *StorageStats
+	storageTagCount    int
+	storageLimit       *int64
+	managementAt       time.Time
+	managementOverview *DataManagementOverview
+	validatedLimit     *int64
+	enforcedLimit      *int64
+	enforcedAge        *int64
+	retentionStatus    *RetentionStatus
+	retentionID        uuid.UUID
+	retentionAt        time.Time
+	cleanupID          uuid.UUID
+	cleanupInput       RetentionCleanupInput
+	cleanupResult      *RetentionCleanupResult
+	err                error
 }
 
 func (repository *memoryHistoryRepository) WriteBatch(context.Context, RawBatch) error {
@@ -341,6 +460,11 @@ func (repository *memoryHistoryRepository) Query(_ context.Context, input QueryI
 	return repository.queryResult, repository.err
 }
 
+func (repository *memoryHistoryRepository) ManagementOverview(_ context.Context, evaluatedAt time.Time) (*DataManagementOverview, error) {
+	repository.managementAt = evaluatedAt
+	return repository.managementOverview, repository.err
+}
+
 func (repository *memoryHistoryRepository) Storage(_ context.Context, _ uuid.UUID, tagCount int, maxSizeBytes *int64) (*StorageStats, error) {
 	repository.storageTagCount = tagCount
 	repository.storageLimit = maxSizeBytes
@@ -350,8 +474,21 @@ func (repository *memoryHistoryRepository) Storage(_ context.Context, _ uuid.UUI
 	return repository.storage, repository.err
 }
 
-func (repository *memoryHistoryRepository) EnforceStorageLimit(_ context.Context, _ uuid.UUID, maxSizeBytes *int64) error {
-	repository.enforcedLimit = maxSizeBytes
+func (repository *memoryHistoryRepository) Retention(_ context.Context, loggerID uuid.UUID, evaluatedAt time.Time) (*RetentionStatus, error) {
+	repository.retentionID = loggerID
+	repository.retentionAt = evaluatedAt
+	return repository.retentionStatus, repository.err
+}
+
+func (repository *memoryHistoryRepository) CleanupRetention(_ context.Context, loggerID uuid.UUID, input RetentionCleanupInput) (*RetentionCleanupResult, error) {
+	repository.cleanupID = loggerID
+	repository.cleanupInput = input
+	return repository.cleanupResult, repository.err
+}
+
+func (repository *memoryHistoryRepository) EnforceRetention(_ context.Context, _ uuid.UUID, policy RetentionPolicy) error {
+	repository.enforcedLimit = policy.MaxSizeBytes
+	repository.enforcedAge = policy.MaxAgeSeconds
 	return repository.err
 }
 
@@ -474,6 +611,10 @@ func withTimezone(input CreateInput, value string) CreateInput { input.Timezone 
 func withEnd(input CreateInput, value *time.Time) CreateInput  { input.EndAt = value; return input }
 func withMaxSize(input CreateInput, value *int64) CreateInput {
 	input.MaxSizeBytes = value
+	return input
+}
+func withMaxAge(input CreateInput, value *int64) CreateInput {
+	input.MaxAgeSeconds = value
 	return input
 }
 func withTags(input CreateInput, value []uuid.UUID) CreateInput { input.TagIDs = value; return input }

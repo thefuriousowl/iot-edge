@@ -28,5 +28,10 @@ func RegisterAuthRoutes(
 		RequireAuth(tokenParser),
 		handler.Logout,
 	)
+	auth.Post(
+		"/change-password",
+		RequireAuth(tokenParser),
+		handler.ChangePassword,
+	)
 
 }

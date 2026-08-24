@@ -419,6 +419,134 @@ func TestInitialSetup_Integration(t *testing.T) {
 	}
 }
 
+func TestChangePassword_RevokesExistingRefreshSessionsAndRequiresFreshLogin_Integration(t *testing.T) {
+	db := newInitialSetupTestDatabase(t)
+	users := authpostgres.NewUserRepository(db)
+	authService, err := auth.NewAuthService(users, &auth.ServiceConfig{JWTSecret: strings.Repeat("s", 32), JWTAccessExpiry: 15 * time.Minute, JWTRefreshExpiry: 7 * 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("NewAuthService() error = %v", err)
+	}
+	created, err := authService.Setup(context.Background(), "owner", "CurrentP@ss1")
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	app := newApp("http://localhost:5173")
+	authhttp.RegisterAuthRoutes(app.Group("/api"), authhttp.NewAuthHandler(authService), authService)
+	login := func(password string) (*http.Response, string, *http.Cookie) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"owner","password":"`+password+`"}`))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		response, err := app.Test(request, -1)
+		if err != nil {
+			t.Fatalf("POST login error = %v", err)
+		}
+		var body struct {
+			AccessToken string `json:"access_token"`
+		}
+		if response.StatusCode == fiber.StatusOK {
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatalf("decoding login response: %v", err)
+			}
+		}
+		_ = response.Body.Close()
+		var refreshCookie *http.Cookie
+		for _, cookie := range response.Cookies() {
+			if cookie.Name == "refresh_token" {
+				refreshCookie = cookie
+			}
+		}
+		return response, body.AccessToken, refreshCookie
+	}
+	loginResponse, accessToken, oldRefreshCookie := login("CurrentP@ss1")
+	if loginResponse.StatusCode != fiber.StatusOK || accessToken == "" || oldRefreshCookie == nil || oldRefreshCookie.Value == "" {
+		t.Fatalf("initial login = status %d, access %t, refresh %#v", loginResponse.StatusCode, accessToken != "", oldRefreshCookie)
+	}
+	if err := db.Model(&auth.User{}).Where("id = ?", created.ID).Updates(map[string]any{"failed_attempts": 4, "is_locked": false}).Error; err != nil {
+		t.Fatalf("seeding failed attempts: %v", err)
+	}
+	changeRequest := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`))
+	changeRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	changeRequest.Header.Set(fiber.HeaderAuthorization, "Bearer "+accessToken)
+	changeRequest.AddCookie(oldRefreshCookie)
+	changeResponse, err := app.Test(changeRequest, -1)
+	if err != nil {
+		t.Fatalf("POST change-password error = %v", err)
+	}
+	defer changeResponse.Body.Close()
+	if changeResponse.StatusCode != fiber.StatusOK {
+		t.Fatalf("change-password status = %d", changeResponse.StatusCode)
+	}
+	var changeBody map[string]any
+	if err := json.NewDecoder(changeResponse.Body).Decode(&changeBody); err != nil {
+		t.Fatalf("decoding change-password response: %v", err)
+	}
+	if len(changeBody) != 1 || changeBody["message"] != "Password changed successfully" {
+		t.Errorf("change-password response = %#v", changeBody)
+	}
+	clearedRefresh := false
+	for _, cookie := range changeResponse.Cookies() {
+		if cookie.Name == "refresh_token" && cookie.MaxAge <= 0 && cookie.Value == "" && cookie.Expires.Before(time.Now()) {
+			clearedRefresh = true
+		}
+	}
+	if !clearedRefresh {
+		t.Error("change-password response did not clear refresh cookie")
+	}
+	stored, err := users.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !authService.VerifyPassword("FreshP@ss3", stored.PasswordHash) || authService.VerifyPassword("CurrentP@ss1", stored.PasswordHash) || stored.SessionVersion != 1 || stored.FailedAttempts != 0 || stored.IsLocked || stored.LockedUntil != nil {
+		t.Errorf("stored user after change = %#v", stored)
+	}
+	history, err := users.RecentPasswordHashes(context.Background(), created.ID, 3)
+	if err != nil || len(history) != 1 || !authService.VerifyPassword("CurrentP@ss1", history[0]) {
+		t.Errorf("password history = %#v, %v", history, err)
+	}
+	refreshRequest := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	refreshRequest.AddCookie(oldRefreshCookie)
+	refreshResponse, err := app.Test(refreshRequest, -1)
+	if err != nil {
+		t.Fatalf("POST refresh error = %v", err)
+	}
+	if refreshResponse.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("old refresh status = %d, want %d", refreshResponse.StatusCode, fiber.StatusUnauthorized)
+	}
+	_ = refreshResponse.Body.Close()
+	oldLoginResponse, _, _ := login("CurrentP@ss1")
+	if oldLoginResponse.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("old-password login status = %d", oldLoginResponse.StatusCode)
+	}
+	newLoginResponse, newAccessToken, newRefreshCookie := login("FreshP@ss3")
+	if newLoginResponse.StatusCode != fiber.StatusOK || newAccessToken == "" || newRefreshCookie == nil {
+		t.Fatalf("fresh login = status %d, access %t, refresh %#v", newLoginResponse.StatusCode, newAccessToken != "", newRefreshCookie)
+	}
+	newRefreshClaims, err := authService.ParseToken(newRefreshCookie.Value, auth.TokenTypeRefresh)
+	if err != nil || newRefreshClaims.SessionVersion != 1 {
+		t.Errorf("new refresh claims = %#v, %v", newRefreshClaims, err)
+	}
+	reuseRequest := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"FreshP@ss3","new_password":"CurrentP@ss1","confirm_password":"CurrentP@ss1"}`))
+	reuseRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	reuseRequest.Header.Set(fiber.HeaderAuthorization, "Bearer "+newAccessToken)
+	reuseRequest.AddCookie(newRefreshCookie)
+	reuseResponse, err := app.Test(reuseRequest, -1)
+	if err != nil {
+		t.Fatalf("POST reused change-password error = %v", err)
+	}
+	if reuseResponse.StatusCode != fiber.StatusBadRequest {
+		t.Errorf("reused password status = %d", reuseResponse.StatusCode)
+	}
+	var reuseBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(reuseResponse.Body).Decode(&reuseBody); err != nil || reuseBody.Error.Code != "AUTH007" {
+		t.Errorf("reused password response = %#v, %v", reuseBody, err)
+	}
+	_ = reuseResponse.Body.Close()
+}
+
 func newInitialSetupTestDatabase(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -472,12 +600,14 @@ func newInitialSetupTestDatabase(t *testing.T) *gorm.DB {
 		}
 	})
 
-	migration, err := os.ReadFile("../../migrations/000001_create_users.up.sql")
-	if err != nil {
-		t.Fatalf("reading users migration: %v", err)
-	}
-	if err := db.Exec(string(migration)).Error; err != nil {
-		t.Fatalf("applying users migration: %v", err)
+	for _, migrationPath := range []string{"../../migrations/000001_create_users.up.sql", "../../migrations/000017_add_auth_session_version.up.sql"} {
+		migration, err := os.ReadFile(migrationPath)
+		if err != nil {
+			t.Fatalf("reading users migration: %v", err)
+		}
+		if err := db.Exec(string(migration)).Error; err != nil {
+			t.Fatalf("applying users migration: %v", err)
+		}
 	}
 
 	return db

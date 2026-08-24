@@ -173,8 +173,39 @@ func TestEnergyDefinitionValidatesAndPersistsAgainstDataLogger_Integration(t *te
 	writeEnergyBatch(firstAt, 1000, 2, 0.009)
 	writeEnergyBatch(secondAt, 2000, 2, 0.012)
 	latestOutput := awaitEnergyOutput(t, outputStore, instance.ID, secondAt)
-	if latestOutput.Sequence != 2 || len(latestOutput.Values) != 16 || !latestOutput.Values[0].ObservedAt.Equal(secondAt) {
-		t.Errorf("latest generic Energy output = %#v", latestOutput)
+	latestByKey := assertEnergyOutputBatchContract(t, latestOutput, secondAt, "Asia/Bangkok")
+	if latestOutput.Sequence != 2 || latestByKey[OutputElectricalDemandKW].Value != 4.0 || !closeEnergy(latestByKey[OutputInstantaneousCOP].Value.(float64), 3) {
+		t.Errorf("latest generic Energy output sequence/live values = %#v", latestOutput)
+	}
+	for _, key := range []plugin.OutputKey{OutputTodayCOP, OutputTodayEstimatedCost, OutputMonthCOP, OutputMonthEstimatedCost} {
+		value := latestByKey[key]
+		if value.Quality != plugin.OutputQualityBad || value.Value != nil || value.Error == "" || value.CoveragePercent == nil || len(value.Issues) == 0 {
+			t.Errorf("fail-closed output %s = %#v", key, value)
+		}
+	}
+	for _, key := range []plugin.OutputKey{OutputTodayCoveredCost, OutputMonthCoveredCost} {
+		value := latestByKey[key]
+		if value.Quality != plugin.OutputQualityPartial || value.Value == nil || value.CoveragePercent == nil || len(value.Issues) == 0 {
+			t.Errorf("covered Cost output %s = %#v", key, value)
+		}
+	}
+	latestOutput.Values[0].Value = 999.0
+	latestOutput.Values[8].Attributes["timezone"] = "mutated"
+	restartedOutputBroker, err := plugin.NewOutputBroker()
+	if err != nil {
+		t.Fatalf("NewOutputBroker(restart) error = %v", err)
+	}
+	restartedOutputStore, err := plugin.NewOutputStore(pluginpostgres.NewOutputRepository(database), service, restartedOutputBroker)
+	if err != nil {
+		t.Fatalf("NewOutputStore(restart) error = %v", err)
+	}
+	hydratedOutput, err := restartedOutputStore.Latest(t.Context(), instance.ID)
+	if err != nil {
+		t.Fatalf("Latest(restarted OutputStore) error = %v", err)
+	}
+	hydratedByKey := assertEnergyOutputBatchContract(t, hydratedOutput, secondAt, "Asia/Bangkok")
+	if hydratedOutput.Sequence != 2 || hydratedByKey[OutputElectricalDemandKW].Value != 4.0 || hydratedByKey[OutputTodayCoveredCost].Attributes["timezone"] != "Asia/Bangkok" {
+		t.Errorf("restarted OutputStore hydration = %#v", hydratedOutput)
 	}
 	energyService, err := NewService(pluginRepository, historyRepository, WithServiceClock(func() time.Time { return secondAt }), WithLiveHub(liveHub))
 	if err != nil {
@@ -434,8 +465,9 @@ func TestEnergyPipelineUsesCommittedLoggerBatchesWithoutExtraModbusReads_Integra
 		t.Errorf("committed Energy summary = %#v", overview.Today)
 	}
 	latestOutput := awaitEnergyOutput(t, outputStore, instance.ID, secondAt)
-	if latestOutput.Sequence != 2 || len(latestOutput.Values) != 16 || !latestOutput.Values[0].ObservedAt.Equal(secondAt) || latestOutput.Values[0].Value != 15.0 || latestOutput.Values[2].Value != 3.0 {
-		t.Errorf("generic Energy output = %#v", latestOutput)
+	latestByKey := assertEnergyOutputBatchContract(t, latestOutput, secondAt, "UTC")
+	if latestOutput.Sequence != 2 || latestByKey[OutputElectricalDemandKW].Value != 15.0 || latestByKey[OutputInstantaneousCOP].Value != 3.0 {
+		t.Errorf("generic Energy output sequence/live values = %#v", latestOutput)
 	}
 	firstOutputEvent := awaitEnergyOutputEvent(t, outputSubscription.Events())
 	secondOutputEvent := awaitEnergyOutputEvent(t, outputSubscription.Events())
@@ -460,8 +492,19 @@ func TestEnergyPipelineUsesCommittedLoggerBatchesWithoutExtraModbusReads_Integra
 	if !replay.Metrics.BatchAt.Equal(secondAt) || replay.Metrics.Electrical.Kilowatts != 15 || !replay.Metrics.COP.Valid || replay.Metrics.COP.Value != 3 {
 		t.Errorf("restart replay = %#v", replay)
 	}
-	if restartedOutput, err := outputStore.Latest(t.Context(), instance.ID); err != nil || restartedOutput.Sequence != 2 {
+	restartedOutputBroker, err := plugin.NewOutputBroker()
+	if err != nil {
+		t.Fatalf("NewOutputBroker(restart) error = %v", err)
+	}
+	restartedOutputStore, err := plugin.NewOutputStore(pluginpostgres.NewOutputRepository(database), pluginService, restartedOutputBroker)
+	if err != nil {
+		t.Fatalf("NewOutputStore(restart) error = %v", err)
+	}
+	restartedOutput, err := restartedOutputStore.Latest(t.Context(), instance.ID)
+	if err != nil || restartedOutput.Sequence != 2 {
 		t.Errorf("restart generic output = %#v, %v", restartedOutput, err)
+	} else {
+		assertEnergyOutputBatchContract(t, restartedOutput, secondAt, "UTC")
 	}
 	select {
 	case unexpected := <-outputSubscription.Events():
@@ -469,6 +512,78 @@ func TestEnergyPipelineUsesCommittedLoggerBatchesWithoutExtraModbusReads_Integra
 	case <-time.After(20 * time.Millisecond):
 	}
 	modbusServer.assertRequests(t, 2)
+}
+
+func assertEnergyOutputBatchContract(t *testing.T, batch *plugin.OutputBatch, observedAt time.Time, timezone string) map[plugin.OutputKey]plugin.OutputValue {
+	t.Helper()
+	if batch == nil {
+		t.Fatal("Energy output batch is nil")
+	}
+	descriptors := outputDescriptors()
+	if len(batch.Values) != len(descriptors) {
+		t.Fatalf("Energy output count = %d, want %d", len(batch.Values), len(descriptors))
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		t.Fatalf("LoadLocation(%q) error = %v", timezone, err)
+	}
+	localObservedAt := observedAt.In(location)
+	todayStart := time.Date(localObservedAt.Year(), localObservedAt.Month(), localObservedAt.Day(), 0, 0, 0, 0, location).UTC()
+	monthStart := time.Date(localObservedAt.Year(), localObservedAt.Month(), 1, 0, 0, 0, 0, location).UTC()
+	descriptorsByKey := make(map[plugin.OutputKey]plugin.OutputDescriptor, len(descriptors))
+	for _, descriptor := range descriptors {
+		descriptorsByKey[descriptor.Key] = descriptor
+	}
+	valuesByKey := make(map[plugin.OutputKey]plugin.OutputValue, len(batch.Values))
+	for _, value := range batch.Values {
+		descriptor, exists := descriptorsByKey[value.Key]
+		if !exists {
+			t.Errorf("unexpected Energy output key %q", value.Key)
+			continue
+		}
+		if _, duplicate := valuesByKey[value.Key]; duplicate {
+			t.Errorf("duplicate Energy output key %q", value.Key)
+			continue
+		}
+		valuesByKey[value.Key] = value
+		if value.SchemaVersion != descriptor.SchemaVersion || value.DataType != descriptor.DataType {
+			t.Errorf("output %s schema = %d/%s, want %d/%s", value.Key, value.SchemaVersion, value.DataType, descriptor.SchemaVersion, descriptor.DataType)
+		}
+		if !descriptor.DynamicUnit && value.Unit != descriptor.Unit {
+			t.Errorf("output %s unit = %q, want %q", value.Key, value.Unit, descriptor.Unit)
+		}
+		if !value.ObservedAt.Equal(observedAt) || value.Attributes["timezone"] != timezone {
+			t.Errorf("output %s observation provenance = %s/%q, want %s/%q", value.Key, value.ObservedAt, value.Attributes["timezone"], observedAt, timezone)
+		}
+		wantStart := observedAt
+		switch {
+		case strings.HasPrefix(string(value.Key), "today."):
+			wantStart = todayStart
+		case strings.HasPrefix(string(value.Key), "month."):
+			wantStart = monthStart
+		}
+		if !value.PeriodStart.Equal(wantStart) || !value.PeriodEnd.Equal(observedAt) {
+			t.Errorf("output %s period = %s..%s, want %s..%s", value.Key, value.PeriodStart, value.PeriodEnd, wantStart, observedAt)
+		}
+		if value.CoveragePercent != nil && (*value.CoveragePercent < 0 || *value.CoveragePercent > 100) {
+			t.Errorf("output %s coverage = %v", value.Key, *value.CoveragePercent)
+		}
+		if len(value.Issues) > maxEnergyOutputIssues {
+			t.Errorf("output %s issue count = %d, max %d", value.Key, len(value.Issues), maxEnergyOutputIssues)
+		}
+		for _, issue := range value.Issues {
+			if issue.PeriodStart == nil || issue.PeriodEnd == nil || issue.PeriodStart.Before(value.PeriodStart) || issue.PeriodEnd.After(value.PeriodEnd) || issue.PeriodEnd.Before(*issue.PeriodStart) {
+				t.Errorf("output %s issue provenance = %#v outside %s..%s", value.Key, issue, value.PeriodStart, value.PeriodEnd)
+			}
+		}
+		if value.Quality == plugin.OutputQualityBad && (value.Value != nil || value.Error == "") {
+			t.Errorf("bad output %s did not fail closed: %#v", value.Key, value)
+		}
+	}
+	if len(valuesByKey) != len(descriptorsByKey) {
+		t.Errorf("Energy output keys = %d, want %d", len(valuesByKey), len(descriptorsByKey))
+	}
+	return valuesByKey
 }
 
 func newEnergyIntegrationRegistry(t *testing.T, loggerRepository datalogger.Repository, hub *LiveHub) *plugin.Registry {
@@ -736,6 +851,7 @@ func newEnergyIntegrationDatabase(t *testing.T) *gorm.DB {
 		"../../../migrations/000008_add_data_logger_storage_limits.up.sql",
 		"../../../migrations/000010_create_plugin_instances.up.sql",
 		"../../../migrations/000011_create_plugin_output_latest.up.sql",
+		"../../../migrations/000015_add_data_logger_age_retention.up.sql",
 	} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {

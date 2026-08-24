@@ -20,8 +20,9 @@ var (
 )
 
 type TokenClaims struct {
-	Username  string `json:"username,omitempty"`
-	TokenType string `json:"type"`
+	Username       string `json:"username,omitempty"`
+	TokenType      string `json:"type"`
+	SessionVersion int64  `json:"session_version,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -43,7 +44,7 @@ type RefreshTokenResult struct {
 }
 
 func (s *authService) GenerateTokenPair(user *User) (*TokenPair, error) {
-	if user == nil || user.ID == uuid.Nil || user.Username == "" {
+	if user == nil || user.ID == uuid.Nil || user.Username == "" || user.SessionVersion < 0 {
 		return nil, ErrInvalidTokenUser
 	}
 
@@ -105,6 +106,9 @@ func (s *authService) ParseToken(tokenString, expectedType string) (*TokenClaims
 	if expectedType == TokenTypeRefresh && claims.ID == "" {
 		return nil, ErrInvalidToken
 	}
+	if claims.SessionVersion < 0 {
+		return nil, ErrInvalidToken
+	}
 
 	return claims, nil
 }
@@ -118,7 +122,7 @@ func (s *authService) generateAccessToken(
 	user *User,
 	now time.Time,
 ) (*AccessTokenResult, error) {
-	if user == nil || user.ID == uuid.Nil || user.Username == "" {
+	if user == nil || user.ID == uuid.Nil || user.Username == "" || user.SessionVersion < 0 {
 		return nil, ErrInvalidTokenUser
 	}
 
@@ -154,7 +158,8 @@ func (s *authService) generateRefreshToken(
 	refreshExpiresAt := now.Add(s.refreshExpiry)
 
 	refreshToken, err := s.signToken(TokenClaims{
-		TokenType: TokenTypeRefresh,
+		TokenType:      TokenTypeRefresh,
+		SessionVersion: user.SessionVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID.String(),
 			ID:        uuid.NewString(),

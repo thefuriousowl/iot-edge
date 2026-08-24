@@ -197,6 +197,22 @@ describe("API client", () => {
     expect(refreshAccessToken).not.toHaveBeenCalled();
   });
 
+  it("does not retry password-verification failures through refresh", async () => {
+    const refreshAccessToken = vi.fn();
+    configureTestAuthHandlers({ refreshAccessToken });
+    let requestCount = 0;
+
+    await expect(api.post("/auth/change-password", {}, {
+      adapter: async (config) => {
+        requestCount += 1;
+        throw unauthorizedError(config);
+      },
+    })).rejects.toMatchObject({ response: { status: 401 } });
+
+    expect(requestCount).toBe(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+  });
+
   it("clears the session when refreshing a protected request fails", async () => {
     const refreshError = new Error("refresh cookie expired");
     const onSessionExpired = vi.fn();

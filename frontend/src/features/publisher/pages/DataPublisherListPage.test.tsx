@@ -22,7 +22,7 @@ const mockedList = vi.mocked(listDataPublishers);
 const runtime: PublisherRuntimeStatus = {
   publisher_id: "publisher-1", type: "mqtt", state: "stopped", config_version: 1,
   last_transition_at: "2026-08-23T00:00:00Z", request_count: 10, publish_count: 8,
-  failure_count: 1, queue_depth: 0, drop_count: 1, reconnect_count: 2, connected: false,
+  failure_count: 1, queue_depth: 0, drop_count: 1, reconnect_count: 2, connected: true,
   connection_count: 3, delivery_count: 8, delivery_failure_count: 1, transport_queue_depth: 0,
   transport_drop_count: 1, diagnostic_count: 2, diagnostic_drop_count: 0,
 };
@@ -33,7 +33,7 @@ const publisher: DataPublisher = {
 const httpPublisher: DataPublisher = {
   id: "publisher-2", type: "http_server", name: "Plant snapshot", enabled: true, config_version: 2,
   source_count: 3, runtime: {
-    ...runtime, publisher_id: "publisher-2", type: "http_server", state: "running", connected: true,
+    ...runtime, publisher_id: "publisher-2", type: "http_server", state: "running", connected: false,
     external_request_count: 24, rejected_request_count: 3, active_connections: 2, publish_count: 12,
   },
   created_at: "2026-08-23T00:00:00Z", updated_at: "2026-08-23T00:00:00Z",
@@ -52,9 +52,12 @@ describe("DataPublisherListPage", () => {
 
     expect(await screen.findByText("Plant telemetry")).toBeInTheDocument();
     expect(screen.getByText("8 delivered")).toBeInTheDocument();
+    expect(screen.getByText("Disconnected")).toBeInTheDocument();
     expect(screen.getByText("2 reconnects")).toBeInTheDocument();
     expect(screen.getByText("24 requests")).toBeInTheDocument();
     expect(screen.getByText("3 rejected · 12 snapshot updates")).toBeInTheDocument();
+    expect(screen.getByText("Listener running")).toBeInTheDocument();
+    expect(screen.queryByText("Listener stopped")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Configure Plant telemetry" })).toHaveAttribute("href", "/data-publishers/publisher-1/mqtt");
     expect(screen.getByRole("link", { name: "Configure Plant snapshot" })).toHaveAttribute("href", "/data-publishers/publisher-2/http-server");
     expect(screen.getByRole("button", { name: "Restart Plant telemetry" })).toBeDisabled();

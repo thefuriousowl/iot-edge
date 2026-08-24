@@ -74,6 +74,25 @@ type fakeCurrentUserService struct {
 	calls          int
 }
 
+type fakeChangePasswordService struct {
+	auth.AuthService
+	err                     error
+	receivedCtx             context.Context
+	receivedUserID          uuid.UUID
+	receivedCurrentPassword string
+	receivedNewPassword     string
+	calls                   int
+}
+
+func (service *fakeChangePasswordService) ChangePassword(ctx context.Context, userID uuid.UUID, currentPassword, newPassword string) error {
+	service.calls++
+	service.receivedCtx = ctx
+	service.receivedUserID = userID
+	service.receivedCurrentPassword = currentPassword
+	service.receivedNewPassword = newPassword
+	return service.err
+}
+
 func (f *fakeCurrentUserService) CurrentUser(
 	ctx context.Context,
 	userID uuid.UUID,
@@ -82,6 +101,129 @@ func (f *fakeCurrentUserService) CurrentUser(
 	f.receivedCtx = ctx
 	f.receivedUserID = userID
 	return f.user, f.err
+}
+
+func TestAuthHandlerChangePassword_ReturnsSafeSuccessAndClearsRefreshCookie(t *testing.T) {
+	userID := uuid.New()
+	service := &fakeChangePasswordService{}
+	handler := NewAuthHandler(service)
+	expectedCtx := context.WithValue(context.Background(), testContextKey{}, "change-password")
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.SetUserContext(expectedCtx)
+		c.Locals(LocalUserID, userID)
+		return c.Next()
+	})
+	app.Post("/api/auth/change-password", handler.ChangePassword)
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`))
+	request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(body) != 1 || body["message"] != "Password changed successfully" {
+		t.Errorf("response = %#v", body)
+	}
+	if service.calls != 1 || service.receivedCtx != expectedCtx || service.receivedUserID != userID || service.receivedCurrentPassword != "CurrentP@ss1" || service.receivedNewPassword != "FreshP@ss3" {
+		t.Errorf("service call = %#v", service)
+	}
+	assertRefreshCookieCleared(t, response)
+}
+
+func TestAuthHandlerChangePassword_RejectsInvalidRequestsBeforeService(t *testing.T) {
+	tests := []struct {
+		name, body, wantCode, wantMessage string
+		withUser                          bool
+		wantStatus                        int
+	}{
+		{name: "missing authentication", body: `{}`, wantCode: "AUTH004", wantMessage: "Invalid token", wantStatus: fiber.StatusUnauthorized},
+		{name: "invalid JSON", withUser: true, body: `{`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request body", wantStatus: fiber.StatusBadRequest},
+		{name: "unknown field", withUser: true, body: `{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3","token":"secret"}`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request body", wantStatus: fiber.StatusBadRequest},
+		{name: "multiple documents", withUser: true, body: `{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}{}`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request body", wantStatus: fiber.StatusBadRequest},
+		{name: "missing current", withUser: true, body: `{"new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request data", wantStatus: fiber.StatusBadRequest},
+		{name: "short new", withUser: true, body: `{"current_password":"CurrentP@ss1","new_password":"short","confirm_password":"short"}`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request data", wantStatus: fiber.StatusBadRequest},
+		{name: "mismatched confirmation", withUser: true, body: `{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"OtherP@ss4"}`, wantCode: "VALIDATION_ERROR", wantMessage: "Invalid request data", wantStatus: fiber.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeChangePasswordService{}
+			handler := NewAuthHandler(service)
+			app := fiber.New()
+			if test.withUser {
+				app.Use(func(c *fiber.Ctx) error {
+					c.Locals(LocalUserID, uuid.New())
+					return c.Next()
+				})
+			}
+			app.Post("/api/auth/change-password", handler.ChangePassword)
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(test.body))
+			request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatalf("app.Test() error = %v", err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != test.wantStatus {
+				t.Errorf("status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+			assertErrorResponse(t, response, test.wantCode, test.wantMessage)
+			if service.calls != 0 {
+				t.Errorf("ChangePassword() calls = %d", service.calls)
+			}
+		})
+	}
+}
+
+func TestAuthHandlerChangePassword_MapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name, code, message string
+		err                 error
+		status              int
+		clearCookie         bool
+	}{
+		{name: "invalid current", err: auth.ErrInvalidCredentials, status: fiber.StatusUnauthorized, code: "AUTH001", message: "Invalid credentials"},
+		{name: "account locked", err: auth.ErrAccountLocked, status: fiber.StatusUnauthorized, code: "AUTH002", message: "Account locked"},
+		{name: "session expired", err: auth.ErrSessionExpired, status: fiber.StatusUnauthorized, code: "AUTH005", message: "Session expired", clearCookie: true},
+		{name: "requirements", err: auth.ErrPasswordRequirements, status: fiber.StatusBadRequest, code: "AUTH006", message: "Password requirements not met"},
+		{name: "recently used", err: auth.ErrPasswordRecentlyUsed, status: fiber.StatusBadRequest, code: "AUTH007", message: "Password recently used"},
+		{name: "internal", err: errors.New("password=must-not-leak"), status: fiber.StatusInternalServerError, code: "INTERNAL_ERROR", message: "Internal server error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeChangePasswordService{err: test.err}
+			handler := NewAuthHandler(service)
+			app := fiber.New()
+			app.Use(func(c *fiber.Ctx) error {
+				c.Locals(LocalUserID, uuid.New())
+				return c.Next()
+			})
+			app.Post("/api/auth/change-password", handler.ChangePassword)
+			request := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentP@ss1","new_password":"FreshP@ss3","confirm_password":"FreshP@ss3"}`))
+			request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatalf("app.Test() error = %v", err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != test.status {
+				t.Errorf("status = %d, want %d", response.StatusCode, test.status)
+			}
+			assertErrorResponse(t, response, test.code, test.message)
+			if test.clearCookie {
+				assertRefreshCookieCleared(t, response)
+			} else if len(response.Cookies()) != 0 {
+				t.Error("error unexpectedly clears refresh cookie")
+			}
+		})
+	}
 }
 
 func (f *fakeLogoutService) Logout(

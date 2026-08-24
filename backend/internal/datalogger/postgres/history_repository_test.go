@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -368,8 +369,255 @@ func TestHistoryRepositoryEnforcesRollingLimitByCompleteBatch_Integration(t *tes
 	if err := db.Exec(`UPDATE data_loggers SET max_size_bytes=? WHERE id=?`, tooSmall, logger.ID).Error; err != nil {
 		t.Fatalf("setting too-small limit: %v", err)
 	}
-	if err := history.EnforceStorageLimit(ctx, logger.ID, &tooSmall); !errors.Is(err, datalogger.ErrStorageLimitTooSmall) {
-		t.Errorf("EnforceStorageLimit() error = %v, want %v", err, datalogger.ErrStorageLimitTooSmall)
+	if err := history.EnforceRetention(ctx, logger.ID, datalogger.RetentionPolicy{MaxSizeBytes: &tooSmall}); !errors.Is(err, datalogger.ErrStorageLimitTooSmall) {
+		t.Errorf("EnforceRetention() error = %v, want %v", err, datalogger.ErrStorageLimitTooSmall)
+	}
+}
+
+func TestHistoryRepositoryReportsLogicalAndPhysicalManagementOverview_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitions := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	evaluatedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.FixedZone("ICT", 7*60*60))
+	maxAgeSeconds := int64(24 * 60 * 60)
+	policyLogger := datalogger.Logger{Name: "Managed Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: evaluatedAt.Add(-time.Hour), MaxAgeSeconds: &maxAgeSeconds, Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitions.Create(ctx, &policyLogger, tagIDs[:2]); err != nil {
+		t.Fatalf("Create(policy Logger) error = %v", err)
+	}
+	unlimitedLogger := datalogger.Logger{Name: "Disabled Unlimited Logger", Enabled: false, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: evaluatedAt.Add(-time.Hour), Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitions.Create(ctx, &unlimitedLogger, tagIDs[:1]); err != nil {
+		t.Fatalf("Create(unlimited Logger) error = %v", err)
+	}
+	batchAt := evaluatedAt.UTC().Add(-time.Minute)
+	if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: policyLogger.ID, BatchAt: batchAt, Samples: []datalogger.RawSample{
+		{TagID: tagIDs[0], ObservedAt: batchAt, DataType: "float64", Value: 10.5, Quality: datalogger.RawQualityGood},
+		{TagID: tagIDs[1], ObservedAt: batchAt, DataType: "float64", Value: 11.5, Quality: datalogger.RawQualityGood},
+	}}); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	overview, err := history.ManagementOverview(ctx, evaluatedAt)
+	if err != nil {
+		t.Fatalf("ManagementOverview() error = %v", err)
+	}
+	if !overview.EvaluatedAt.Equal(evaluatedAt.UTC()) || overview.LoggerCount != 2 || overview.EnabledLoggerCount != 1 || overview.PolicyLoggerCount != 1 {
+		t.Errorf("management counts = %#v", overview)
+	}
+	if overview.LogicalHistory.RowCount != 2 || overview.LogicalHistory.BatchCount != 1 || overview.LogicalHistory.EstimatedSizeBytes <= 0 || overview.LogicalHistory.OldestBatchAt == nil || !overview.LogicalHistory.OldestBatchAt.Equal(batchAt) || overview.LogicalHistory.NewestBatchAt == nil || !overview.LogicalHistory.NewestBatchAt.Equal(batchAt) {
+		t.Errorf("logical history = %#v", overview.LogicalHistory)
+	}
+	physical := overview.PostgreSQLPhysicalAllocation
+	if physical.RawHistoryBytes <= 0 || physical.BatchAccountingBytes <= 0 || physical.TotalBytes != physical.RawHistoryBytes+physical.BatchAccountingBytes {
+		t.Errorf("physical allocation = %#v", physical)
+	}
+	if _, err := history.ManagementOverview(nil, evaluatedAt); !errors.Is(err, datalogger.ErrInvalidInput) {
+		t.Errorf("ManagementOverview(nil context) error = %v", err)
+	}
+	if _, err := history.ManagementOverview(ctx, time.Time{}); !errors.Is(err, datalogger.ErrInvalidInput) {
+		t.Errorf("ManagementOverview(zero time) error = %v", err)
+	}
+}
+
+func TestHistoryRepositoryPreviewsAndCleansCombinedRetentionByBoundedWholeBatches_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitionRepository := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	evaluatedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	logger := datalogger.Logger{Name: "Combined Retention Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: evaluatedAt.Add(-24 * time.Hour), Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitionRepository.Create(ctx, &logger, tagIDs[:2]); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	for hoursAgo := 5; hoursAgo >= 1; hoursAgo-- {
+		batchAt := evaluatedAt.Add(-time.Duration(hoursAgo) * time.Hour)
+		if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: batchAt, Samples: []datalogger.RawSample{
+			{TagID: tagIDs[0], ObservedAt: batchAt, DataType: "float64", Value: float64(hoursAgo), Quality: datalogger.RawQualityGood},
+			{TagID: tagIDs[1], ObservedAt: batchAt, DataType: "float64", Value: float64(hoursAgo * 10), Quality: datalogger.RawQualityGood},
+		}}); err != nil {
+			t.Fatalf("WriteBatch(%s) error = %v", batchAt, err)
+		}
+	}
+	if err := db.Exec(`
+		INSERT INTO tag_values_latest (tag_id, sequence, data_type, value, quality, observed_at, stored_at)
+		VALUES (?, 1, 'float64', '42.5'::jsonb, 'good', ?, ?)
+	`, tagIDs[0], evaluatedAt, evaluatedAt).Error; err != nil {
+		t.Fatalf("inserting latest Tag value: %v", err)
+	}
+	var batchSize int64
+	if err := db.Table("data_logger_batches").Select("estimated_size_bytes").Where("logger_id = ?", logger.ID).Limit(1).Scan(&batchSize).Error; err != nil || batchSize <= 0 {
+		t.Fatalf("batch size = %d, %v", batchSize, err)
+	}
+	maxAgeSeconds := int64((3 * time.Hour) / time.Second)
+	maxSizeBytes := batchSize * 2
+	if err := db.Exec(`ALTER TABLE data_loggers DROP CONSTRAINT data_loggers_max_size_check`).Error; err != nil {
+		t.Fatalf("dropping limit constraint for compact retention fixture: %v", err)
+	}
+	if err := db.Exec("UPDATE data_loggers SET max_age_seconds = ?, max_size_bytes = ? WHERE id = ?", maxAgeSeconds, maxSizeBytes, logger.ID).Error; err != nil {
+		t.Fatalf("setting retention policy: %v", err)
+	}
+
+	preview, err := history.Retention(ctx, logger.ID, evaluatedAt)
+	if err != nil {
+		t.Fatalf("Retention() error = %v", err)
+	}
+	if preview.LastRun != nil || preview.Plan.Current.BatchCount != 5 || preview.Plan.Remove.BatchCount != 3 || preview.Plan.Remove.RowCount != 6 || preview.Plan.EstimatedRetained.BatchCount != 2 {
+		t.Fatalf("preview = %#v", preview)
+	}
+	if preview.Plan.CutoffAt == nil || !preview.Plan.CutoffAt.Equal(evaluatedAt.Add(-3*time.Hour)) || preview.Plan.EstimatedRetained.OldestBatchAt == nil || !preview.Plan.EstimatedRetained.OldestBatchAt.Equal(evaluatedAt.Add(-2*time.Hour)) {
+		t.Errorf("preview boundaries = %#v", preview.Plan)
+	}
+
+	first, err := history.CleanupRetention(ctx, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 2})
+	if err != nil {
+		t.Fatalf("CleanupRetention(first) error = %v", err)
+	}
+	if first.Deleted.BatchCount != 2 || first.Deleted.RowCount != 4 || first.Retained.BatchCount != 3 || first.RemainingRemoval.BatchCount != 1 || first.Complete {
+		t.Fatalf("first cleanup = %#v", first)
+	}
+	afterFirst, err := history.Retention(ctx, logger.ID, evaluatedAt)
+	if err != nil || afterFirst.LastRun == nil || afterFirst.LastRun.Result == nil || afterFirst.LastRun.Error != nil || afterFirst.LastRun.Result.Deleted.BatchCount != 2 {
+		t.Fatalf("status after first cleanup = %#v, %v", afterFirst, err)
+	}
+
+	second, err := history.CleanupRetention(ctx, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 2})
+	if err != nil || second.Deleted.BatchCount != 1 || second.Retained.BatchCount != 2 || second.RemainingRemoval.BatchCount != 0 || !second.Complete {
+		t.Fatalf("second cleanup = %#v, %v", second, err)
+	}
+	idempotent, err := history.CleanupRetention(ctx, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 2})
+	if err != nil || idempotent.Deleted.BatchCount != 0 || idempotent.Retained.BatchCount != 2 || !idempotent.Complete {
+		t.Fatalf("idempotent cleanup = %#v, %v", idempotent, err)
+	}
+	var rawRows, accountingRows, latestRows int64
+	if err := db.Table("tag_values_raw").Where("logger_id = ?", logger.ID).Count(&rawRows).Error; err != nil {
+		t.Fatalf("counting raw rows: %v", err)
+	}
+	if err := db.Table("data_logger_batches").Where("logger_id = ?", logger.ID).Count(&accountingRows).Error; err != nil {
+		t.Fatalf("counting accounting rows: %v", err)
+	}
+	if err := db.Table("tag_values_latest").Where("tag_id = ?", tagIDs[0]).Count(&latestRows).Error; err != nil {
+		t.Fatalf("counting latest Tag values: %v", err)
+	}
+	if rawRows != 4 || accountingRows != 2 || latestRows != 1 {
+		t.Errorf("retained raw/accounting/latest = %d/%d/%d", rawRows, accountingRows, latestRows)
+	}
+
+	canceledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := history.CleanupRetention(canceledContext, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CleanupRetention(canceled) error = %v", err)
+	}
+	failedStatus, err := history.Retention(ctx, logger.ID, evaluatedAt)
+	if err != nil || failedStatus.LastRun == nil || failedStatus.LastRun.Result != nil || failedStatus.LastRun.Error == nil || *failedStatus.LastRun.Error != "retention cleanup canceled" {
+		t.Errorf("failed cleanup status = %#v, %v", failedStatus, err)
+	}
+}
+
+func TestHistoryRepositoryRollsBackWholeBatchCleanupAndRecordsSanitizedFailure_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitionRepository := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	evaluatedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	maxAgeSeconds := int64(60)
+	logger := datalogger.Logger{Name: "Rollback Retention Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: evaluatedAt.Add(-time.Hour), MaxAgeSeconds: &maxAgeSeconds, Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitionRepository.Create(ctx, &logger, tagIDs[:2]); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	batchAt := evaluatedAt.Add(-2 * time.Minute)
+	if err := history.WriteBatch(ctx, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: batchAt, Samples: []datalogger.RawSample{
+		{TagID: tagIDs[0], ObservedAt: batchAt, DataType: "float64", Value: 1.0, Quality: datalogger.RawQualityGood},
+		{TagID: tagIDs[1], ObservedAt: batchAt, DataType: "float64", Value: 2.0, Quality: datalogger.RawQualityGood},
+	}}); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if err := db.Exec(`
+		CREATE FUNCTION reject_retention_accounting_delete() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'fixture accounting delete failure';
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER reject_retention_accounting_delete
+		BEFORE DELETE ON data_logger_batches
+		FOR EACH ROW EXECUTE FUNCTION reject_retention_accounting_delete();
+	`).Error; err != nil {
+		t.Fatalf("creating rollback fixture trigger: %v", err)
+	}
+	if _, err := history.CleanupRetention(ctx, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 10}); !errors.Is(err, datalogger.ErrRetentionCleanup) || strings.Contains(err.Error(), "fixture accounting delete failure") {
+		t.Fatalf("CleanupRetention() error = %v", err)
+	}
+	var rawRows, accountingRows int64
+	if err := db.Table("tag_values_raw").Where("logger_id = ?", logger.ID).Count(&rawRows).Error; err != nil {
+		t.Fatalf("counting raw rows: %v", err)
+	}
+	if err := db.Table("data_logger_batches").Where("logger_id = ?", logger.ID).Count(&accountingRows).Error; err != nil {
+		t.Fatalf("counting accounting rows: %v", err)
+	}
+	if rawRows != 2 || accountingRows != 1 {
+		t.Errorf("rolled-back raw/accounting rows = %d/%d", rawRows, accountingRows)
+	}
+	status, err := history.Retention(ctx, logger.ID, evaluatedAt)
+	if err != nil || status.LastRun == nil || status.LastRun.Result != nil || status.LastRun.Error == nil || *status.LastRun.Error != "retention cleanup failed" {
+		t.Errorf("failure status = %#v, %v", status, err)
+	}
+}
+
+func TestHistoryRepositorySerializesCaptureAndCleanupOnLoggerPolicyLock_Integration(t *testing.T) {
+	db, tagIDs := newRepositoryDatabase(t)
+	definitionRepository := NewRepository(db)
+	history := NewHistoryRepository(db)
+	ctx := context.Background()
+	evaluatedAt := time.Now().UTC().Truncate(time.Second)
+	maxAgeSeconds := int64(60)
+	logger := datalogger.Logger{Name: "Serialized Retention Logger", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: evaluatedAt.Add(-time.Hour), MaxAgeSeconds: &maxAgeSeconds, Config: []byte(`{"interval_seconds":60}`)}
+	if err := definitionRepository.Create(ctx, &logger, tagIDs[:1]); err != nil {
+		t.Fatalf("Create(logger) error = %v", err)
+	}
+	locked := db.Begin()
+	if locked.Error != nil {
+		t.Fatalf("beginning lock transaction: %v", locked.Error)
+	}
+	var lockedID string
+	if err := locked.Raw("SELECT id FROM data_loggers WHERE id = ? FOR UPDATE", logger.ID).Scan(&lockedID).Error; err != nil {
+		_ = locked.Rollback().Error
+		t.Fatalf("locking Logger: %v", err)
+	}
+	operationContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupDone := make(chan error, 1)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := history.CleanupRetention(operationContext, logger.ID, datalogger.RetentionCleanupInput{EvaluatedAt: evaluatedAt, BatchLimit: 10})
+		cleanupDone <- err
+	}()
+	go func() {
+		writeDone <- history.WriteBatch(operationContext, datalogger.RawBatch{LoggerID: logger.ID, BatchAt: evaluatedAt, Samples: []datalogger.RawSample{
+			{TagID: tagIDs[0], ObservedAt: evaluatedAt, DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood},
+		}})
+	}()
+	for name, done := range map[string]<-chan error{"cleanup": cleanupDone, "capture": writeDone} {
+		select {
+		case err := <-done:
+			_ = locked.Rollback().Error
+			t.Fatalf("%s completed before Logger lock release: %v", name, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if err := locked.Commit().Error; err != nil {
+		t.Fatalf("releasing Logger lock: %v", err)
+	}
+	for name, done := range map[string]<-chan error{"cleanup": cleanupDone, "capture": writeDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s after lock release error = %v", name, err)
+			}
+		case <-operationContext.Done():
+			t.Fatalf("%s did not complete after Logger lock release: %v", name, operationContext.Err())
+		}
+	}
+	latest, err := history.LatestBatch(ctx, logger.ID)
+	if err != nil || !latest.BatchAt.Equal(evaluatedAt) || len(latest.Samples) != 1 {
+		t.Errorf("latest batch after serialized operations = %#v, %v", latest, err)
 	}
 }
 

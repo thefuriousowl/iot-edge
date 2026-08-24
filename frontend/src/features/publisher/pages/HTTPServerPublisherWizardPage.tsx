@@ -1,49 +1,24 @@
 import axios from "axios";
-import { ArrowLeft, ArrowRight, Check, CircleAlert, Clock3, Code2, Copy, Database, FileKey2, Globe2, Info, LockKeyhole, Plus, RefreshCw, Server, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, CircleAlert, Code2, Copy, FileKey2, Globe2, Info, LockKeyhole, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { listCredentials } from "../../../services/credential.service";
 import { createDataPublisher, getDataPublisher, listPublisherSources, updateDataPublisher, validatePublisherPayload } from "../../../services/publisher.service";
 import type { CredentialProfile } from "../../../types/credential";
-import type { DataPublisher, HTTPServerPublisherDraft, MQTTPayloadFixture, PublisherPayloadValidation, PublisherSourceCatalogEntry, PublisherSourceDraft, PublisherSourceKind, PublisherSourceReference, PublisherSourceSelection } from "../../../types/publisher";
+import type { DataPublisher, HTTPServerPublisherDraft, MQTTPayloadFixture, PublisherPayloadValidation, PublisherSourceCatalogEntry, PublisherSourceDraft, PublisherSourceKind } from "../../../types/publisher";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import HTTPServerPublisherOperations from "../components/HTTPServerPublisherOperations";
-import PublisherSourceCurrent from "../components/PublisherSourceCurrent";
+import PublisherSourceSelector from "../components/PublisherSourceSelector";
+import PublisherTemplateEditor from "../components/PublisherTemplateEditor";
+import PublisherTriggerSetup from "../components/PublisherTriggerSetup";
 import { exportHTTPServerPublisherConfig, generateHTTPServerPayloadTemplate, httpServerEndpoint, importHTTPServerPublisherDraft, initialHTTPServerPublisherDraft, normalizeHTTPServerErrorMessage, validateHTTPServerEndpoint, validateHTTPServerPublisherDraft } from "../utils/httpServer";
-import { mqttPayloadSourceHelpers, mqttPayloadSourceSyntax, previewPayloadTemplate, validateSourceAliases } from "../utils/mqtt";
-import type { MQTTPayloadSourceHelper } from "../utils/mqtt";
+import { previewPayloadTemplate, validateSourceAliases } from "../utils/mqtt";
+import { publisherSourceDraft, publisherSourceReferenceKey, selectedPublisherSources } from "../utils/shared";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./MQTTPublisherWizardPage.css";
 
 const steps = ["Endpoint", "Sources", "Response", "Runtime"];
-const fixtures: Array<{ id: MQTTPayloadFixture; label: string }> = [
-  { id: "good", label: "Good" },
-  { id: "unavailable", label: "Unavailable" },
-  { id: "windowed", label: "Windowed" },
-];
-
-function referenceKey(reference: PublisherSourceReference): string {
-  return reference.kind === "tag" ? `tag:${reference.tag_id}` : `plugin_output:${reference.plugin_instance_id}:${reference.output_key}`;
-}
-
-function selectedSources(sources: PublisherSourceDraft[]): PublisherSourceSelection[] | null {
-  if (sources.some((source) => !source.reference)) return null;
-  return sources.map((source) => ({ alias: source.alias, reference: source.reference! }));
-}
-
-function sourceAlias(name: string, existing: PublisherSourceDraft[]): string {
-  const base = name.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").replace(/^[^a-z_]+/, "") || "source";
-  let candidate = base.slice(0, 64);
-  let suffix = 2;
-  while (existing.some((source) => source.alias === candidate)) {
-    const ending = `_${suffix}`;
-    candidate = `${base.slice(0, 64 - ending.length)}${ending}`;
-    suffix += 1;
-  }
-  return candidate;
-}
-
 function errorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
     const body = error.response?.data as { error?: { message?: string } } | undefined;
@@ -89,7 +64,6 @@ function HTTPServerPublisherWizardPage() {
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [credentials, setCredentials] = useState<CredentialProfile[]>([]);
-  const [payloadHelper, setPayloadHelper] = useState<MQTTPayloadSourceHelper>("value");
   const [serverValidation, setServerValidation] = useState<PublisherPayloadValidation | null>(null);
   const [detailState, setDetailState] = useState<"loading" | "ready" | "error">(id ? "loading" : "ready");
   const [saving, setSaving] = useState(false);
@@ -160,24 +134,20 @@ function HTTPServerPublisherWizardPage() {
 
   function addSource(entry: PublisherSourceCatalogEntry) {
     setDraft((current) => {
-      if (current.sources.some((source) => source.reference && referenceKey(source.reference) === referenceKey(entry.descriptor.reference))) return current;
-      const source: PublisherSourceDraft = {
-        id: crypto.randomUUID(), alias: sourceAlias(entry.descriptor.name, current.sources), reference: entry.descriptor.reference,
-        name: entry.descriptor.name, owner_name: entry.descriptor.owner_name ?? "Core", kind: entry.descriptor.reference.kind,
-        data_type: entry.descriptor.data_type, unit: entry.descriptor.unit ?? "", period_kind: entry.descriptor.period_kind,
-      };
+      if (current.sources.some((source) => source.reference && publisherSourceReferenceKey(source.reference) === publisherSourceReferenceKey(entry.descriptor.reference))) return current;
+      const source = publisherSourceDraft(entry, current.sources);
       return { ...current, sources: [...current.sources, source], trigger: current.trigger.source_alias ? current.trigger : { ...current.trigger, source_alias: source.alias } };
     });
     setServerValidation(null);
   }
 
-  function updateSource(sourceID: string, alias: string) {
+  function updateSource(sourceID: string, update: Partial<PublisherSourceDraft>) {
     setDraft((current) => {
       const previous = current.sources.find((source) => source.id === sourceID)?.alias;
       return {
         ...current,
-        sources: current.sources.map((source) => source.id === sourceID ? { ...source, alias } : source),
-        trigger: previous === current.trigger.source_alias ? { ...current.trigger, source_alias: alias } : current.trigger,
+        sources: current.sources.map((source) => source.id === sourceID ? { ...source, ...update } : source),
+        trigger: update.alias !== undefined && previous === current.trigger.source_alias ? { ...current.trigger, source_alias: update.alias } : current.trigger,
       };
     });
     setServerValidation(null);
@@ -229,7 +199,7 @@ function HTTPServerPublisherWizardPage() {
       if (draft.sources.length === 0) return "Add at least one Publisher source alias";
       const aliasError = validateSourceAliases(draft.sources)[0];
       if (aliasError) return aliasError;
-      if (!selectedSources(draft.sources)) return "Select every source from the Core catalog";
+      if (!selectedPublisherSources(draft.sources)) return "Select every source from the Core catalog";
       if (draft.trigger.mode === "on_change" && !draft.sources.some((source) => source.alias === draft.trigger.source_alias)) return "Select a valid on-change source alias";
     }
     if (step === 2 && preview.error) return preview.error;
@@ -246,7 +216,7 @@ function HTTPServerPublisherWizardPage() {
   }
 
   async function validateOnServer(): Promise<boolean> {
-    const sources = selectedSources(draft.sources);
+    const sources = selectedPublisherSources(draft.sources);
     if (!sources) return false;
     try {
       const result = await validatePublisherPayload(draft.response.payload_template, sources);
@@ -266,7 +236,7 @@ function HTTPServerPublisherWizardPage() {
     if (configurationLocked) return setMessage("Disable the HTTP Server before changing its configuration");
     const errors = validateHTTPServerPublisherDraft(draft);
     if (errors.length > 0) return setMessage(errors[0]);
-    const sources = selectedSources(draft.sources);
+    const sources = selectedPublisherSources(draft.sources);
     if (!sources) return setMessage("Select every source from the Core catalog");
     setSaving(true);
     try {
@@ -305,9 +275,9 @@ function HTTPServerPublisherWizardPage() {
         <fieldset className="mqtt-config-fieldset" disabled={configurationLocked || detailState === "error"}>
           {step === 0 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Globe2 /><div><h2>Endpoint and access</h2><p>Bind one exact HTTP path. Authentication material comes only from an encrypted HTTP Credential Profile.</p></div></div><div className="mqtt-form-grid"><label><span>Publisher name</span><input aria-label="Publisher name" autoFocus value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label><label><span>Bind address</span><input aria-label="Bind address" spellCheck={false} value={draft.http.bind_address} onChange={(event) => updateHTTP("bind_address", event.target.value)} /><small>Use 127.0.0.1 for local-only or 0.0.0.0 for all interfaces.</small></label><label><span>Port</span><input aria-label="HTTP Server port" type="number" value={draft.http.port} onChange={(event) => updateHTTP("port", Number(event.target.value))} /></label><label><span>Exact path</span><input aria-label="HTTP Server path" spellCheck={false} value={draft.http.path} onChange={(event) => updateHTTP("path", event.target.value)} /></label><label><span>Access mode</span><select aria-label="Access mode" value={draft.http.access_mode} onChange={(event) => updateHTTP("access_mode", event.target.value as HTTPServerPublisherDraft["http"]["access_mode"])}><option value="api_key">API key header</option><option value="basic">HTTP Basic</option><option value="bearer">Bearer token</option><option value="anonymous">Anonymous</option></select></label>{draft.http.access_mode === "api_key" && <label><span>API key header</span><input aria-label="API key header" value={draft.http.api_key_header} onChange={(event) => updateHTTP("api_key_header", event.target.value)} /></label>}<label><span>Credential Profile</span><select aria-label="HTTP Credential Profile" value={draft.credential_id} onChange={(event) => selectCredential(event.target.value)}><option value="">No Credential Profile</option>{credentials.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><small>{draft.credential_id ? `${draft.credential_slots.length} encrypted HTTP slot(s)` : "Required for API key, Basic, and Bearer modes."}</small></label><label><span>Manage credentials</span><Link className="mqtt-inline-link" to="/credentials/new?type=http"><FileKey2 size={15} />Create HTTP Credential Profile</Link><small>Secrets never appear in Publisher configuration.</small></label></div>{draft.http.access_mode === "anonymous" && <label className="mqtt-warning-check"><input type="checkbox" checked={draft.http.anonymous_acknowledged} onChange={(event) => updateHTTP("anonymous_acknowledged", event.target.checked)} /><span><strong>I understand this endpoint has no authentication</strong><small>Network controls become the only access boundary.</small></span></label>}<div className="http-endpoint-preview"><Server size={17} /><span><small>Endpoint preview</small><code>{endpoint}</code></span></div></section>}
 
-          {step === 1 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Database /><div><h2>Sources and snapshot trigger</h2><p>Select immutable Core descriptors. Different source timestamps remain explicit in the rendered response.</p></div></div><div className="mqtt-source-catalog"><header><div><h3>Core source catalog</h3><p>Enabled Tags and Plugin outputs available to Data Publisher.</p></div><span>{catalog.length} results</span></header><div className="mqtt-catalog-filters"><label><span>Search</span><input aria-label="Search Publisher sources" value={catalogSearch} onChange={(event) => { setCatalogState("loading"); setCatalogSearch(event.target.value); }} /></label><label><span>Kind</span><select aria-label="Publisher source kind" value={catalogKind} onChange={(event) => { setCatalogState("loading"); setCatalogKind(event.target.value as PublisherSourceKind | ""); }}><option value="">All sources</option><option value="tag">Core Tags</option><option value="plugin_output">Plugin outputs</option></select></label></div>{catalogState === "loading" && <div className="mqtt-catalog-empty">Loading source catalog…</div>}{catalogState === "error" && <div className="mqtt-catalog-empty">Source catalog unavailable</div>}{catalogState === "ready" && <div className="mqtt-catalog-list">{catalog.map((entry) => { const selected = draft.sources.some((source) => source.reference && referenceKey(source.reference) === referenceKey(entry.descriptor.reference)); return <article key={referenceKey(entry.descriptor.reference)}><div><strong>{entry.descriptor.name}</strong><span>{entry.descriptor.owner_name || "Core"} · {entry.descriptor.reference.kind}</span></div><div><strong>{entry.descriptor.data_type}</strong><span>{entry.descriptor.unit || "No unit"} · {entry.descriptor.period_kind}</span></div><PublisherSourceCurrent entry={entry} /><button type="button" disabled={selected} onClick={() => addSource(entry)}>{selected ? <Check size={14} /> : <Plus size={14} />}{selected ? "Added" : "Add"}</button></article>; })}</div>}</div><div className="mqtt-source-list">{draft.sources.map((source) => <div className="http-source-row" key={source.id}><div><strong>{source.name}</strong><small>{source.owner_name} · {source.data_type} · {source.unit || "No unit"}</small></div><label><span>Alias</span><input aria-label={`Alias for ${source.name}`} value={source.alias} onChange={(event) => updateSource(source.id, event.target.value)} /></label><button aria-label={`Remove ${source.name}`} type="button" onClick={() => removeSource(source.id)}><Trash2 size={16} /></button></div>)}</div><div className="mqtt-subsection"><div className="mqtt-subsection-heading"><Clock3 /><div><h3>Snapshot trigger</h3><p>Controls when Core refreshes the retained snapshot, not Datasource polling.</p></div></div><div className="mqtt-mode-grid"><button className={draft.trigger.mode === "interval" ? "is-selected" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, trigger: { ...current.trigger, mode: "interval" } }))}><Clock3 /><strong>Interval</strong><small>Refresh on a fixed cadence</small></button><button className={draft.trigger.mode === "on_change" ? "is-selected" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, trigger: { ...current.trigger, mode: "on_change" } }))}><RefreshCw /><strong>On change</strong><small>Coalesce changes from one alias</small></button></div><div className="mqtt-form-grid">{draft.trigger.mode === "interval" ? <label><span>Interval (ms)</span><input aria-label="Snapshot interval" type="number" value={draft.trigger.interval_ms} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, interval_ms: Number(event.target.value) } }))} /></label> : <><label><span>Trigger alias</span><select aria-label="Trigger alias" value={draft.trigger.source_alias} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, source_alias: event.target.value } }))}>{draft.sources.map((source) => <option key={source.id}>{source.alias}</option>)}</select></label><label><span>Coalesce (ms)</span><input aria-label="Coalesce window" type="number" value={draft.trigger.coalesce_ms} onChange={(event) => setDraft((current) => ({ ...current, trigger: { ...current.trigger, coalesce_ms: Number(event.target.value) } }))} /></label></>}</div></div></section>}
+          {step === 1 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Server /><div><h2>Sources and snapshot trigger</h2><p>Select immutable Core descriptors. Every asynchronous source keeps its own observation or period provenance.</p></div></div><PublisherSourceSelector catalog={catalog} catalogState={catalogState} search={catalogSearch} kind={catalogKind} sources={draft.sources} onSearchChange={(value) => { setCatalogState("loading"); setCatalogSearch(value); }} onKindChange={(value) => { setCatalogState("loading"); setCatalogKind(value); }} onAdd={addSource} onUpdate={updateSource} onRemove={removeSource} /><PublisherTriggerSetup trigger={draft.trigger} sources={draft.sources} onChange={(trigger) => setDraft((current) => ({ ...current, trigger }))} /></section>}
 
-          {step === 2 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Code2 /><div><h2>Advanced JSON response template</h2><p>Generate a complete response from selected sources, or type your own JSON and use the syntax guide at the cursor.</p></div></div><div className="http-template-generator"><div><strong>Generate from selected sources</strong><small>Tags include live value provenance. Windowed Plugin outputs also include period bounds and coverage.</small></div><button type="button" onClick={generatePayloadTemplate}><Code2 size={16} />Generate JSON</button></div><div className="mqtt-template-palette"><div className="mqtt-palette-controls"><label><span>Helper</span><select aria-label="Template helper" value={payloadHelper} onChange={(event) => setPayloadHelper(event.target.value as MQTTPayloadSourceHelper)}>{mqttPayloadSourceHelpers.map((helper) => <option key={helper.id} value={helper.id}>{helper.label}</option>)}</select></label><div><span>Insert syntax</span><div className="mqtt-source-syntax-list">{draft.sources.map((source) => <button key={source.id} type="button" onClick={() => insertSyntax(mqttPayloadSourceSyntax(payloadHelper, source.alias))}><strong>{source.alias}</strong><code>{mqttPayloadSourceSyntax(payloadHelper, source.alias)}</code></button>)}</div><div className="mqtt-context-syntax-list">{["{{published_at}}", "{{published_unix_ms}}", "{{publisher_id}}"].map((syntax) => <button key={syntax} type="button" onClick={() => insertSyntax(syntax)}><code>{syntax}</code></button>)}</div></div></div></div><div className="mqtt-editor-grid"><div className="mqtt-editor"><label><span>Response payload template</span><small>{new TextEncoder().encode(draft.response.payload_template).length} / 16,384 bytes</small></label><textarea aria-label="Response payload template" ref={templateRef} spellCheck={false} value={draft.response.payload_template} onChange={(event) => { setDraft((current) => ({ ...current, response: { payload_template: event.target.value } })); setServerValidation(null); }} /></div><div className="mqtt-preview"><header><div><strong>Rendered fixture</strong><small>Local preview; Core validation is authoritative</small></div><div role="tablist">{fixtures.map((item) => <button role="tab" aria-selected={fixture === item.id} className={fixture === item.id ? "is-active" : ""} type="button" key={item.id} onClick={() => setFixture(item.id)}>{item.label}</button>)}</div></header>{preview.result ? <pre>{preview.result.rendered}</pre> : <div className="mqtt-preview-error"><CircleAlert />{preview.error}</div>}</div></div><div className="mqtt-core-validation"><button type="button" onClick={() => void validateOnServer()}><ShieldCheck size={16} />Validate with Core</button><span>{serverValidation ? `${serverValidation.helper_calls} helpers · ${serverValidation.referenced_aliases.length} referenced aliases` : "Checks exact aliases, types, bounds, and all three fixtures."}</span></div></section>}
+          {step === 2 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Code2 /><div><h2>Advanced JSON response template</h2><p>Generate a complete response from selected sources, or type your own JSON and use the shared syntax guide at the cursor.</p></div></div><div className="http-template-generator"><div><strong>Generate from selected sources</strong><small>Tags include live value provenance. Windowed Plugin outputs also include period bounds and coverage.</small></div><button type="button" onClick={generatePayloadTemplate}><Code2 size={16} />Generate JSON</button></div><PublisherTemplateEditor editorRef={templateRef} editorID="http-response-payload-template" editorLabel="Response payload template" template={draft.response.payload_template} sources={draft.sources} fixture={fixture} preview={preview} validation={serverValidation} onTemplateChange={(payloadTemplate) => { setDraft((current) => ({ ...current, response: { payload_template: payloadTemplate } })); setServerValidation(null); }} onFixtureChange={setFixture} onInsert={insertSyntax} onValidate={() => void validateOnServer()} /></section>}
 
           {step === 3 && <section className="mqtt-panel"><div className="mqtt-panel-heading"><Server /><div><h2>Review and runtime</h2><p>Save only as disabled, then enable the listener from this page.</p></div></div><div className="http-review-grid"><article><span>Endpoint</span><strong>{endpoint}</strong><small>{draft.http.access_mode} · {draft.http.quality_policy} quality policy</small></article><article><span>Sources</span><strong>{draft.sources.length}</strong><small>{draft.trigger.mode === "interval" ? `Every ${draft.trigger.interval_ms} ms` : `On ${draft.trigger.source_alias}`}</small></article><article><span>Limits</span><strong>{draft.http.max_connections} connections</strong><small>{draft.http.max_header_bytes.toLocaleString()} header bytes</small></article></div><details className="mqtt-advanced"><summary>Timeout and connection limits</summary><div className="mqtt-form-grid"><label><span>Read timeout (ms)</span><input type="number" value={draft.http.read_timeout_ms} onChange={(event) => updateHTTP("read_timeout_ms", Number(event.target.value))} /></label><label><span>Write timeout (ms)</span><input type="number" value={draft.http.write_timeout_ms} onChange={(event) => updateHTTP("write_timeout_ms", Number(event.target.value))} /></label><label><span>Idle timeout (ms)</span><input type="number" value={draft.http.idle_timeout_ms} onChange={(event) => updateHTTP("idle_timeout_ms", Number(event.target.value))} /></label><label><span>Maximum header bytes</span><input type="number" value={draft.http.max_header_bytes} onChange={(event) => updateHTTP("max_header_bytes", Number(event.target.value))} /></label><label><span>Maximum connections</span><input type="number" value={draft.http.max_connections} onChange={(event) => updateHTTP("max_connections", Number(event.target.value))} /></label><label><span>Quality policy</span><select aria-label="Quality policy" value={draft.http.quality_policy} onChange={(event) => updateHTTP("quality_policy", event.target.value as HTTPServerPublisherDraft["http"]["quality_policy"])}><option value="payload">Payload: always render explicit quality</option><option value="strict">Strict: degraded response uses 503</option></select></label></div></details><div className="mqtt-review"><header><div><h3>Canonical configuration</h3><p>References profile identity only; no secret values.</p></div><button type="button" onClick={() => void copyConfig()}><Copy size={15} />Copy config</button></header><pre>{configJSON}</pre></div></section>}
         </fieldset>

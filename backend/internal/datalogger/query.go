@@ -31,7 +31,13 @@ const (
 	AggregateCount AggregateFunction = "count"
 	AggregateFirst AggregateFunction = "first"
 	AggregateLast  AggregateFunction = "last"
+
+	MaxQueryTags    = 100
+	MaxQueryPage    = 100000
+	MaxQueryPerPage = 500
 )
+
+const MaxQueryRange = 366 * 24 * time.Hour
 
 var ErrInvalidQuery = errors.New("invalid Data Logger query")
 

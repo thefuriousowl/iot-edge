@@ -3,6 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import axios from "axios";
 import {
   CircleAlert,
+  CircleCheck,
   Eye,
   EyeOff,
   LoaderCircle,
@@ -36,6 +37,8 @@ interface LoginLocationState {
     pathname?: string;
     search?: string;
   };
+  passwordChanged?: boolean;
+  sessionExpired?: boolean;
 }
 
 function getLoginDestination(state: unknown): string {
@@ -69,6 +72,7 @@ function LoginPage() {
   const setSession = useAuthStore((state) => state.setSession);
   const setLoading = useAuthStore((state) => state.setLoading);
   const clearSession = useAuthStore((state) => state.clearSession);
+  const locationState = location.state as LoginLocationState | null;
   const {
     formState: { errors, isSubmitting },
     handleSubmit,
@@ -128,6 +132,12 @@ function LoginPage() {
           </header>
 
           <form className="login-form" onSubmit={onSubmit} noValidate>
+            {(locationState?.passwordChanged || locationState?.sessionExpired) && (
+              <div className="login-request-success" role="status">
+                <CircleCheck aria-hidden="true" size={18} />
+                <span>{locationState.passwordChanged ? "Password changed successfully. Sign in again with your new password." : "Your session expired. Sign in again."}</span>
+              </div>
+            )}
             {requestError && (
               <div className="login-request-error" role="alert">
                 <CircleAlert aria-hidden="true" size={18} />

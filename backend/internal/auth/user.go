@@ -10,6 +10,7 @@ type User struct {
 	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	Username       string
 	PasswordHash   string `json:"-"`
+	SessionVersion int64  `json:"-"`
 	IsLocked       bool
 	FailedAttempts int
 	LockedUntil    *time.Time

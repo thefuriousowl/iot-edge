@@ -106,6 +106,14 @@ vi.mock("./features/publisher/pages/HTTPServerPublisherWizardPage", () => ({
   default: () => <h1>HTTP Server Publisher Wizard</h1>,
 }));
 
+vi.mock("./features/settings/pages/DataManagementSettingsPage", () => ({
+  default: () => <h1>Data Management Settings</h1>,
+}));
+
+vi.mock("./features/settings/pages/AccountSettingsPage", () => ({
+  default: () => <h1>Account Settings</h1>,
+}));
+
 const mockedGetHealth = vi.mocked(getHealth);
 const mockedListVGateways = vi.mocked(listVGateways);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);
@@ -427,5 +435,22 @@ describe("App", () => {
     renderAuthenticatedApp("/reports/report-id");
     expect(screen.getByRole("heading", { name: "Report Detail" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/reports/report-id");
+  });
+
+  it("redirects the protected Settings entry to Data Management", async () => {
+    renderAuthenticatedApp("/settings");
+
+    expect(await screen.findByRole("heading", { name: "Data Management Settings" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/data-management");
+  });
+
+  it.each([
+    ["/settings/data-management", "Data Management Settings"],
+    ["/settings/account", "Account Settings"],
+  ])("protects and renders the Settings route at %s", (path, heading) => {
+    renderAuthenticatedApp(path);
+
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(path);
   });
 });

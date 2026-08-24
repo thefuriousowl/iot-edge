@@ -31,6 +31,11 @@ const runtime: PublisherRuntimeStatus = {
   failure_count: 0, queue_depth: 0, drop_count: 0, reconnect_count: 1, connected: false,
   connection_count: 1, delivery_count: 3, delivery_failure_count: 0, transport_queue_depth: 0,
   transport_drop_count: 0, diagnostic_count: 1, diagnostic_drop_count: 0,
+  sources: [{
+    alias: "today_cost", available: true, quality: "partial", sequence: 18, coverage_percent: 6.8,
+    period_start: "2026-08-22T17:00:00Z", period_end: "2026-08-23T08:35:25.573Z",
+    reference: { kind: "plugin_output", plugin_instance_id: "plugin-1", output_key: "today.covered_estimated_cost" },
+  }],
 };
 
 const publisher: DataPublisher = {
@@ -68,6 +73,16 @@ describe("MQTTPublisherOperations", () => {
     await waitFor(() => expect(mockedTestConnection).toHaveBeenCalledWith("publisher-1"));
     expect(screen.getByRole("status")).toHaveTextContent("No telemetry was published");
     expect(screen.getByText("site/ack")).toBeInTheDocument();
+    expect(screen.getByText("today_cost")).toBeInTheDocument();
+    expect(screen.getByLabelText("Period from 2026-08-22T17:00:00Z to 2026-08-23T08:35:25.573Z")).toBeInTheDocument();
+  });
+
+  it("never presents a stale connection as live while runtime is stopped", async () => {
+    mockedGetStatus.mockResolvedValue({ ...runtime, connected: true });
+    renderOperations();
+
+    expect(await screen.findByText("Disconnected")).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
   });
 
   it("enables the runtime and reports the changed desired state to the editor", async () => {

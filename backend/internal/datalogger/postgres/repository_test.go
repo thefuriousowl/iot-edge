@@ -24,7 +24,8 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	ctx := context.Background()
 	startAt := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
 	description := "Main logger"
-	interval := datalogger.Logger{Name: "Plant % logger", Description: &description, Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, Config: json.RawMessage(`{"interval_seconds":60}`)}
+	maxAge := int64(24 * 60 * 60)
+	interval := datalogger.Logger{Name: "Plant % logger", Description: &description, Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, MaxAgeSeconds: &maxAge, Config: json.RawMessage(`{"interval_seconds":60}`)}
 	if err := repository.Create(ctx, &interval, []uuid.UUID{tags[1], tags[0]}); err != nil {
 		t.Fatalf("Create(interval) error = %v", err)
 	}
@@ -32,7 +33,7 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Find() error = %v", err)
 	}
-	if found.ID != interval.ID || found.Description == nil || *found.Description != description || found.TagCount != 2 || len(found.Tags) != 2 || found.Tags[0].ID != tags[1] || found.Tags[1].ID != tags[0] || found.Tags[0].Position != 0 || found.Tags[1].Position != 1 {
+	if found.ID != interval.ID || found.Description == nil || *found.Description != description || found.MaxAgeSeconds == nil || *found.MaxAgeSeconds != maxAge || found.TagCount != 2 || len(found.Tags) != 2 || found.Tags[0].ID != tags[1] || found.Tags[1].ID != tags[0] || found.Tags[0].Position != 0 || found.Tags[1].Position != 1 {
 		t.Errorf("Find() = %#v", found)
 	}
 
@@ -46,6 +47,18 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	}
 	if len(runtimeLoggers) != 1 || runtimeLoggers[0].ID != interval.ID || runtimeLoggers[0].TagCount != 2 || len(runtimeLoggers[0].Tags) != 2 || runtimeLoggers[0].Tags[0].ID != tags[1] || runtimeLoggers[0].Tags[1].ID != tags[0] {
 		t.Errorf("ListEnabledLoggers() = %#v", runtimeLoggers)
+	}
+	retentionLoggerIDs, err := repository.ListRetentionLoggerIDs(ctx)
+	if err != nil || len(retentionLoggerIDs) != 1 || retentionLoggerIDs[0] != interval.ID {
+		t.Errorf("ListRetentionLoggerIDs(age policy) = %#v, %v", retentionLoggerIDs, err)
+	}
+	maxSize := int64(datalogger.MinStorageSizeBytes)
+	if err := db.Model(&datalogger.Logger{}).Where("id = ?", schedule.ID).Update("max_size_bytes", maxSize).Error; err != nil {
+		t.Fatalf("setting disabled Logger retention: %v", err)
+	}
+	retentionLoggerIDs, err = repository.ListRetentionLoggerIDs(ctx)
+	if err != nil || len(retentionLoggerIDs) != 2 || !containsUUID(retentionLoggerIDs, interval.ID) || !containsUUID(retentionLoggerIDs, schedule.ID) {
+		t.Errorf("ListRetentionLoggerIDs(disabled size policy) = %#v, %v", retentionLoggerIDs, err)
 	}
 	assertList(t, repository, datalogger.ListInput{Mode: modePointer(datalogger.ModeInterval), Page: 1, PerPage: 20}, 1, interval.ID, 2)
 	assertList(t, repository, datalogger.ListInput{Enabled: boolPointer(false), Page: 1, PerPage: 20}, 1, schedule.ID, 1)
@@ -67,6 +80,8 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	interval.Mode = datalogger.ModeSchedule
 	endAt := startAt.Add(48 * time.Hour)
 	interval.EndAt = &endAt
+	updatedMaxAge := int64(7 * 24 * 60 * 60)
+	interval.MaxAgeSeconds = &updatedMaxAge
 	interval.Config = json.RawMessage(`{"unit":"week","every":1,"times":["08:00"],"weekdays":[1]}`)
 	if err := repository.Update(ctx, &interval, []uuid.UUID{tags[2], tags[0]}); err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -75,7 +90,7 @@ func TestRepositoryCRUDSelectionsAndFilters_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Find(updated) error = %v", err)
 	}
-	if updated.Name != "Updated" || updated.Description != nil || updated.Enabled || updated.Timezone != "Asia/Bangkok" || updated.Mode != datalogger.ModeSchedule || updated.EndAt == nil || !updated.EndAt.Equal(endAt) || len(updated.Tags) != 2 || updated.Tags[0].ID != tags[2] {
+	if updated.Name != "Updated" || updated.Description != nil || updated.Enabled || updated.Timezone != "Asia/Bangkok" || updated.Mode != datalogger.ModeSchedule || updated.EndAt == nil || !updated.EndAt.Equal(endAt) || updated.MaxAgeSeconds == nil || *updated.MaxAgeSeconds != updatedMaxAge || len(updated.Tags) != 2 || updated.Tags[0].ID != tags[2] {
 		t.Errorf("updated = %#v", updated)
 	}
 	runtimeLoggers, err = repository.ListEnabledLoggers(ctx)
@@ -172,7 +187,7 @@ func newRepositoryDatabase(t *testing.T) (*gorm.DB, []uuid.UUID) {
 		t.Fatalf("getting SQL DB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql", "../../../migrations/000008_add_data_logger_storage_limits.up.sql"} {
+	for _, migrationPath := range []string{"../../../migrations/000002_create_vgateways.up.sql", "../../../migrations/000003_create_devices_datasources.up.sql", "../../../migrations/000004_create_tags.up.sql", "../../../migrations/000005_create_tag_values_latest.up.sql", "../../../migrations/000006_create_data_loggers.up.sql", "../../../migrations/000007_create_tag_values_raw.up.sql", "../../../migrations/000008_add_data_logger_storage_limits.up.sql", "../../../migrations/000015_add_data_logger_age_retention.up.sql", "../../../migrations/000016_create_data_logger_retention_status.up.sql"} {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatalf("reading migration: %v", err)
@@ -192,3 +207,12 @@ func newRepositoryDatabase(t *testing.T) (*gorm.DB, []uuid.UUID) {
 
 func modePointer(value datalogger.Mode) *datalogger.Mode { return &value }
 func boolPointer(value bool) *bool                       { return &value }
+
+func containsUUID(values []uuid.UUID, target uuid.UUID) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { disableDataPublisher, enableDataPublisher, getDataPublisherStatus, probeHTTPServerListener, restartDataPublisher } from "../../../services/publisher.service";
 import type { DataPublisher, PublisherRuntimeStatus } from "../../../types/publisher";
+import PublisherRuntimeSources from "./PublisherRuntimeSources";
 
 interface HTTPServerPublisherOperationsProps {
   publisher: DataPublisher;
@@ -30,6 +31,7 @@ function HTTPServerPublisherOperations({ publisher, endpoint, onPublisherChange 
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
+  const activeConnections = runtime.state === "running" ? runtime.active_connections ?? 0 : 0;
 
   const refreshRuntime = useCallback(async (signal?: AbortSignal) => {
     setRuntime(await getDataPublisherStatus(publisher.id, signal));
@@ -98,8 +100,9 @@ function HTTPServerPublisherOperations({ publisher, endpoint, onPublisherChange 
   return <section className="mqtt-operations" aria-label="HTTP Server Publisher operations">
     <div className="http-endpoint-card"><div><Server size={18} /><span><small>External GET endpoint</small><code>{endpoint}</code></span></div><button type="button" onClick={() => void copyEndpoint()}><Copy size={15} />Copy</button></div>
     <div className="mqtt-lifecycle"><div><strong>Desired state: {publisher.enabled ? "Enabled" : "Disabled"}</strong><span>Runtime: {runtime.state} · Config v{runtime.config_version}</span></div><div>{publisher.enabled ? <button type="button" disabled={Boolean(busy)} onClick={() => void runLifecycle("disable")}><CircleDashed size={16} />Disable</button> : <button className="is-primary" type="button" disabled={Boolean(busy)} onClick={() => void runLifecycle("enable")}><Play size={16} />Enable</button>}<button type="button" disabled={!publisher.enabled || Boolean(busy)} onClick={() => void runLifecycle("restart")}><RotateCcw size={16} />Restart</button></div></div>
-    <div className="mqtt-runtime-grid" aria-label="HTTP Server runtime status"><article><Activity /><span>Requests</span><strong>{(runtime.external_request_count ?? 0).toLocaleString()}</strong><small>Last {displayTime(runtime.last_external_request_at)}</small></article><article><CircleAlert /><span>Rejected</span><strong>{(runtime.rejected_request_count ?? 0).toLocaleString()}</strong><small>Strict quality and invalid requests</small></article><article><Server /><span>Connections</span><strong>{(runtime.active_connections ?? 0).toLocaleString()}</strong><small>{runtime.publish_count} retained snapshot updates</small></article></div>
+    <div className="mqtt-runtime-grid" aria-label="HTTP Server runtime status"><article><Activity /><span>Requests</span><strong>{(runtime.external_request_count ?? 0).toLocaleString()}</strong><small>Last {displayTime(runtime.last_external_request_at)}</small></article><article><CircleAlert /><span>Rejected</span><strong>{(runtime.rejected_request_count ?? 0).toLocaleString()}</strong><small>Strict quality and invalid requests</small></article><article><Server /><span>Connections</span><strong>{activeConnections.toLocaleString()}</strong><small>{runtime.publish_count} retained snapshot updates · last {displayTime(runtime.last_publish_at)}</small></article></div>
     {(runtime.last_error || runtime.transport_error) && <div className="mqtt-message is-error" role="alert"><CircleAlert size={18} />{runtime.last_error || runtime.transport_error}</div>}
+    <PublisherRuntimeSources sources={runtime.sources} />
     <div className="mqtt-api-note"><CircleDashed size={18} /><span><strong>Local TCP listener probe.</strong> Confirms the configured socket accepts a connection without authentication, HTTP GET, payload rendering, or acquisition reads.</span></div>
     {message && <div className="mqtt-message is-error" role="alert"><CircleAlert size={18} />{message}</div>}
     {notice && <div className="mqtt-message" role="status"><Check size={18} />{notice}</div>}

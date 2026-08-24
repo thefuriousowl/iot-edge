@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AuthUser,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
   LoginRequest,
   LoginResponse,
   LogoutResponse,
@@ -13,6 +15,7 @@ import type {
 } from "../types/auth";
 import api from "./api";
 import {
+  changePassword,
   checkSetupStatus,
   getMe,
   login,
@@ -120,6 +123,15 @@ describe("auth service", () => {
 
     expect(mockedPost).toHaveBeenCalledOnce();
     expect(mockedPost).toHaveBeenCalledWith("/auth/logout");
+  });
+
+  it("changes the authenticated password without transforming secret fields", async () => {
+    const request: ChangePasswordRequest = { current_password: "CurrentP@ss1", new_password: "FreshP@ss3", confirm_password: "FreshP@ss3" };
+    const expected: ChangePasswordResponse = { message: "Password changed successfully" };
+    mockedPost.mockResolvedValue({ data: expected } as AxiosResponse<ChangePasswordResponse>);
+
+    await expect(changePassword(request)).resolves.toEqual(expected);
+    expect(mockedPost).toHaveBeenCalledWith("/auth/change-password", request);
   });
 
   it("gets the authenticated user", async () => {

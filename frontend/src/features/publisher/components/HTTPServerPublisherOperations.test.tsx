@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { enableDataPublisher, getDataPublisherStatus, probeHTTPServerListener } from "../../../services/publisher.service";
@@ -24,6 +24,10 @@ const runtime: PublisherRuntimeStatus = {
   transport_drop_count: 0, diagnostic_count: 0, diagnostic_drop_count: 0,
   external_request_count: 12, rejected_request_count: 2, active_connections: 1,
   last_external_request_at: "2026-08-23T08:35:25.573Z",
+  sources: [{
+    alias: "flow", available: true, quality: "good", sequence: 42, observed_at: "2026-08-23T08:35:24Z",
+    reference: { kind: "tag", tag_id: "tag-1" },
+  }],
 };
 const publisher: DataPublisher = {
   id: "publisher-1", type: "http_server", name: "Plant snapshot", enabled: false,
@@ -47,7 +51,11 @@ describe("HTTPServerPublisherOperations", () => {
     expect(screen.getByText("http://127.0.0.1:8088/snapshot")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
+    const connections = screen.getByText("Connections").closest("article");
+    expect(connections).not.toBeNull();
+    expect(within(connections as HTMLElement).getByText("0")).toBeInTheDocument();
+    expect(screen.getByText("flow")).toBeInTheDocument();
+    expect(screen.getByLabelText("Observed at 2026-08-23T08:35:24Z")).toBeInTheDocument();
     await waitFor(() => expect(mockedStatus).toHaveBeenCalledWith("publisher-1", expect.any(AbortSignal)));
   });
 

@@ -14,6 +14,7 @@ import (
 type Repository interface {
 	datalogger.Repository
 	datalogger.RuntimeRepository
+	datalogger.RetentionRuntimeRepository
 }
 
 type repository struct{ db *gorm.DB }
@@ -119,10 +120,19 @@ func (repository *repository) ListEnabledLoggers(ctx context.Context) ([]datalog
 	return entities, nil
 }
 
+func (repository *repository) ListRetentionLoggerIDs(ctx context.Context) ([]uuid.UUID, error) {
+	loggerIDs := make([]uuid.UUID, 0)
+	err := repository.db.WithContext(ctx).Model(&datalogger.Logger{}).
+		Where("max_size_bytes IS NOT NULL OR max_age_seconds IS NOT NULL").
+		Order("created_at ASC, id ASC").
+		Pluck("id", &loggerIDs).Error
+	return loggerIDs, err
+}
+
 func (repository *repository) Update(ctx context.Context, entity *datalogger.Logger, tagIDs []uuid.UUID) error {
 	err := repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&datalogger.Logger{}).Where("id = ?", entity.ID).Select("name", "description", "enabled", "timezone", "mode", "start_at", "end_at", "max_size_bytes", "config", "updated_at").Updates(map[string]any{
-			"name": entity.Name, "description": entity.Description, "enabled": entity.Enabled, "timezone": entity.Timezone, "mode": entity.Mode, "start_at": entity.StartAt, "end_at": entity.EndAt, "max_size_bytes": entity.MaxSizeBytes, "config": entity.Config, "updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
+		result := tx.Model(&datalogger.Logger{}).Where("id = ?", entity.ID).Select("name", "description", "enabled", "timezone", "mode", "start_at", "end_at", "max_size_bytes", "max_age_seconds", "config", "updated_at").Updates(map[string]any{
+			"name": entity.Name, "description": entity.Description, "enabled": entity.Enabled, "timezone": entity.Timezone, "mode": entity.Mode, "start_at": entity.StartAt, "end_at": entity.EndAt, "max_size_bytes": entity.MaxSizeBytes, "max_age_seconds": entity.MaxAgeSeconds, "config": entity.Config, "updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
 		})
 		if result.Error != nil {
 			return result.Error
@@ -189,3 +199,4 @@ func mapError(err error) error {
 
 var _ datalogger.Repository = (*repository)(nil)
 var _ datalogger.RuntimeRepository = (*repository)(nil)
+var _ datalogger.RetentionRuntimeRepository = (*repository)(nil)

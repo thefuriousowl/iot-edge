@@ -24,16 +24,30 @@ func TestHandlerContracts(t *testing.T) {
 	endAt := startAt.Add(24 * time.Hour)
 	entity := datalogger.Logger{ID: loggerID, Name: "Plant", Enabled: true, Timezone: "UTC", Mode: datalogger.ModeInterval, StartAt: startAt, Config: json.RawMessage(`{"interval_seconds":60}`)}
 	lastBatchAt := startAt.Add(time.Hour)
+	overview := &datalogger.DataManagementOverview{EvaluatedAt: startAt, LoggerCount: 1, EnabledLoggerCount: 1, PolicyLoggerCount: 1, LogicalHistory: datalogger.RetentionMetrics{RowCount: 3, BatchCount: 2, EstimatedSizeBytes: 2048}, PostgreSQLPhysicalAllocation: datalogger.PostgreSQLPhysicalAllocation{RawHistoryBytes: 8192, BatchAccountingBytes: 4096, TotalBytes: 12288}}
+	retentionStatus := &datalogger.RetentionStatus{Plan: datalogger.RetentionPlan{EvaluatedAt: startAt, Current: datalogger.RetentionMetrics{BatchCount: 2}, Remove: datalogger.RetentionMetrics{BatchCount: 1}}}
+	cleanupResult := &datalogger.RetentionCleanupResult{EvaluatedAt: startAt, Deleted: datalogger.RetentionMetrics{BatchCount: 1}, Complete: true}
 	service := &handlerService{
-		entity:        &entity,
-		listResult:    &datalogger.ListResult{Data: []datalogger.Logger{entity}, Page: 2, PerPage: 5, Total: 6, TotalPages: 2},
-		historyResult: &datalogger.RawValueListResult{Data: []datalogger.RawValue{{LoggerID: loggerID, TagID: tagA, BatchAt: lastBatchAt, ObservedAt: lastBatchAt, DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood, PersistedAt: lastBatchAt}}, Page: 2, PerPage: 25, Total: 26, TotalPages: 2, LastBatchAt: &lastBatchAt},
-		queryResult:   &datalogger.QueryResult{Data: []datalogger.QueryRow{{At: lastBatchAt, Values: map[string]datalogger.QueryValue{tagA.String(): {TagID: tagA, DataType: "float64", Value: 42.5, GoodCount: 3, TotalCount: 3}}}}, Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket5Minutes, Aggregate: datalogger.AggregateAvg, Page: 2, PerPage: 25, Total: 26, TotalPages: 2},
+		entity:             &entity,
+		listResult:         &datalogger.ListResult{Data: []datalogger.Logger{entity}, Page: 2, PerPage: 5, Total: 6, TotalPages: 2},
+		historyResult:      &datalogger.RawValueListResult{Data: []datalogger.RawValue{{LoggerID: loggerID, TagID: tagA, BatchAt: lastBatchAt, ObservedAt: lastBatchAt, DataType: "float64", Value: 42.5, Quality: datalogger.RawQualityGood, PersistedAt: lastBatchAt}}, Page: 2, PerPage: 25, Total: 26, TotalPages: 2, LastBatchAt: &lastBatchAt},
+		queryResult:        &datalogger.QueryResult{Data: []datalogger.QueryRow{{At: lastBatchAt, Values: map[string]datalogger.QueryValue{tagA.String(): {TagID: tagA, DataType: "float64", Value: 42.5, GoodCount: 3, TotalCount: 3}}}}, Mode: datalogger.QueryModeAggregate, Bucket: datalogger.QueryBucket5Minutes, Aggregate: datalogger.AggregateAvg, Page: 2, PerPage: 25, Total: 26, TotalPages: 2},
+		managementOverview: overview,
+		retentionStatus:    retentionStatus,
+		cleanupResult:      cleanupResult,
 	}
 	app := newHandlerApp(service)
 
+	response := request(t, app, http.MethodGet, "/api/data-management/overview", "")
+	assertStatus(t, response, fiber.StatusOK)
+	var overviewBody datalogger.DataManagementOverview
+	decodeResponse(t, response, &overviewBody)
+	if overviewBody.LoggerCount != 1 || overviewBody.LogicalHistory.RowCount != 3 || overviewBody.PostgreSQLPhysicalAllocation.TotalBytes != 12288 {
+		t.Errorf("management overview response = %#v", overviewBody)
+	}
+
 	query := url.Values{"mode": {"interval"}, "enabled": {"false"}, "search": {"plant"}, "page": {"2"}, "per_page": {"5"}}
-	response := request(t, app, http.MethodGet, "/api/data-loggers/?"+query.Encode(), "")
+	response = request(t, app, http.MethodGet, "/api/data-loggers/?"+query.Encode(), "")
 	assertStatus(t, response, fiber.StatusOK)
 	var listed struct {
 		Data       []datalogger.Logger `json:"data"`
@@ -52,10 +66,10 @@ func TestHandlerContracts(t *testing.T) {
 		t.Errorf("list response = %#v", listed)
 	}
 
-	response = request(t, app, http.MethodPost, "/api/data-loggers/", `{"name":"Plant","description":"Main","enabled":false,"timezone":"Asia/Bangkok","mode":"interval","start_at":"2026-08-23T00:00:00Z","end_at":"2026-08-24T00:00:00Z","max_size_bytes":104857600,"config":{"interval_seconds":15},"tag_ids":["`+tagA.String()+`","`+tagB.String()+`"]}`)
+	response = request(t, app, http.MethodPost, "/api/data-loggers/", `{"name":"Plant","description":"Main","enabled":false,"timezone":"Asia/Bangkok","mode":"interval","start_at":"2026-08-23T00:00:00Z","end_at":"2026-08-24T00:00:00Z","max_size_bytes":104857600,"max_age_seconds":86400,"config":{"interval_seconds":15},"tag_ids":["`+tagA.String()+`","`+tagB.String()+`"]}`)
 	assertStatus(t, response, fiber.StatusCreated)
 	closeBody(t, response)
-	if service.createInput.Name != "Plant" || service.createInput.Description == nil || *service.createInput.Description != "Main" || service.createInput.Enabled == nil || *service.createInput.Enabled || service.createInput.Timezone != "Asia/Bangkok" || service.createInput.Mode != datalogger.ModeInterval || !service.createInput.StartAt.Equal(startAt) || service.createInput.EndAt == nil || !service.createInput.EndAt.Equal(endAt) || service.createInput.MaxSizeBytes == nil || *service.createInput.MaxSizeBytes != 104857600 || string(service.createInput.Config) != `{"interval_seconds":15}` || len(service.createInput.TagIDs) != 2 || service.createInput.TagIDs[1] != tagB {
+	if service.createInput.Name != "Plant" || service.createInput.Description == nil || *service.createInput.Description != "Main" || service.createInput.Enabled == nil || *service.createInput.Enabled || service.createInput.Timezone != "Asia/Bangkok" || service.createInput.Mode != datalogger.ModeInterval || !service.createInput.StartAt.Equal(startAt) || service.createInput.EndAt == nil || !service.createInput.EndAt.Equal(endAt) || service.createInput.MaxSizeBytes == nil || *service.createInput.MaxSizeBytes != 104857600 || service.createInput.MaxAgeSeconds == nil || *service.createInput.MaxAgeSeconds != 86400 || string(service.createInput.Config) != `{"interval_seconds":15}` || len(service.createInput.TagIDs) != 2 || service.createInput.TagIDs[1] != tagB {
 		t.Errorf("Create() input = %#v", service.createInput)
 	}
 
@@ -101,17 +115,41 @@ func TestHandlerContracts(t *testing.T) {
 		t.Errorf("query response = %#v", queryBody)
 	}
 
-	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"max_size_bytes":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
+	response = request(t, app, http.MethodGet, "/api/data-loggers/"+loggerID.String()+"/retention", "")
+	assertStatus(t, response, fiber.StatusOK)
+	var statusBody datalogger.RetentionStatus
+	decodeResponse(t, response, &statusBody)
+	if service.retentionID != loggerID || statusBody.Plan.Current.BatchCount != 2 {
+		t.Errorf("retention status response/input = %#v / %s", statusBody, service.retentionID)
+	}
+
+	response = request(t, app, http.MethodGet, "/api/data-loggers/"+loggerID.String()+"/retention/preview", "")
+	assertStatus(t, response, fiber.StatusOK)
+	var previewBody datalogger.RetentionPlan
+	decodeResponse(t, response, &previewBody)
+	if previewBody.Remove.BatchCount != 1 {
+		t.Errorf("retention preview response = %#v", previewBody)
+	}
+
+	response = request(t, app, http.MethodPost, "/api/data-loggers/"+loggerID.String()+"/retention/cleanup", `{"confirm":true,"batch_limit":25}`)
+	assertStatus(t, response, fiber.StatusOK)
+	var cleanupBody datalogger.RetentionCleanupResult
+	decodeResponse(t, response, &cleanupBody)
+	if service.cleanupID != loggerID || service.cleanupInput.BatchLimit != 25 || cleanupBody.Deleted.BatchCount != 1 || !cleanupBody.Complete {
+		t.Errorf("retention cleanup response/input = %#v / %#v", cleanupBody, service.cleanupInput)
+	}
+
+	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":null,"end_at":null,"max_size_bytes":null,"max_age_seconds":null,"enabled":false,"tag_ids":["`+tagB.String()+`"]}`)
 	assertStatus(t, response, fiber.StatusOK)
 	closeBody(t, response)
-	if service.updatedID != loggerID || !service.updateInput.Description.Set || service.updateInput.Description.Value != nil || !service.updateInput.EndAt.Set || service.updateInput.EndAt.Value != nil || !service.updateInput.MaxSizeBytes.Set || service.updateInput.MaxSizeBytes.Value != nil || service.updateInput.Enabled == nil || *service.updateInput.Enabled || service.updateInput.TagIDs == nil || len(*service.updateInput.TagIDs) != 1 || (*service.updateInput.TagIDs)[0] != tagB {
+	if service.updatedID != loggerID || !service.updateInput.Description.Set || service.updateInput.Description.Value != nil || !service.updateInput.EndAt.Set || service.updateInput.EndAt.Value != nil || !service.updateInput.MaxSizeBytes.Set || service.updateInput.MaxSizeBytes.Value != nil || !service.updateInput.MaxAgeSeconds.Set || service.updateInput.MaxAgeSeconds.Value != nil || service.updateInput.Enabled == nil || *service.updateInput.Enabled || service.updateInput.TagIDs == nil || len(*service.updateInput.TagIDs) != 1 || (*service.updateInput.TagIDs)[0] != tagB {
 		t.Errorf("Update() input = %#v", service.updateInput)
 	}
 
-	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":"Updated","end_at":"2026-08-24T00:00:00Z","max_size_bytes":209715200}`)
+	response = request(t, app, http.MethodPut, "/api/data-loggers/"+loggerID.String(), `{"description":"Updated","end_at":"2026-08-24T00:00:00Z","max_size_bytes":209715200,"max_age_seconds":604800}`)
 	assertStatus(t, response, fiber.StatusOK)
 	closeBody(t, response)
-	if service.updateInput.Description.Value == nil || *service.updateInput.Description.Value != "Updated" || service.updateInput.EndAt.Value == nil || !service.updateInput.EndAt.Value.Equal(endAt) || service.updateInput.MaxSizeBytes.Value == nil || *service.updateInput.MaxSizeBytes.Value != 209715200 {
+	if service.updateInput.Description.Value == nil || *service.updateInput.Description.Value != "Updated" || service.updateInput.EndAt.Value == nil || !service.updateInput.EndAt.Value.Equal(endAt) || service.updateInput.MaxSizeBytes.Value == nil || *service.updateInput.MaxSizeBytes.Value != 209715200 || service.updateInput.MaxAgeSeconds.Value == nil || *service.updateInput.MaxAgeSeconds.Value != 604800 {
 		t.Errorf("Update(non-null) input = %#v", service.updateInput)
 	}
 
@@ -134,6 +172,7 @@ func TestHandlerRejectsMalformedRequests(t *testing.T) {
 		{name: "invalid description", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"description":1}`},
 		{name: "invalid end", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"end_at":"today"}`},
 		{name: "invalid max size", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"max_size_bytes":"large"}`},
+		{name: "invalid max age", method: http.MethodPut, path: "/api/data-loggers/" + uuid.NewString(), body: `{"max_age_seconds":"old"}`},
 		{name: "invalid enabled", method: http.MethodGet, path: "/api/data-loggers/?enabled=yes"},
 		{name: "zero page", method: http.MethodGet, path: "/api/data-loggers/?page=0"},
 		{name: "negative per page", method: http.MethodGet, path: "/api/data-loggers/?per_page=-1"},
@@ -148,6 +187,12 @@ func TestHandlerRejectsMalformedRequests(t *testing.T) {
 		{name: "invalid query from", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=today&to=2026-08-24T00:00:00Z"},
 		{name: "invalid query to", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=2026-08-23T00:00:00Z&to=tomorrow"},
 		{name: "invalid query page", method: http.MethodGet, path: "/api/data-loggers/" + uuid.NewString() + "/query?from=2026-08-23T00:00:00Z&to=2026-08-24T00:00:00Z&page=0"},
+		{name: "invalid retention status logger", method: http.MethodGet, path: "/api/data-loggers/invalid/retention"},
+		{name: "invalid retention preview logger", method: http.MethodGet, path: "/api/data-loggers/invalid/retention/preview"},
+		{name: "invalid retention cleanup logger", method: http.MethodPost, path: "/api/data-loggers/invalid/retention/cleanup", body: `{"confirm":true}`},
+		{name: "missing retention confirmation", method: http.MethodPost, path: "/api/data-loggers/" + uuid.NewString() + "/retention/cleanup", body: `{}`},
+		{name: "false retention confirmation", method: http.MethodPost, path: "/api/data-loggers/" + uuid.NewString() + "/retention/cleanup", body: `{"confirm":false}`},
+		{name: "unknown retention cleanup field", method: http.MethodPost, path: "/api/data-loggers/" + uuid.NewString() + "/retention/cleanup", body: `{"confirm":true,"force":true}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -169,6 +214,7 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 		{name: "duplicate", err: datalogger.ErrLoggerNameExists, status: fiber.StatusConflict, code: "DLG002"},
 		{name: "tag missing", err: datalogger.ErrLoggerTagNotFound, status: fiber.StatusBadRequest, code: "DLG003"},
 		{name: "storage limit too small", err: datalogger.ErrStorageLimitTooSmall, status: fiber.StatusBadRequest, code: "DLG004"},
+		{name: "retention cleanup", err: datalogger.ErrRetentionCleanup, status: fiber.StatusInternalServerError, code: "DLG005"},
 		{name: "invalid input", err: datalogger.ErrInvalidInput, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid logger", err: datalogger.ErrInvalidLogger, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
 		{name: "invalid tag", err: datalogger.ErrInvalidLoggerTag, status: fiber.StatusBadRequest, code: "VALIDATION_ERROR"},
@@ -195,21 +241,27 @@ func TestHandlerMapsServiceErrors(t *testing.T) {
 }
 
 type handlerService struct {
-	entity        *datalogger.Logger
-	listResult    *datalogger.ListResult
-	err           error
-	createInput   datalogger.CreateInput
-	listInput     datalogger.ListInput
-	gotID         uuid.UUID
-	updatedID     uuid.UUID
-	updateInput   datalogger.UpdateInput
-	deletedID     uuid.UUID
-	historyID     uuid.UUID
-	historyInput  datalogger.RawValueListInput
-	historyResult *datalogger.RawValueListResult
-	queryID       uuid.UUID
-	queryInput    datalogger.QueryInput
-	queryResult   *datalogger.QueryResult
+	entity             *datalogger.Logger
+	listResult         *datalogger.ListResult
+	err                error
+	createInput        datalogger.CreateInput
+	listInput          datalogger.ListInput
+	gotID              uuid.UUID
+	updatedID          uuid.UUID
+	updateInput        datalogger.UpdateInput
+	deletedID          uuid.UUID
+	historyID          uuid.UUID
+	historyInput       datalogger.RawValueListInput
+	historyResult      *datalogger.RawValueListResult
+	queryID            uuid.UUID
+	queryInput         datalogger.QueryInput
+	queryResult        *datalogger.QueryResult
+	managementOverview *datalogger.DataManagementOverview
+	retentionID        uuid.UUID
+	retentionStatus    *datalogger.RetentionStatus
+	cleanupID          uuid.UUID
+	cleanupInput       datalogger.RetentionCleanupInput
+	cleanupResult      *datalogger.RetentionCleanupResult
 }
 
 func (service *handlerService) Create(_ context.Context, input datalogger.CreateInput) (*datalogger.Logger, error) {
@@ -253,6 +305,38 @@ func (service *handlerService) QueryHistory(_ context.Context, id uuid.UUID, inp
 		return &datalogger.QueryResult{}, nil
 	}
 	return service.queryResult, nil
+}
+
+func (service *handlerService) ManagementOverview(_ context.Context, _ time.Time) (*datalogger.DataManagementOverview, error) {
+	if service.err != nil {
+		return nil, service.err
+	}
+	if service.managementOverview == nil {
+		return &datalogger.DataManagementOverview{}, nil
+	}
+	return service.managementOverview, nil
+}
+
+func (service *handlerService) Retention(_ context.Context, id uuid.UUID, _ time.Time) (*datalogger.RetentionStatus, error) {
+	service.retentionID = id
+	if service.err != nil {
+		return nil, service.err
+	}
+	if service.retentionStatus == nil {
+		return &datalogger.RetentionStatus{}, nil
+	}
+	return service.retentionStatus, nil
+}
+
+func (service *handlerService) CleanupRetention(_ context.Context, id uuid.UUID, input datalogger.RetentionCleanupInput) (*datalogger.RetentionCleanupResult, error) {
+	service.cleanupID, service.cleanupInput = id, input
+	if service.err != nil {
+		return nil, service.err
+	}
+	if service.cleanupResult == nil {
+		return &datalogger.RetentionCleanupResult{}, nil
+	}
+	return service.cleanupResult, nil
 }
 
 func (service *handlerService) Update(_ context.Context, id uuid.UUID, input datalogger.UpdateInput) (*datalogger.Logger, error) {

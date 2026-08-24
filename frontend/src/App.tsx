@@ -1,5 +1,6 @@
 import {
   BrowserRouter,
+  Navigate,
   Route,
   Routes,
 } from "react-router-dom";
@@ -34,6 +35,8 @@ import TagLiveStream from "./features/tag/components/TagLiveStream";
 import VGatewayDetailPage from "./features/vgateway/pages/VGatewayDetailPage";
 import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
+import AccountSettingsPage from "./features/settings/pages/AccountSettingsPage";
+import DataManagementSettingsPage from "./features/settings/pages/DataManagementSettingsPage";
 
 const EnergyHistoryPage = lazy(() => import("./features/plugin/pages/EnergyHistoryPage"));
 
@@ -302,6 +305,30 @@ function App() {
           element={
             <ProtectedRoute>
               <VGatewayFormPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/settings/data-management" replace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/data-management"
+          element={
+            <ProtectedRoute>
+              <DataManagementSettingsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/account"
+          element={
+            <ProtectedRoute>
+              <AccountSettingsPage />
             </ProtectedRoute>
           }
         />
