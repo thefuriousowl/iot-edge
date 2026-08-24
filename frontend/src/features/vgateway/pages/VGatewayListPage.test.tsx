@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -126,6 +126,32 @@ describe("VGatewayListPage", () => {
 
     expect(screen.queryByText("Main PLC Gateway")).not.toBeInTheDocument();
     expect(screen.getByText("Boiler Room")).toBeInTheDocument();
+  });
+
+  it("uses the canonical application navigation", async () => {
+    mockedListVGateways.mockResolvedValue(response());
+
+    renderPage();
+
+    await screen.findByText("Main PLC Gateway");
+    const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
+
+    for (const name of [
+      "Dashboard",
+      "vGateways",
+      "Devices",
+      "Tags",
+      "Data Loggers",
+      "Reports",
+      "Plugins",
+      "Data Publishers",
+      "Credentials",
+      "Settings",
+    ]) {
+      expect(within(navigation).getByRole("link", { name })).toBeInTheDocument();
+    }
+
+    expect(within(navigation).getByRole("link", { name: "vGateways" })).toHaveClass("active");
   });
 
   it("requests enabled filters and paginated pages", async () => {

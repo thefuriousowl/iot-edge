@@ -1,32 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import {
-  Activity,
   AlertTriangle,
-  Boxes,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   Cpu,
-  FileChartColumn,
   Gauge,
-  LayoutDashboard,
   LoaderCircle,
-  Menu,
   Pencil,
   Play,
   PlugZap,
   Plus,
-  Puzzle,
   RefreshCw,
   Search,
-  Settings,
-  Tags,
   Trash2,
   Unplug,
   X,
 } from "lucide-react";
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import {
   connectVGateway,
@@ -34,13 +26,12 @@ import {
   disconnectVGateway,
   listVGateways,
 } from "../../../services/vgateway.service";
-import { useAuthStore } from "../../../stores/auth.store";
-import InternetStatus from "../../system/components/InternetStatus";
 import type {
   VGatewayConnectionStatus,
   VGatewayListItem,
   VGatewayPagination,
 } from "../../../types/vgateway";
+import VGatewayShell from "../components/VGatewayShell";
 import "./VGatewayListPage.css";
 
 type LoadState = "loading" | "ready" | "error";
@@ -91,7 +82,6 @@ function getErrorMessage(error: unknown): string {
 
 function VGatewayListPage() {
   const navigate = useNavigate();
-  const username = useAuthStore((state) => state.user?.username ?? "Admin");
   const [gateways, setGateways] = useState<VGatewayListItem[]>([]);
   const [pagination, setPagination] = useState(emptyPagination);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -103,7 +93,6 @@ function VGatewayListPage() {
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
   const [page, setPage] = useState(1);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [navigationOpen, setNavigationOpen] = useState(false);
 
   const refresh = useCallback(() => {
     setRefreshVersion((current) => current + 1);
@@ -214,95 +203,7 @@ function VGatewayListPage() {
   }
 
   return (
-    <div className="vgateway-page">
-      <button
-        className={navigationOpen ? "vgateway-nav-backdrop is-open" : "vgateway-nav-backdrop"}
-        type="button"
-        aria-label="Close navigation"
-        onClick={() => setNavigationOpen(false)}
-      />
-
-      <aside className={navigationOpen ? "vgateway-sidebar is-open" : "vgateway-sidebar"}>
-        <div className="vgateway-brand">
-          <Activity aria-hidden="true" strokeWidth={2.25} />
-          <span>IoT Edge</span>
-          <button
-            type="button"
-            className="vgateway-nav-close"
-            aria-label="Close navigation"
-            onClick={() => setNavigationOpen(false)}
-          >
-            <X aria-hidden="true" size={22} />
-          </button>
-        </div>
-
-        <nav className="vgateway-navigation" aria-label="Primary navigation">
-          <NavLink to="/dashboard">
-            <LayoutDashboard aria-hidden="true" size={21} />
-            Dashboard
-          </NavLink>
-          <NavLink to="/vgateways">
-            <Cpu aria-hidden="true" size={21} />
-            vGateways
-          </NavLink>
-          <span aria-disabled="true">
-            <Boxes aria-hidden="true" size={21} />
-            Devices
-          </span>
-          <NavLink to="/tags">
-            <Tags aria-hidden="true" size={21} />
-            Tags
-          </NavLink>
-          <NavLink to="/reports">
-            <FileChartColumn aria-hidden="true" size={21} />
-            Reports
-          </NavLink>
-          <span aria-disabled="true">
-            <Puzzle aria-hidden="true" size={21} />
-            Plugins
-          </span>
-          <NavLink to="/settings">
-            <Settings aria-hidden="true" size={21} />
-            Settings
-          </NavLink>
-        </nav>
-
-        <Link className="vgateway-health-link" to="/dashboard">
-          <span className="vgateway-health-dot" />
-          <span>
-            <strong>System health</strong>
-            <small>Healthy</small>
-          </span>
-          <ChevronRight aria-hidden="true" size={18} />
-        </Link>
-      </aside>
-
-      <main className="vgateway-workspace">
-        <header className="vgateway-topbar">
-          <button
-            type="button"
-            className="vgateway-menu-button"
-            aria-label="Open navigation"
-            onClick={() => setNavigationOpen(true)}
-          >
-            <Menu aria-hidden="true" size={23} />
-          </button>
-          <div className="vgateway-mobile-brand">
-            <Activity aria-hidden="true" size={24} />
-            <span>IoT Edge</span>
-          </div>
-          <p>
-            Dashboard <span>/</span> <strong>vGateways</strong>
-          </p>
-          <div className="vgateway-topbar-actions">
-            <InternetStatus />
-            <div className="vgateway-user">
-              <span>{username.slice(0, 1).toUpperCase()}</span>
-              <strong>{username}</strong>
-            </div>
-          </div>
-        </header>
-
+    <VGatewayShell breadcrumb={<>Dashboard <span>/</span> <strong>vGateways</strong></>}>
         <div className="vgateway-content">
           <section className="vgateway-heading">
             <div>
@@ -533,8 +434,7 @@ function VGatewayListPage() {
             )}
           </section>
         </div>
-      </main>
-    </div>
+    </VGatewayShell>
   );
 }
 
