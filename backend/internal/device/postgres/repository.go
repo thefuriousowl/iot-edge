@@ -64,7 +64,9 @@ func (r *repository) FindDevice(ctx context.Context, id uuid.UUID) (*device.Devi
 func (r *repository) ListDevices(ctx context.Context, gatewayID uuid.UUID) ([]device.DeviceView, error) {
 	views := make([]device.DeviceView, 0)
 	err := r.db.WithContext(ctx).Table("devices").
-		Select("devices.*, (SELECT COUNT(*) FROM datasources WHERE datasources.device_id = devices.id) AS datasource_count, 0 AS tag_count").
+		Select(`devices.*,
+			(SELECT COUNT(*) FROM datasources WHERE datasources.device_id = devices.id) AS datasource_count,
+			(SELECT COUNT(*) FROM tags JOIN datasources tag_sources ON tag_sources.id = tags.datasource_id WHERE tag_sources.device_id = devices.id) AS tag_count`).
 		Where("devices.vgateway_id = ?", gatewayID).
 		Order("devices.created_at ASC, devices.id ASC").Scan(&views).Error
 	return views, err

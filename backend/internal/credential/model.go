@@ -44,7 +44,7 @@ var (
 )
 
 type Profile struct {
-	ID             uuid.UUID                  `gorm:"type:uuid;primaryKey" json:"id"`
+	ID             uuid.UUID                  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	Type           Type                       `gorm:"type:varchar(32);not null" json:"type"`
 	Name           string                     `gorm:"type:varchar(100);not null" json:"name"`
 	Description    *string                    `gorm:"type:text" json:"description,omitempty"`

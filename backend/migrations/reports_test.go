@@ -35,7 +35,7 @@ func TestReportsMigrationConstraintsAndDown_Integration(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "SET search_path TO "+schema+", public"); err != nil {
 		t.Fatalf("setting search path: %v", err)
 	}
-	for _, migration := range []string{"000002_create_vgateways.up.sql", "000003_create_devices_datasources.up.sql", "000004_create_tags.up.sql", "000006_create_data_loggers.up.sql", "000007_create_tag_values_raw.up.sql", "000008_add_data_logger_storage_limits.up.sql", "000009_create_reports.up.sql", "000015_add_data_logger_age_retention.up.sql"} {
+	for _, migration := range []string{"000002_create_vgateways.up.sql", "000003_create_devices_datasources.up.sql", "000004_create_tags.up.sql", "000006_create_data_loggers.up.sql", "000007_create_tag_values_raw.up.sql", "000008_add_data_logger_storage_limits.up.sql", "000009_create_reports.up.sql", "000015_add_data_logger_age_retention.up.sql", "000018_enforce_report_aggregate_bucket.up.sql"} {
 		applyMigrationFile(t, ctx, conn, migration)
 	}
 	loggerID, tagID := insertRawMigrationFixture(t, ctx, conn)
@@ -61,6 +61,13 @@ func TestReportsMigrationConstraintsAndDown_Integration(t *testing.T) {
 	}
 	if _, err := conn.ExecContext(ctx, `INSERT INTO reports (name,logger_id,timezone,mode,bucket) VALUES ('Bad raw',$1,'UTC','raw','1h')`, loggerID); err == nil {
 		t.Error("raw Report with bucket succeeded")
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO reports (name,logger_id,timezone,mode,bucket) VALUES ('Missing aggregate bucket',$1,'UTC','aggregate',NULL)`, loggerID); err == nil {
+		t.Error("aggregate Report without bucket succeeded")
+	}
+	applyMigrationFile(t, ctx, conn, "000018_enforce_report_aggregate_bucket.down.sql")
+	if _, err := conn.ExecContext(ctx, `INSERT INTO reports (name,logger_id,timezone,mode,bucket) VALUES ('Legacy aggregate bucket',$1,'UTC','aggregate',NULL)`, loggerID); err != nil {
+		t.Fatalf("rollback did not restore the previous Report bucket constraint: %v", err)
 	}
 	applyMigrationFile(t, ctx, conn, "000009_create_reports.down.sql")
 	if relationExists(t, ctx, conn, schema, "reports") || relationExists(t, ctx, conn, schema, "report_columns") {

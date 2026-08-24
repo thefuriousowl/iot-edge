@@ -110,7 +110,7 @@ func mapError(err error) error {
 	case "idx_credential_profiles_name_ci":
 		return credential.ErrNameExists
 	case "data_publishers_credential_id_fkey":
-		return credential.ErrNotFound
+		return credential.ErrInUse
 	case "credential_profiles_pkey", "credential_profiles_type_check", "credential_profiles_name_check", "credential_profiles_description_check", "credential_profiles_secret_revision_check":
 		return credential.ErrInvalid
 	}
