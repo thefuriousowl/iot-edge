@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Boxes,
@@ -28,6 +28,40 @@ interface VGatewayShellProps {
 function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
   const username = useAuthStore((state) => state.user?.username ?? "Admin");
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [compactNavigation, setCompactNavigation] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreMenuFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 980px)");
+    const synchronize = () => setCompactNavigation(media.matches);
+    synchronize();
+    media.addEventListener("change", synchronize);
+    return () => media.removeEventListener("change", synchronize);
+  }, []);
+
+  useEffect(() => {
+    if (navigationOpen) {
+      closeButtonRef.current?.focus();
+      const closeOnEscape = (event: KeyboardEvent) => {
+        if (event.key === "Escape") setNavigationOpen(false);
+      };
+      document.addEventListener("keydown", closeOnEscape);
+      return () => document.removeEventListener("keydown", closeOnEscape);
+    }
+
+    if (restoreMenuFocusRef.current) {
+      menuButtonRef.current?.focus();
+      restoreMenuFocusRef.current = false;
+    }
+  }, [navigationOpen]);
+
+  function openNavigation() {
+    restoreMenuFocusRef.current = true;
+    setNavigationOpen(true);
+  }
 
   return (
     <div className="vgateway-page">
@@ -38,11 +72,17 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
         onClick={() => setNavigationOpen(false)}
       />
 
-      <aside className={navigationOpen ? "vgateway-sidebar is-open" : "vgateway-sidebar"}>
+      <aside
+        id="primary-navigation-drawer"
+        className={navigationOpen ? "vgateway-sidebar is-open" : "vgateway-sidebar"}
+        aria-hidden={compactNavigation && !navigationOpen ? true : undefined}
+        inert={compactNavigation && !navigationOpen}
+      >
         <div className="vgateway-brand">
           <Activity aria-hidden="true" strokeWidth={2.25} />
           <span>IoT Edge</span>
           <button
+            ref={closeButtonRef}
             type="button"
             className="vgateway-nav-close"
             aria-label="Close navigation"
@@ -108,10 +148,13 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
       <main className="vgateway-workspace">
         <header className="vgateway-topbar">
           <button
+            ref={menuButtonRef}
             type="button"
             className="vgateway-menu-button"
             aria-label="Open navigation"
-            onClick={() => setNavigationOpen(true)}
+            aria-controls="primary-navigation-drawer"
+            aria-expanded={navigationOpen}
+            onClick={openNavigation}
           >
             <Menu aria-hidden="true" size={23} />
           </button>

@@ -227,7 +227,7 @@ function PeriodPanel({ label, period, timezone, currency }: {
       <div className="energy-coverage-row">
         <span>Electrical coverage</span>
         <strong>{formatNumber(period.electrical.coverage_percent, 1)}%</strong>
-        <div aria-label={`${period.electrical.coverage_percent}% electrical coverage`}><i style={{ width: `${Math.max(0, Math.min(100, period.electrical.coverage_percent))}%` }} /></div>
+        <div role="progressbar" aria-label="Electrical coverage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.max(0, Math.min(100, period.electrical.coverage_percent))}><i style={{ width: `${Math.max(0, Math.min(100, period.electrical.coverage_percent))}%` }} /></div>
         <small>{formatNumber(period.electrical.covered_seconds / 3600, 1)} h covered · {issueCount} issues</small>
       </div>
     </article>

@@ -12,6 +12,7 @@ import {
   testVGatewayConfig,
   updateVGateway,
 } from "../../../services/vgateway.service";
+import { expectNoAxeViolations } from "../../../test/axe";
 import type { VGateway } from "../../../types/vgateway";
 import VGatewayFormPage from "./VGatewayFormPage";
 
@@ -74,6 +75,12 @@ describe("VGatewayFormPage", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("has no automated accessibility violations in create mode", async () => {
+    const { container } = renderForm("/vgateways/new");
+
+    await expectNoAxeViolations(container);
   });
 
   it("creates a Modbus TCP gateway with defaults and normalized optional description", async () => {

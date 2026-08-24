@@ -14,6 +14,7 @@ import {
   validatePublisherPayload,
 } from "../../../services/publisher.service";
 import { listCredentials } from "../../../services/credential.service";
+import { expectNoAxeViolations } from "../../../test/axe";
 import type { PublisherRuntimeStatus, PublisherSourceCatalogEntry } from "../../../types/publisher";
 import MQTTPublisherWizardPage from "./MQTTPublisherWizardPage";
 
@@ -125,8 +126,8 @@ describe("MQTTPublisherWizardPage", () => {
 
   afterEach(() => cleanup());
 
-  it("separates host, port, TLS, and optional Credential Profile", async () => {
-    renderPage();
+  it("renders an accessible connection step with independent TLS and credentials", async () => {
+    const { container } = renderPage();
 
     expect(screen.getByRole("heading", { name: "MQTT Publisher" })).toBeInTheDocument();
     expect(screen.getByLabelText(/Broker host/)).toHaveValue("broker.example.com");
@@ -137,6 +138,23 @@ describe("MQTTPublisherWizardPage", () => {
     expect(screen.queryByLabelText(/^Username$/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Password$/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Test connection" })).not.toBeInTheDocument();
+    await expectNoAxeViolations(container);
+  });
+
+  it("moves focus to each newly displayed wizard step", async () => {
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    const sourceHeading = screen.getByRole("heading", { name: "Payload source aliases" });
+    await waitFor(() => expect(sourceHeading).toHaveFocus());
+
+    await addCatalogSource("Active power");
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    const payloadHeading = screen.getByRole("heading", { name: "Custom JSON payload" });
+    await waitFor(() => expect(payloadHeading).toHaveFocus());
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Payload source aliases" })).toHaveFocus());
   });
 
   it("requires acknowledgement when the operator selects plain MQTT", () => {

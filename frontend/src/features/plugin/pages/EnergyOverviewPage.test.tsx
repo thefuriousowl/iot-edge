@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDataLogger } from "../../../services/datalogger.service";
 import { getEnergyOverview, monitorEnergy } from "../../../services/energy.service";
 import { getPlugin } from "../../../services/plugin.service";
+import { expectNoAxeViolations } from "../../../test/axe";
 import type { DataLogger, DataLoggerTagReference } from "../../../types/datalogger";
 import type { EnergyLiveEvent, EnergyOverviewResponse, EnergyStreamContext, PluginInstance } from "../../../types/plugin";
 import { useTagLiveStore } from "../../tag/stores/tagLive.store";
@@ -97,14 +98,14 @@ describe("EnergyOverviewPage", () => {
     vi.useRealTimers();
   });
 
-  it("renders live demand, synchronized periods, dynamic tariff, and Logger Tags", async () => {
+  it("renders accessible live demand, synchronized periods, dynamic tariff, and Logger Tags", async () => {
     useTagLiveStore.getState().setConnectionState("live");
     useTagLiveStore.getState().ingest({ tag_id: "tag-hz", sequence: 1, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 49.98 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-temp-supply", sequence: 2, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 7.2 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-temp-return", sequence: 3, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 12.5 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-flow", sequence: 4, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 12.8 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-tariff", sequence: 5, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float64", value: 4.5 });
-    renderPage();
+    const { container } = renderPage();
 
     expect(await screen.findByRole("heading", { name: "Plant Energy" })).toBeInTheDocument();
     const liveRegion = screen.getByRole("region", { name: "Live operational metrics" });
@@ -119,11 +120,15 @@ describe("EnergyOverviewPage", () => {
     expect(screen.getByText("300.00 kWh")).toBeInTheDocument();
     expect(screen.getByText("6,300.00 kWh")).toBeInTheDocument();
     expect(screen.getByText("28,350.00 THB")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Hz" })).toHaveAttribute("href", "/tags/tag-hz");
+    const openTagLink = screen.getByRole("link", { name: "Open Hz" });
+    expect(openTagLink).toHaveAttribute("href", "/tags/tag-hz");
+    openTagLink.focus();
+    expect(openTagLink).toHaveFocus();
     expect(screen.getByText("49.98")).toBeInTheDocument();
     expect(screen.getByText("THB/kWh", { selector: "code" })).toBeInTheDocument();
     expect(screen.getByText("All available sources healthy")).toBeInTheDocument();
     expect(mockedMonitorEnergy).toHaveBeenCalledWith("plugin-1", expect.objectContaining({ lastEventId: null }));
+    await expectNoAxeViolations(container);
   });
 
   it("replaces persisted latest metrics with newer synchronized SSE batches", async () => {

@@ -2,7 +2,7 @@
 
 IoT Edge is an industrial edge-computing platform for collecting and managing data from field devices. It is designed to run on Raspberry Pi CM4/CM5-class hardware.
 
-> **Release v0.1 is under active development.** The backend authentication flow and responsive Login page are complete. Gateway, device, tag, acquisition, and plugin features are being built next.
+> **Release v0.1** includes Modbus TCP acquisition, Tags, Data Loggers, Reports, Energy Management, Credentials, and MQTT/HTTP Data Publishers.
 
 ## Stack
 
@@ -29,6 +29,10 @@ cd frontend && pnpm install && pnpm dev
 ```
 
 Update the copied environment files before starting the services. Local `.env` files are ignored by Git.
+
+## Production
+
+Production uses ARM64-capable multi-stage images, nginx, checksum-tracked PostgreSQL migrations, health-gated Compose startup, password recovery, and backup/restore utilities. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Tests
 

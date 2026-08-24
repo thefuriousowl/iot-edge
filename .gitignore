@@ -5,6 +5,7 @@
 .env.development
 .env.production
 .env.docker
+infra/production.env
 backend/.env
 frontend/.env
 
@@ -42,6 +43,7 @@ pgdata/
 # Logs
 *.log
 logs/
+infra/backups/
 
 # Test coverage
 coverage/

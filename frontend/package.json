@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:accessibility": "vitest run --testNamePattern='accessible|accessibility|focus|Escape|Tab navigation'",
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview"
   },
@@ -38,6 +39,7 @@
     "@vitejs/plugin-react": "^6.0.4",
     "@vitest/coverage-v8": "4.1.11",
     "autoprefixer": "^10.5.4",
+    "axe-core": "4.13.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",

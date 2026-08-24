@@ -107,6 +107,9 @@ jobs:
       - name: Run tests with coverage gate
         run: pnpm test:coverage
 
+      - name: Run accessibility acceptance
+        run: pnpm test:accessibility
+
       - name: Audit dependencies
         run: pnpm audit --audit-level high
 

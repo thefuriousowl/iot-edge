@@ -119,6 +119,8 @@ function MQTTPublisherWizardPage() {
   const secure = draft.mqtt.use_tls;
   const configurationLocked = Boolean(publisher?.enabled);
   const payloadTemplateRef = useRef<HTMLTextAreaElement>(null);
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousStepRef = useRef(step);
   const preview = useMemo(() => {
     try {
       return { result: previewPayloadTemplate(draft.mqtt.publish.payload_template, draft.sources, fixture), error: "" };
@@ -127,6 +129,13 @@ function MQTTPublisherWizardPage() {
     }
   }, [draft.mqtt.publish.payload_template, draft.sources, fixture]);
   const configJSON = useMemo(() => JSON.stringify(exportMQTTPublisherConfig(draft), null, 2), [draft]);
+
+  useEffect(() => {
+    if (previousStepRef.current !== step) {
+      stepHeadingRef.current?.focus();
+      previousStepRef.current = step;
+    }
+  }, [step]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -400,13 +409,13 @@ function MQTTPublisherWizardPage() {
         {detailState === "loading" && <div className="mqtt-loading" role="status"><RefreshCw className="is-spinning" size={18} />Loading MQTT Publisher…</div>}
 
         <ol className="mqtt-steps" aria-label="MQTT setup progress">
-          {steps.map((label, index) => <li key={label} className={index === step ? "is-current" : index < step ? "is-complete" : ""}><span>{index < step ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></li>)}
+          {steps.map((label, index) => <li key={label} aria-current={index === step ? "step" : undefined} className={index === step ? "is-current" : index < step ? "is-complete" : ""}><span>{index < step ? <Check aria-hidden="true" size={15} /> : index + 1}</span><strong>{label}</strong></li>)}
         </ol>
 
         <form className="mqtt-wizard-form" onSubmit={submit}>
           <fieldset className="mqtt-config-fieldset" disabled={configurationLocked || detailState !== "ready"}>
           {step === 0 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Radio /><div><h2>Broker connection</h2><p>Host, port, and TLS are configured independently. Authentication is optional and comes from a reusable Core Credential Profile.</p></div></div>
+            <div className="mqtt-panel-heading"><Radio /><div><h2 ref={stepHeadingRef} tabIndex={-1}>Broker connection</h2><p>Host, port, and TLS are configured independently. Authentication is optional and comes from a reusable Core Credential Profile.</p></div></div>
             <div className="mqtt-form-grid">
               <label><span>Publisher name</span><input autoFocus value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
               <label><span>Broker host</span><input aria-describedby="mqtt-broker-help" spellCheck={false} value={draft.mqtt.broker_host} onChange={(event) => updateMQTT("broker_host", event.target.value)} /><small id="mqtt-broker-help">Example: mqtt.example.com</small></label>
@@ -422,20 +431,20 @@ function MQTTPublisherWizardPage() {
           </section>}
 
           {step === 1 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Radio /><div><h2>Payload source aliases</h2><p>Select immutable Core Tags or typed Plugin outputs. Every asynchronous source keeps its own observation or period provenance.</p></div></div>
+            <div className="mqtt-panel-heading"><Radio /><div><h2 ref={stepHeadingRef} tabIndex={-1}>Payload source aliases</h2><p>Select immutable Core Tags or typed Plugin outputs. Every asynchronous source keeps its own observation or period provenance.</p></div></div>
             <PublisherSourceSelector catalog={catalog} catalogState={catalogState} search={catalogSearch} kind={catalogKind} sources={draft.sources} onSearchChange={(value) => { setCatalogState("loading"); setCatalogSearch(value); }} onKindChange={(value) => { setCatalogState("loading"); setCatalogKind(value); }} onAdd={addCatalogSource} onUpdate={updateSource} onRemove={removeSource} />
             <PublisherTriggerSetup trigger={draft.trigger} sources={draft.sources} onChange={(trigger) => setDraft((current) => ({ ...current, trigger }))} />
           </section>}
 
           {step === 2 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Braces /><div><h2>Custom JSON payload</h2><p>Write the complete payload template yourself. The syntax palette only inserts helpers at the editor cursor and never replaces your JSON.</p></div></div>
+            <div className="mqtt-panel-heading"><Braces /><div><h2 ref={stepHeadingRef} tabIndex={-1}>Custom JSON payload</h2><p>Write the complete payload template yourself. The syntax palette only inserts helpers at the editor cursor and never replaces your JSON.</p></div></div>
             <div className="mqtt-publish-grid"><label><span>Publish topic</span><input spellCheck={false} value={draft.mqtt.publish.topic} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, topic: event.target.value })} /></label><label><span>QoS</span><select value={draft.mqtt.publish.qos} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, qos: Number(event.target.value) as 0 | 1 })}><option value={0}>0 · At most once</option><option value={1}>1 · At least once</option></select></label><label className="mqtt-inline-check"><input type="checkbox" checked={draft.mqtt.publish.retain} onChange={(event) => updateMQTT("publish", { ...draft.mqtt.publish, retain: event.target.checked })} /><span><strong>Retain latest payload</strong><small>Broker stores the last message for new subscribers.</small></span></label></div>
 
             <PublisherTemplateEditor editorRef={payloadTemplateRef} editorID="mqtt-payload-template" editorLabel="Advanced payload template" template={draft.mqtt.publish.payload_template} sources={draft.sources} fixture={fixture} preview={preview} validation={serverValidation} onTemplateChange={(payloadTemplate) => { updateMQTT("publish", { ...draft.mqtt.publish, payload_template: payloadTemplate }); setServerValidation(null); }} onFixtureChange={setFixture} onInsert={insertPayloadSyntax} onValidate={() => void validateOnServer()} />
           </section>}
 
           {step === 3 && <section className="mqtt-panel">
-            <div className="mqtt-panel-heading"><Waypoints /><div><h2>Diagnostics and review</h2><p>Subscribe to arbitrary broker response topics. Messages remain generic JSON, text, or base64 binary—no ACK/Error field schema is assumed.</p></div></div>
+            <div className="mqtt-panel-heading"><Waypoints /><div><h2 ref={stepHeadingRef} tabIndex={-1}>Diagnostics and review</h2><p>Subscribe to arbitrary broker response topics. Messages remain generic JSON, text, or base64 binary—no ACK/Error field schema is assumed.</p></div></div>
             <div className="mqtt-diagnostic-list">{draft.mqtt.diagnostics.map((diagnostic) => <div className="mqtt-diagnostic-row" key={diagnostic.id}><label><span>Label</span><input aria-label={`Diagnostic label ${diagnostic.id}`} spellCheck={false} value={diagnostic.label} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { label: event.target.value }))} /></label><label><span>Topic filter</span><input aria-label={`Topic filter for ${diagnostic.label}`} spellCheck={false} value={diagnostic.topic_filter} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { topic_filter: event.target.value }))} /></label><label><span>QoS</span><select aria-label={`QoS for ${diagnostic.label}`} value={diagnostic.qos} onChange={(event) => updateMQTT("diagnostics", updateAt(draft.mqtt.diagnostics, diagnostic.id, { qos: Number(event.target.value) as 0 | 1 }))}><option value={0}>0</option><option value={1}>1</option></select></label><button type="button" aria-label={`Remove diagnostic ${diagnostic.label}`} onClick={() => updateMQTT("diagnostics", draft.mqtt.diagnostics.filter((candidate) => candidate.id !== diagnostic.id))}><Trash2 size={17} /></button></div>)}</div><button className="mqtt-add-button" type="button" disabled={draft.mqtt.diagnostics.length >= 16} onClick={() => updateMQTT("diagnostics", [...draft.mqtt.diagnostics, { id: crypto.randomUUID(), label: `diagnostic_${draft.mqtt.diagnostics.length + 1}`, topic_filter: "site/edge/#", qos: 1 }])}><Plus size={17} /> Add diagnostic subscription</button>
 
             <details className="mqtt-advanced"><summary>Transport limits and reconnect policy</summary><div className="mqtt-form-grid"><label><span>Keep alive (ms)</span><input type="number" min="10000" max="3600000" value={draft.mqtt.keep_alive_ms} onChange={(event) => updateMQTT("keep_alive_ms", Number(event.target.value))} /></label><label><span>Connect timeout (ms)</span><input type="number" min="1000" max="120000" value={draft.mqtt.connect_timeout_ms} onChange={(event) => updateMQTT("connect_timeout_ms", Number(event.target.value))} /></label><label><span>Publish timeout (ms)</span><input type="number" min="1000" max="120000" value={draft.mqtt.publish_timeout_ms} onChange={(event) => updateMQTT("publish_timeout_ms", Number(event.target.value))} /></label><label><span>Reconnect minimum (ms)</span><input type="number" min="100" max="60000" value={draft.mqtt.reconnect_min_ms} onChange={(event) => updateMQTT("reconnect_min_ms", Number(event.target.value))} /></label><label><span>Reconnect maximum (ms)</span><input type="number" min={draft.mqtt.reconnect_min_ms} max="300000" value={draft.mqtt.reconnect_max_ms} onChange={(event) => updateMQTT("reconnect_max_ms", Number(event.target.value))} /></label><label><span>Offline queue capacity</span><input type="number" min="1" max="10000" value={draft.mqtt.queue_capacity} onChange={(event) => updateMQTT("queue_capacity", Number(event.target.value))} /></label><label><span>Diagnostic history</span><input type="number" min="1" max="1000" value={draft.mqtt.diagnostic_history_depth} onChange={(event) => updateMQTT("diagnostic_history_depth", Number(event.target.value))} /></label></div></details>

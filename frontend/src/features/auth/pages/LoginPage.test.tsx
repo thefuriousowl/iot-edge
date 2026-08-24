@@ -15,6 +15,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { APP_VERSION } from "../../../config/app";
 import { getMe, login } from "../../../services/auth.service";
 import { useAuthStore } from "../../../stores/auth.store";
+import { expectNoAxeViolations } from "../../../test/axe";
 import LoginPage from "./LoginPage";
 
 vi.mock("../../../services/auth.service", () => ({
@@ -48,8 +49,8 @@ describe("LoginPage", () => {
     cleanup();
   });
 
-  it("renders the required login controls", () => {
-    renderLoginPage();
+  it("renders accessible required login controls", async () => {
+    const { container } = renderLoginPage();
 
     expect(
       screen.getByRole("heading", { name: "Welcome back" }),
@@ -64,6 +65,7 @@ describe("LoginPage", () => {
       "current-password",
     );
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    await expectNoAxeViolations(container);
   });
 
   it.each([
@@ -89,10 +91,13 @@ describe("LoginPage", () => {
   it("toggles password visibility", () => {
     renderLoginPage();
     const password = screen.getByLabelText("Password");
+    const toggle = screen.getByRole("button", { name: "Show password" });
 
     expect(password).toHaveAttribute("type", "password");
+    toggle.focus();
+    expect(toggle).toHaveFocus();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    fireEvent.click(toggle);
 
     expect(password).toHaveAttribute("type", "text");
     expect(

@@ -12,6 +12,7 @@ import {
   listDataLoggers,
   previewDataLoggerRetention,
 } from "../../../services/datalogger.service";
+import { expectNoAxeViolations } from "../../../test/axe";
 import type { DataLogger, DataManagementOverview, RetentionCleanupResult, RetentionPlan, RetentionStatus } from "../../../types/datalogger";
 import DataManagementSettingsPage from "./DataManagementSettingsPage";
 
@@ -70,8 +71,8 @@ describe("DataManagementSettingsPage", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows overview, separate physical allocation, and selected Logger retention", async () => {
-    renderPage();
+  it("shows an accessible overview, physical allocation, and selected Logger retention", async () => {
+    const { container } = renderPage();
 
     expect(screen.getByRole("status")).toHaveTextContent("Loading storage workspace");
     expect(await screen.findByText("2 Data Loggers")).toBeInTheDocument();
@@ -83,6 +84,7 @@ describe("DataManagementSettingsPage", () => {
     expect(screen.getByRole("link", { name: /Edit policy/ })).toHaveAttribute("href", "/data-loggers/logger-1/edit");
     expect(screen.getByRole("link", { name: /Query history/ })).toHaveAttribute("href", "/data-loggers/logger-1/query");
     expect(screen.getByRole("link", { name: /Data Management/ })).toHaveClass("active");
+    await expectNoAxeViolations(container);
   });
 
   it("loads every Logger page and switches the scoped status", async () => {
@@ -122,13 +124,17 @@ describe("DataManagementSettingsPage", () => {
     expect(screen.getByRole("button", { name: "Review cleanup" })).toBeEnabled();
   });
 
-  it("requires valid limits and explicit acknowledgment before cleanup", async () => {
-    renderPage();
+  it("requires an accessible confirmation, valid limits, and explicit acknowledgment before cleanup", async () => {
+    const { container } = renderPage();
     await screen.findByText("Eligible for removal");
-    fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
+    const reviewButton = screen.getByRole("button", { name: "Review cleanup" });
+    reviewButton.focus();
+    fireEvent.click(reviewButton);
 
     const deleteButton = screen.getByRole("button", { name: "Delete eligible batches" });
     expect(screen.getByRole("dialog")).toHaveTextContent("cannot be undone");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await expectNoAxeViolations(container);
     expect(deleteButton).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Maximum batches this run"), { target: { value: "10001" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /permanently deletes/ }));
@@ -138,6 +144,34 @@ describe("DataManagementSettingsPage", () => {
 
     await waitFor(() => expect(mockedCleanup).toHaveBeenCalledWith("logger-1", { confirm: true, batch_limit: 250 }));
     await waitFor(() => expect(screen.getByText((_, element) => element?.classList.contains("settings-operation-success") === true && element.textContent === "Cleanup removed 5 batches and 25 rows.")).toBeInTheDocument());
+  });
+
+  it("closes cleanup with Escape and returns focus to its trigger", async () => {
+    renderPage();
+    await screen.findByText("Eligible for removal");
+    const reviewButton = screen.getByRole("button", { name: "Review cleanup" });
+    reviewButton.focus();
+    fireEvent.click(reviewButton);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(reviewButton).toHaveFocus());
+  });
+
+  it("keeps Tab navigation inside the cleanup dialog", async () => {
+    renderPage();
+    await screen.findByText("Eligible for removal");
+    fireEvent.click(screen.getByRole("button", { name: "Review cleanup" }));
+
+    const cancelButton = screen.getByRole("button", { name: "Cancel" });
+    const limitInput = screen.getByLabelText("Maximum batches this run");
+    await waitFor(() => expect(cancelButton).toHaveFocus());
+    fireEvent.keyDown(cancelButton, { key: "Tab" });
+    expect(limitInput).toHaveFocus();
+    fireEvent.keyDown(limitInput, { key: "Tab", shiftKey: true });
+    expect(cancelButton).toHaveFocus();
   });
 
   it("uses singular labels for one retained batch and cleanup row", async () => {

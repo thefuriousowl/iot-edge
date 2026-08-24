@@ -14,7 +14,7 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -103,6 +103,29 @@ function DataManagementSettingsPage() {
   const [cleanupError, setCleanupError] = useState("");
   const [cleanupResult, setCleanupResult] = useState<RetentionCleanupResult | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const cleanupTriggerRef = useRef<HTMLButtonElement>(null);
+  const cleanupCancelRef = useRef<HTMLButtonElement>(null);
+  const cleanupDialogRef = useRef<HTMLElement>(null);
+  const restoreCleanupFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (cleanupOpen) {
+      cleanupCancelRef.current?.focus();
+      const closeOnEscape = (event: KeyboardEvent) => {
+        if (event.key === "Escape" && !cleaning) {
+          setCleanupOpen(false);
+          setCleanupAcknowledged(false);
+        }
+      };
+      document.addEventListener("keydown", closeOnEscape);
+      return () => document.removeEventListener("keydown", closeOnEscape);
+    }
+
+    if (restoreCleanupFocusRef.current) {
+      cleanupTriggerRef.current?.focus();
+      restoreCleanupFocusRef.current = false;
+    }
+  }, [cleanupOpen, cleaning]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -183,6 +206,23 @@ function DataManagementSettingsPage() {
     }
   }
 
+  function trapCleanupFocus(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== "Tab") return;
+    const focusable = cleanupDialogRef.current?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusable || focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <SettingsWorkspace section="Data Management">
       <section className="settings-section-heading">
@@ -221,11 +261,11 @@ function DataManagementSettingsPage() {
             <div className="settings-retention-note"><SearchCheck /><span><strong>{preview ? "Fresh preview" : "Current retention plan"}</strong><small>Evaluated {formatDateTime(plan.evaluated_at)}{plan.cutoff_at ? ` · age cutoff ${formatDateTime(plan.cutoff_at)}` : " · no age cutoff"}</small></span></div>
             {status?.last_run && <div className={`settings-last-run ${status.last_run.error ? "is-error" : ""}`}>{status.last_run.error ? <CircleAlert /> : <CheckCircle2 />}<span><strong>{status.last_run.error ? "Latest cleanup failed" : "Latest cleanup completed"}</strong><small>{formatDateTime(status.last_run.completed_at)}{status.last_run.result ? ` · ${countLabel(status.last_run.result.deleted.batch_count, "batch", "batches")} removed` : ""}</small>{status.last_run.error && <small>{status.last_run.error}</small>}</span></div>}
             {previewError && <div className="settings-operation-error" role="alert"><CircleAlert />{previewError}</div>}
-            <footer className="settings-retention-actions"><button type="button" disabled={previewing} onClick={() => void runPreview()}>{previewing ? <LoaderCircle className="is-spinning" /> : <SearchCheck />}Preview now</button><button className="is-danger" type="button" disabled={plan.remove.batch_count === 0} onClick={() => { setCleanupError(""); setCleanupOpen(true); }}><Trash2 />Review cleanup</button></footer>
+            <footer className="settings-retention-actions"><button type="button" disabled={previewing} onClick={() => void runPreview()}>{previewing ? <LoaderCircle className="is-spinning" /> : <SearchCheck />}Preview now</button><button ref={cleanupTriggerRef} className="is-danger" type="button" disabled={plan.remove.batch_count === 0} onClick={() => { restoreCleanupFocusRef.current = true; setCleanupError(""); setCleanupOpen(true); }}><Trash2 />Review cleanup</button></footer>
           </>}
         </section>
 
-        {cleanupOpen && selectedLogger && plan && <div className="settings-cleanup-backdrop" role="presentation"><section className="settings-cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><header><Trash2 /><div><p>Permanent history removal</p><h3 id="cleanup-title">Clean up {selectedLogger.name}?</h3></div></header><p>This run can delete up to the selected number of complete batches. It never splits a synchronized batch and cannot be undone.</p><div className="settings-cleanup-impact"><span><strong>{plan.remove.batch_count.toLocaleString()}</strong> eligible batches</span><span><strong>{plan.remove.row_count.toLocaleString()}</strong> eligible rows</span><span><strong>{formatStorageBytes(plan.remove.estimated_size_bytes)}</strong> logical estimate</span></div><div className="settings-batch-limit"><label htmlFor="retention-batch-limit">Maximum batches this run</label><input id="retention-batch-limit" type="number" min="1" max="10000" value={batchLimit} aria-invalid={!validBatchLimit} onChange={(event) => setBatchLimit(event.target.value)} /><small>1–10,000 batches. More eligible batches may remain afterward.</small></div><label className="settings-cleanup-confirm"><input type="checkbox" checked={cleanupAcknowledged} onChange={(event) => setCleanupAcknowledged(event.target.checked)} /><span>I understand this permanently deletes eligible Logger history.</span></label>{cleanupError && <div className="settings-operation-error" role="alert"><CircleAlert />{cleanupError}</div>}<footer><button type="button" disabled={cleaning} onClick={() => { setCleanupOpen(false); setCleanupAcknowledged(false); }}>Cancel</button><button className="is-danger" type="button" disabled={!cleanupAcknowledged || !validBatchLimit || cleaning} onClick={() => void runCleanup()}>{cleaning ? <LoaderCircle className="is-spinning" /> : <Trash2 />}{cleaning ? "Cleaning up…" : "Delete eligible batches"}</button></footer></section></div>}
+        {cleanupOpen && selectedLogger && plan && <div className="settings-cleanup-backdrop" role="presentation"><section ref={cleanupDialogRef} className="settings-cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title" aria-describedby="cleanup-description" onKeyDown={trapCleanupFocus}><header><Trash2 /><div><p>Permanent history removal</p><h3 id="cleanup-title">Clean up {selectedLogger.name}?</h3></div></header><p id="cleanup-description">This run can delete up to the selected number of complete batches. It never splits a synchronized batch and cannot be undone.</p><div className="settings-cleanup-impact"><span><strong>{plan.remove.batch_count.toLocaleString()}</strong> eligible batches</span><span><strong>{plan.remove.row_count.toLocaleString()}</strong> eligible rows</span><span><strong>{formatStorageBytes(plan.remove.estimated_size_bytes)}</strong> logical estimate</span></div><div className="settings-batch-limit"><label htmlFor="retention-batch-limit">Maximum batches this run</label><input id="retention-batch-limit" type="number" min="1" max="10000" value={batchLimit} aria-invalid={!validBatchLimit} onChange={(event) => setBatchLimit(event.target.value)} /><small>1–10,000 batches. More eligible batches may remain afterward.</small></div><label className="settings-cleanup-confirm"><input type="checkbox" checked={cleanupAcknowledged} onChange={(event) => setCleanupAcknowledged(event.target.checked)} /><span>I understand this permanently deletes eligible Logger history.</span></label>{cleanupError && <div className="settings-operation-error" role="alert"><CircleAlert />{cleanupError}</div>}<footer><button ref={cleanupCancelRef} type="button" disabled={cleaning} onClick={() => { setCleanupOpen(false); setCleanupAcknowledged(false); }}>Cancel</button><button className="is-danger" type="button" disabled={!cleanupAcknowledged || !validBatchLimit || cleaning} onClick={() => void runCleanup()}>{cleaning ? <LoaderCircle className="is-spinning" /> : <Trash2 />}{cleaning ? "Cleaning up…" : "Delete eligible batches"}</button></footer></section></div>}
       </>}
 
       <div className="settings-scope-grid">

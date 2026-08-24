@@ -1,0 +1,104 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    network_mode: host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=${POSTGRES_PORT:-5432}"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p $${POSTGRES_PORT} -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
+    build:
+      context: ../backend
+    network_mode: host
+    entrypoint: ["/usr/local/bin/iot-edge-migrate"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
+    build:
+      context: ../backend
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PORT: ${IOT_EDGE_BACKEND_PORT:-8080}
+      ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-168h}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      INTERNET_CHECK_ADDRESS: ${INTERNET_CHECK_ADDRESS:-1.1.1.1:443}
+      INTERNET_CHECK_TIMEOUT: ${INTERNET_CHECK_TIMEOUT:-2s}
+      PUBLISHER_MASTER_KEY_ID: ${PUBLISHER_MASTER_KEY_ID:-}
+      PUBLISHER_MASTER_KEY_BASE64: ${PUBLISHER_MASTER_KEY_BASE64:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${PORT}/api/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+
+  password-reset:
+    profiles: ["tools"]
+    image: ${IOT_EDGE_BACKEND_IMAGE:-iot-edge-backend}:${IOT_EDGE_VERSION:-0.1.0}
+    build:
+      context: ../backend
+    network_mode: host
+    entrypoint: ["/usr/local/bin/iot-edge-reset-password"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-168h}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    image: ${IOT_EDGE_FRONTEND_IMAGE:-iot-edge-frontend}:${IOT_EDGE_VERSION:-0.1.0}
+    build:
+      context: ../frontend
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      IOT_EDGE_HTTP_PORT: ${IOT_EDGE_HTTP_PORT:-80}
+      IOT_EDGE_BACKEND_PORT: ${IOT_EDGE_BACKEND_PORT:-8080}
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres_data:
