@@ -38,6 +38,7 @@ import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
 import AccountSettingsPage from "./features/settings/pages/AccountSettingsPage";
 import DataManagementSettingsPage from "./features/settings/pages/DataManagementSettingsPage";
 import AssetExplorerPage from "./features/asset/pages/AssetExplorerPage";
+import UtilityMappingPage from "./features/utility/pages/UtilityMappingPage";
 
 const EnergyHistoryPage = lazy(() => import("./features/plugin/pages/EnergyHistoryPage"));
 
@@ -177,6 +178,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/utilities/new" element={<ProtectedRoute><UtilityMappingPage /></ProtectedRoute>} />
         <Route
           path="/plugins/new/energy"
           element={

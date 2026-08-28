@@ -6,28 +6,17 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { getDataLogger, listDataLoggers } from "../../../services/datalogger.service";
 import { createPlugin, getPlugin, updatePlugin } from "../../../services/plugin.service";
 import type { DataLogger, DataLoggerTagReference } from "../../../types/datalogger";
-import type { EnergyConfig, EnergyPowerTag, EnergyPowerUnit, PluginInstance } from "../../../types/plugin";
+import type { EnergyPowerTag, EnergyPowerUnit } from "../../../types/plugin";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import { isValidTimezone } from "../../datalogger/utils/schedule";
+import { energyConfigFromForm, energyFormFromPlugin, type EnergyConfigurationForm } from "../utils/energyConfiguration";
 import "./EnergyWizardPage.css";
 
 const steps = ["Source", "Power Tags", "Tariff", "Review"];
 const powerUnits: EnergyPowerUnit[] = ["W", "kW", "MW"];
 const numericTypes = new Set(["int16", "uint16", "int32", "uint32", "float32", "float64"]);
 
-interface EnergyForm {
-  name: string;
-  enabled: boolean;
-  loggerID: string;
-  electrical: EnergyPowerTag[];
-  thermal: EnergyPowerTag[];
-  timezone: string;
-  maxGapSeconds: number;
-  currency: string;
-  tariffMode: "flat" | "tag";
-  ratePerKWh: number;
-  tariffTagID: string;
-}
+type EnergyForm = EnergyConfigurationForm;
 
 function initialForm(): EnergyForm {
   return {
@@ -42,23 +31,6 @@ function initialForm(): EnergyForm {
     tariffMode: "flat",
     ratePerKWh: 4,
     tariffTagID: "",
-  };
-}
-
-function formFromPlugin(instance: PluginInstance): EnergyForm {
-  const config = instance.config as EnergyConfig;
-  return {
-    name: instance.name,
-    enabled: instance.enabled,
-    loggerID: config.logger_id,
-    electrical: config.electrical_power_tags.map((mapping) => ({ ...mapping })),
-    thermal: (config.thermal_power_tags ?? []).map((mapping) => ({ ...mapping })),
-    timezone: config.timezone,
-    maxGapSeconds: config.max_gap_seconds,
-    currency: config.tariff.currency,
-    tariffMode: config.tariff.mode === "tag" ? "tag" : "flat",
-    ratePerKWh: config.tariff.mode === "tag" ? 0 : config.tariff.rate_per_kwh,
-    tariffTagID: config.tariff.mode === "tag" ? config.tariff.tag_id : "",
   };
 }
 
@@ -102,7 +74,7 @@ function EnergyWizardPage() {
       setLoggers(availableLoggers);
       if (instance) {
         setLoggerLoading(true);
-        setForm(formFromPlugin(instance));
+        setForm(energyFormFromPlugin(instance));
       }
       setLoadState("ready");
     }).catch((error: unknown) => {
@@ -194,14 +166,7 @@ function EnergyWizardPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (step !== 3) return;
-    const config: EnergyConfig = {
-      logger_id: form.loggerID,
-      electrical_power_tags: form.electrical,
-      ...(form.thermal.length > 0 ? { thermal_power_tags: form.thermal } : {}),
-      timezone: form.timezone,
-      max_gap_seconds: form.maxGapSeconds,
-      tariff: form.tariffMode === "tag" ? { mode: "tag", currency: form.currency, tag_id: form.tariffTagID } : { mode: "flat", currency: form.currency, rate_per_kwh: form.ratePerKWh },
-    };
+    const config = energyConfigFromForm(form);
     setSubmitting(true);
     setMessage("");
     try {
