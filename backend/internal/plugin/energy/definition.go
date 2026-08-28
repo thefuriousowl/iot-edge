@@ -63,7 +63,7 @@ func (*Definition) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Type: PluginType, Name: "Energy Management",
 		Description: "Calculate electrical and thermal energy, cost, and COP from synchronized Data Logger batches",
-		Version:     "0.1.1", ConfigVersion: 1, MultipleInstances: true,
+		Version:     "0.1.1", ConfigVersion: ConfigVersionV1, MultipleInstances: true,
 		Capabilities: []plugin.Capability{
 			plugin.CapabilityLoggerCommittedBatches,
 			plugin.CapabilityLoggerHistoryBatches,
@@ -77,7 +77,7 @@ func (definition *Definition) ValidateConfig(ctx context.Context, raw plugin.Con
 	if ctx == nil {
 		return plugin.ErrConfigValidationUnavailable
 	}
-	config, err := DecodeConfig(raw)
+	config, err := DecodeCompatibleConfig(ConfigVersionV1, raw)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (definition *Definition) ValidateConfig(ctx context.Context, raw plugin.Con
 }
 
 func (definition *Definition) NewRuntime(spec plugin.RuntimeSpec, host plugin.Host) (plugin.Runtime, error) {
-	config, err := DecodeConfig(spec.Config)
+	config, err := DecodeCompatibleConfig(ConfigVersionV1, spec.Config)
 	if err != nil {
 		return nil, err
 	}

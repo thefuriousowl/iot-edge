@@ -43,30 +43,30 @@ func outputDescriptors() []plugin.OutputDescriptor {
 		instantaneousOutput(OutputElectricalDemandKW, "Electrical demand", "Total synchronized electrical input demand", "kW"),
 		instantaneousOutput(OutputThermalOutputKW, "Thermal output", "Total synchronized thermal output", "kW"),
 		instantaneousOutput(OutputInstantaneousCOP, "Instantaneous COP", "Thermal output divided by electrical input", ""),
-		{Key: OutputTariffRate, Name: "Tariff rate", Description: "Synchronized flat or Tag tariff rate", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodInstantaneous},
+		{Key: OutputTariffRate, Name: "Tariff rate", Description: "Synchronized flat or Tag tariff rate", SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodInstantaneous},
 		windowedOutput(OutputTodayElectricalEnergyKWh, "Today electrical energy", "Integrated electrical input since local day start", "kWh"),
 		windowedOutput(OutputTodayThermalEnergyKWh, "Today thermal energy", "Integrated thermal output since local day start", "kWh"),
 		windowedOutput(OutputTodayCOP, "Today COP", "Covered thermal energy divided by covered electrical energy since local day start", ""),
-		{Key: OutputTodayEstimatedCost, Name: "Today estimated cost", Description: "Fail-closed estimated electrical cost since local day start", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
-		{Key: OutputTodayCoveredCost, Name: "Today covered estimated cost", Description: "Estimated electrical cost for covered local-day duration with explicit partial quality", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputTodayEstimatedCost, Name: "Today estimated cost", Description: "Fail-closed estimated electrical cost since local day start", SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputTodayCoveredCost, Name: "Today covered estimated cost", Description: "Estimated electrical cost for covered local-day duration with explicit partial quality", SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
 		windowedOutput(OutputTodayElectricalCoverage, "Today electrical coverage", "Covered electrical duration as a percentage of the local-day period", "%"),
 		windowedOutput(OutputTodayThermalCoverage, "Today thermal coverage", "Covered thermal duration as a percentage of the local-day period", "%"),
 		windowedOutput(OutputMonthElectricalEnergyKWh, "Month electrical energy", "Integrated electrical input since local month start", "kWh"),
 		windowedOutput(OutputMonthThermalEnergyKWh, "Month thermal energy", "Integrated thermal output since local month start", "kWh"),
 		windowedOutput(OutputMonthCOP, "Month COP", "Covered thermal energy divided by covered electrical energy since local month start", ""),
-		{Key: OutputMonthEstimatedCost, Name: "Month estimated cost", Description: "Fail-closed estimated electrical cost since local month start", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
-		{Key: OutputMonthCoveredCost, Name: "Month covered estimated cost", Description: "Estimated electrical cost for covered local-month duration with explicit partial quality", SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputMonthEstimatedCost, Name: "Month estimated cost", Description: "Fail-closed estimated electrical cost since local month start", SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
+		{Key: OutputMonthCoveredCost, Name: "Month covered estimated cost", Description: "Estimated electrical cost for covered local-month duration with explicit partial quality", SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, DynamicUnit: true, PeriodKind: plugin.OutputPeriodWindowed},
 		windowedOutput(OutputMonthElectricalCoverage, "Month electrical coverage", "Covered electrical duration as a percentage of the local-month period", "%"),
 		windowedOutput(OutputMonthThermalCoverage, "Month thermal coverage", "Covered thermal duration as a percentage of the local-month period", "%"),
 	}
 }
 
 func instantaneousOutput(key plugin.OutputKey, name, description, unit string) plugin.OutputDescriptor {
-	return plugin.OutputDescriptor{Key: key, Name: name, Description: description, SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, Unit: unit, PeriodKind: plugin.OutputPeriodInstantaneous}
+	return plugin.OutputDescriptor{Key: key, Name: name, Description: description, SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, Unit: unit, PeriodKind: plugin.OutputPeriodInstantaneous}
 }
 
 func windowedOutput(key plugin.OutputKey, name, description, unit string) plugin.OutputDescriptor {
-	return plugin.OutputDescriptor{Key: key, Name: name, Description: description, SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, Unit: unit, PeriodKind: plugin.OutputPeriodWindowed}
+	return plugin.OutputDescriptor{Key: key, Name: name, Description: description, SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, Unit: unit, PeriodKind: plugin.OutputPeriodWindowed}
 }
 
 type outputBuilder struct {
@@ -406,7 +406,7 @@ func badOutputValue(key plugin.OutputKey, unit, message string, observedAt, from
 
 func baseOutputValue(key plugin.OutputKey, unit string, observedAt, from, to time.Time, attributes map[string]string) plugin.OutputValue {
 	return plugin.OutputValue{
-		Key: key, SchemaVersion: 1, DataType: plugin.OutputDataTypeFloat64, Unit: unit,
+		Key: key, SchemaVersion: OutputSchemaVersionV1, DataType: plugin.OutputDataTypeFloat64, Unit: unit,
 		ObservedAt: observedAt.UTC(), PeriodStart: from.UTC(), PeriodEnd: to.UTC(),
 		Attributes: cloneStringMap(attributes),
 	}

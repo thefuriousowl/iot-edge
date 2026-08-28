@@ -54,3 +54,5 @@ func (kind Kind) Valid() bool {
 		return false
 	}
 }
+
+func (kind Kind) IsValid() bool { return kind.Valid() }

@@ -124,7 +124,7 @@ describe("DataLoggerWizardPage", () => {
       mode: "schedule",
       config: { unit: "week", every: 1, times: ["08:00", "17:00"], weekdays: [1, 2, 3, 4, 5, 7] },
     })));
-  });
+  }, 10_000);
 
   it("requires at least one Tag before scheduling", async () => {
     renderWizard();

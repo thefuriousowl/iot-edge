@@ -175,7 +175,10 @@ func TestServiceRecordsFailedGatewayRequest(t *testing.T) {
 		t.Fatalf("PreviewDatasource() error = %v", err)
 	}
 	recorded := <-recorder.requests
-	if recorded.gatewayID != repository.gateway.ID || recorded.err != driverError || recorded.bytesReceived != 0 || recorded.latency <= 0 || recorded.observedAt.IsZero() {
+	// Windows clocks may report zero elapsed time for an in-memory failure that
+	// completes within one clock tick. Zero remains a valid measured latency;
+	// only a negative duration would violate the recorder contract.
+	if recorded.gatewayID != repository.gateway.ID || recorded.err != driverError || recorded.bytesReceived != 0 || recorded.latency < 0 || recorded.observedAt.IsZero() {
 		t.Fatalf("failed request = %#v", recorded)
 	}
 }

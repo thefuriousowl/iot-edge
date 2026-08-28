@@ -12,6 +12,12 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 
+	"github.com/thefuriousowl/iot-edge/internal/asset"
+	assetconnectivity "github.com/thefuriousowl/iot-edge/internal/asset/connectivity"
+	assethttp "github.com/thefuriousowl/iot-edge/internal/asset/http"
+	assetlive "github.com/thefuriousowl/iot-edge/internal/asset/live"
+	assetpostgres "github.com/thefuriousowl/iot-edge/internal/asset/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/asset/sourcecatalog"
 	"github.com/thefuriousowl/iot-edge/internal/auth"
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
@@ -212,6 +218,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize Plugin service: %v", err)
 	}
+	assetSources, err := sourcecatalog.New(tagRepository, pluginService)
+	if err != nil {
+		log.Fatalf("failed to initialize Asset source catalog: %v", err)
+	}
+	assetRepository := assetpostgres.NewRepository(db)
+	assetService, err := asset.NewService(assetRepository, assetSources)
+	if err != nil {
+		log.Fatalf("failed to initialize Asset service: %v", err)
+	}
 	pluginOutputBroker, err := plugin.NewOutputBroker()
 	if err != nil {
 		log.Fatalf("failed to initialize Plugin output broker: %v", err)
@@ -239,6 +254,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize Data Publisher sources: %v", err)
 	}
+	assetLiveSources, err := assetlive.NewReader(publisherSources, tagValues)
+	if err != nil {
+		log.Fatalf("failed to initialize Asset live sources: %v", err)
+	}
+	assetMeasurements, err := asset.NewMeasurementProjector(assetRepository, assetLiveSources)
+	if err != nil {
+		log.Fatalf("failed to initialize Asset measurement projection: %v", err)
+	}
+	assetConnectivity, err := assetconnectivity.NewResolver(assetRepository, tagService, deviceService, vgatewayService)
+	if err != nil {
+		log.Fatalf("failed to initialize Asset connectivity projection: %v", err)
+	}
+	assetHandler := assethttp.NewHandler(assetService, assethttp.WithMeasurements(assetMeasurements), assethttp.WithConnectivity(assetConnectivity))
 	publisherDefinitions, err := publisher.NewDefaultDefinitionRegistry()
 	if err != nil {
 		log.Fatalf("failed to initialize Data Publisher definitions: %v", err)
@@ -398,6 +426,7 @@ func main() {
 	)
 	protectedAPI := app.Group("/api", authhttp.RequireAuth(authService))
 	registerProtectedAPIRoutes(protectedAPI, protectedAPIHandlers{
+		asset:      assetHandler,
 		system:     systemHandler,
 		vgateway:   vgatewayHandler,
 		device:     deviceHandler,
@@ -427,6 +456,7 @@ func main() {
 }
 
 type protectedAPIHandlers struct {
+	asset      *assethttp.Handler
 	system     *systemhttp.Handler
 	vgateway   *vgatewayhttp.Handler
 	device     *devicehttp.Handler
@@ -440,6 +470,7 @@ type protectedAPIHandlers struct {
 }
 
 func registerProtectedAPIRoutes(router fiber.Router, handlers protectedAPIHandlers) {
+	assethttp.RegisterRoutes(router, handlers.asset)
 	systemhttp.RegisterRoutes(router, handlers.system)
 	vgatewayhttp.RegisterRoutes(router, handlers.vgateway)
 	devicehttp.RegisterRoutes(router, handlers.device)
