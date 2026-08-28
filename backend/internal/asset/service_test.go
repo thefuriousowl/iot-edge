@@ -3,6 +3,7 @@ package asset
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -269,6 +270,75 @@ func TestServiceReplaceBindingsValidatesSourceAndCopiesValues(t *testing.T) {
 	catalog.err = context.Canceled
 	if _, err := service.ReplaceBindings(ctx, meterID, []MeasurementBinding{binding}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled source lookup error = %v", err)
+	}
+}
+
+func TestServiceHierarchyRollupsPreventParentChildDoubleCounting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	siteID, areaID := uuid.New(), uuid.New()
+	mainMeterID, includedSubmeterID, excludedSubmeterID, conflictingMainID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	repository := newMemoryAssetRepository(
+		Asset{ID: siteID, Name: "Site", Kind: KindSite, Enabled: true, Metadata: Metadata(`{}`)},
+		Asset{ID: areaID, ParentID: &siteID, Name: "Area", Kind: KindArea, Enabled: true, Metadata: Metadata(`{}`)},
+		Asset{ID: mainMeterID, ParentID: &siteID, Name: "Main meter", Kind: KindMeter, Enabled: true, Metadata: Metadata(`{}`)},
+		Asset{ID: includedSubmeterID, ParentID: &areaID, Name: "Included submeter", Kind: KindMeter, Enabled: true, Metadata: Metadata(`{}`)},
+		Asset{ID: excludedSubmeterID, ParentID: &areaID, Name: "Excluded submeter", Kind: KindMeter, Enabled: true, Metadata: Metadata(`{}`)},
+		Asset{ID: conflictingMainID, ParentID: &areaID, Name: "Conflicting main", Kind: KindMeter, Enabled: true, Metadata: Metadata(`{}`)},
+	)
+	mainSource, includedSource, excludedSource, conflictingSource := TagSource(uuid.New()), TagSource(uuid.New()), TagSource(uuid.New()), TagSource(uuid.New())
+	catalog := &memorySourceCatalog{descriptors: map[string]SourceDescriptor{}}
+	for _, source := range []SourceReference{mainSource, includedSource, excludedSource, conflictingSource} {
+		catalog.descriptors[source.Key()] = SourceDescriptor{Reference: source, DataType: "float64", Unit: UnitKilowattHour}
+	}
+	service, err := NewService(repository, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := func(source SourceReference, role MeterRole, policy RollupPolicy) MeasurementBinding {
+		return MeasurementBinding{BoundaryAssetID: siteID, Source: source, Semantic: energySemantic(), MeterRole: role, RollupPolicy: policy}
+	}
+
+	included, err := service.ReplaceBindings(ctx, includedSubmeterID, []MeasurementBinding{bind(includedSource, MeterRoleSubmeter, RollupInclude)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded, err := service.ReplaceBindings(ctx, excludedSubmeterID, []MeasurementBinding{bind(excludedSource, MeterRoleSubmeter, RollupExclude)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, err := service.ReplaceBindings(ctx, mainMeterID, []MeasurementBinding{bind(mainSource, MeterRoleMain, RollupInclude)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := BuildRollupPlan(siteID, []RollupCandidate{
+		{Binding: main[0], OwnerAncestors: []uuid.UUID{siteID}, OwnerIsLeaf: true},
+		{Binding: included[0], OwnerAncestors: []uuid.UUID{siteID, areaID}, OwnerIsLeaf: true},
+		{Binding: excluded[0], OwnerAncestors: []uuid.UUID{siteID, areaID}, OwnerIsLeaf: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Included, []uuid.UUID{main[0].ID}) {
+		t.Fatalf("main/submeter included plan = %v, want only main %s", plan.Included, main[0].ID)
+	}
+	wantExcluded := []uuid.UUID{included[0].ID, excluded[0].ID}
+	sortUUIDs(wantExcluded)
+	if !reflect.DeepEqual(plan.Excluded, wantExcluded) {
+		t.Fatalf("main/submeter excluded plan = %v, want %v", plan.Excluded, wantExcluded)
+	}
+
+	writesBeforeConflict := repository.writes
+	if _, err := service.ReplaceBindings(ctx, conflictingMainID, []MeasurementBinding{bind(conflictingSource, MeterRoleMain, RollupInclude)}); !errors.Is(err, ErrConflictingMeters) {
+		t.Fatalf("second main meter error = %v, want %v", err, ErrConflictingMeters)
+	}
+	if repository.writes != writesBeforeConflict || len(repository.bindings[conflictingMainID]) != 0 {
+		t.Fatal("conflicting parent/child main meter reached repository write")
+	}
+
+	if _, err := service.ReplaceBindings(ctx, areaID, []MeasurementBinding{bind(TagSource(uuid.New()), MeterRoleDirect, RollupInclude)}); !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("non-leaf owner error = %v, want %v", err, ErrInvalidBinding)
 	}
 }
 

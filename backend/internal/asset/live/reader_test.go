@@ -3,6 +3,8 @@ package live
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +105,51 @@ func TestReaderMapsSubscriptionAndClosesUpstream(t *testing.T) {
 	}
 }
 
+func TestAssetMonitoringReceivesAcquisitionEventsWithoutCreatingReads(t *testing.T) {
+	tagID := uuid.New()
+	sources := newCadenceSourceReader()
+	reader, err := NewReader(sources, &tagHistory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The first value represents the Datasource-owned poll that existed before
+	// the Asset view opened. Subscribing must only attach to that shared feed.
+	sources.poll(tagID, 1, 41)
+	baselineReads := sources.reads.Load()
+	subscription, err := reader.Subscribe(t.Context(), []asset.SourceReference{asset.TagSource(tagID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+	if got := sources.reads.Load(); got != baselineReads {
+		t.Fatalf("Datasource reads after opening Asset monitoring = %d, want unchanged %d", got, baselineReads)
+	}
+
+	for poll := uint64(2); poll <= 4; poll++ {
+		sources.poll(tagID, poll, int(poll)+40)
+		select {
+		case event := <-subscription.Events():
+			if event.Source != asset.TagSource(tagID) || event.Sequence != poll || event.Value != int(poll)+40 {
+				t.Fatalf("Asset event for poll %d = %#v", poll, event)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for Asset event from poll %d", poll)
+		}
+	}
+	if got := sources.reads.Load(); got != 4 {
+		t.Fatalf("Datasource reads = %d, want exactly one per scheduled poll", got)
+	}
+	if got := sources.subscribeCalls.Load(); got != 1 {
+		t.Fatalf("shared-feed subscriptions = %d, want 1", got)
+	}
+
+	subscription.Close()
+	if got := sources.reads.Load(); got != 4 {
+		t.Fatalf("Datasource reads after closing Asset monitoring = %d, want unchanged 4", got)
+	}
+}
+
 func TestReaderRequiresDependenciesAndRejectsInvalidReference(t *testing.T) {
 	sources := &sourceReader{}
 	history := &tagHistory{}
@@ -116,4 +163,63 @@ func TestReaderRequiresDependenciesAndRejectsInvalidReference(t *testing.T) {
 	if _, err := reader.Snapshot(context.Background(), []asset.SourceReference{{}}); !errors.Is(err, asset.ErrInvalidBinding) {
 		t.Fatalf("invalid reference error = %v", err)
 	}
+}
+
+type cadenceSourceReader struct {
+	reads          atomic.Int32
+	subscribeCalls atomic.Int32
+	mu             sync.Mutex
+	subscribers    map[uint64]chan publisher.SourceSample
+	nextSubscriber uint64
+}
+
+func newCadenceSourceReader() *cadenceSourceReader {
+	return &cadenceSourceReader{subscribers: make(map[uint64]chan publisher.SourceSample)}
+}
+
+func (reader *cadenceSourceReader) Snapshot(context.Context, []publisher.SourceSelection) (publisher.SourceSnapshot, error) {
+	return publisher.SourceSnapshot{CapturedAt: time.Now().UTC()}, nil
+}
+
+func (reader *cadenceSourceReader) Subscribe(ctx context.Context, _ []publisher.SourceSelection) (publisher.SourceSubscription, error) {
+	reader.subscribeCalls.Add(1)
+	reader.mu.Lock()
+	reader.nextSubscriber++
+	id := reader.nextSubscriber
+	events := make(chan publisher.SourceSample, 4)
+	reader.subscribers[id] = events
+	reader.mu.Unlock()
+	return &cadenceSubscription{events: events, close: func() {
+		reader.mu.Lock()
+		if current, exists := reader.subscribers[id]; exists {
+			delete(reader.subscribers, id)
+			close(current)
+		}
+		reader.mu.Unlock()
+	}}, nil
+}
+
+func (reader *cadenceSourceReader) poll(tagID uuid.UUID, sequence uint64, value int) {
+	reader.reads.Add(1)
+	now := time.Now().UTC()
+	event := publisher.SourceSample{Reference: publisher.TagSource(tagID), Available: true, Sequence: sequence, Value: value, Quality: publisher.SourceQualityGood, ObservedAt: &now}
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	for _, subscriber := range reader.subscribers {
+		subscriber <- event
+	}
+}
+
+type cadenceSubscription struct {
+	events chan publisher.SourceSample
+	close  func()
+	once   sync.Once
+}
+
+func (subscription *cadenceSubscription) Events() <-chan publisher.SourceSample {
+	return subscription.events
+}
+func (*cadenceSubscription) Err() error { return nil }
+func (subscription *cadenceSubscription) Close() {
+	subscription.once.Do(subscription.close)
 }

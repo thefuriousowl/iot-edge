@@ -42,7 +42,7 @@ export const getAssetTree = (id: string, signal?: AbortSignal) => mapped<AssetTr
 export const getAssetAncestors = (id: string, signal?: AbortSignal) => mapped<AssetCollectionResponse>(api.get(`${assetPath(id)}/ancestors`, { signal }));
 export const createAsset = (data: CreateAssetRequest, signal?: AbortSignal) => mapped<Asset>(api.post("/assets", data, { signal }));
 export const updateAsset = (id: string, data: UpdateAssetRequest, signal?: AbortSignal) => mapped<Asset>(api.put(assetPath(id), data, { signal }));
-export const moveAsset = (id: string, data: MoveAssetRequest, signal?: AbortSignal) => mapped<Asset>(api.put(`${assetPath(id)}/move`, data, { signal }));
+export const moveAsset = (id: string, data: MoveAssetRequest, signal?: AbortSignal) => mapped<Asset>(api.post(`${assetPath(id)}/move`, data, { signal }));
 export async function deleteAsset(id: string, signal?: AbortSignal): Promise<void> {
   try { await api.delete(assetPath(id), { signal }); } catch (error) { throw mapAssetAPIError(error); }
 }

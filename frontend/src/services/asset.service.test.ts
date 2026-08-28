@@ -60,8 +60,8 @@ describe("Asset service", () => {
     await deleteAsset(asset.id, signal);
     expect(mockedPost).toHaveBeenCalledWith("/assets", { name: asset.name, kind: "meter", parent_id: null }, { signal });
     expect(mockedPut).toHaveBeenNthCalledWith(1, "/assets/asset%2Fid", { description: null, timezone: null }, { signal });
-    expect(mockedPut).toHaveBeenNthCalledWith(2, "/assets/asset%2Fid/move", { parent_id: null, position: 3 }, { signal });
-    expect(mockedPut).toHaveBeenNthCalledWith(3, "/assets/asset%2Fid/bindings", { bindings: [] }, { signal });
+    expect(mockedPost).toHaveBeenNthCalledWith(2, "/assets/asset%2Fid/move", { parent_id: null, position: 3 }, { signal });
+    expect(mockedPut).toHaveBeenNthCalledWith(2, "/assets/asset%2Fid/bindings", { bindings: [] }, { signal });
     expect(mockedDelete).toHaveBeenCalledWith("/assets/asset%2Fid", { signal });
   });
 

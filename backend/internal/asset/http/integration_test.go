@@ -119,6 +119,16 @@ func TestAssetProtectedAPI_EndToEnd(t *testing.T) {
 	if meter.ParentID == nil || *meter.ParentID != site.ID {
 		t.Fatalf("meter = %#v", meter)
 	}
+	response = request(t, app, http.MethodPost, "/api/assets/", `{"name":"Expansion plant","kind":"site","timezone":"Asia/Bangkok"}`)
+	assertStatus(t, response, fiber.StatusCreated)
+	var destination asset.Asset
+	decodeResponse(t, response, &destination)
+	response = request(t, app, http.MethodPost, "/api/assets/"+meter.ID.String()+"/move", `{"parent_id":"`+destination.ID.String()+`","position":4}`)
+	assertStatus(t, response, fiber.StatusOK)
+	decodeResponse(t, response, &meter)
+	if meter.ParentID == nil || *meter.ParentID != destination.ID || meter.Position != 4 {
+		t.Fatalf("moved meter = %#v", meter)
+	}
 
 	tagID := insertIntegrationTag(t, database)
 	connectivity, err := assetconnectivity.NewResolver(repository, &integrationTagReader{values: map[uuid.UUID]tag.Tag{tagID: {ID: tagID, Name: "Asset API tag", Type: tag.TypeConstant, DataType: tag.DataTypeFloat64, Enabled: true}}}, &integrationDeviceReader{}, &integrationGatewayReader{})
@@ -129,7 +139,7 @@ func TestAssetProtectedAPI_EndToEnd(t *testing.T) {
 	source := asset.TagSource(tagID)
 	catalog.descriptors[source.Key()] = asset.SourceDescriptor{Reference: source, DataType: "float64", Unit: asset.UnitKilowattHour}
 	bindingID := uuid.New()
-	payload := `{"bindings":[{"id":"` + bindingID.String() + `","boundary_asset_id":"` + site.ID.String() + `","source":{"kind":"tag","tag_id":"` + tagID.String() + `"},"semantic":{"resource":"electricity","quantity":"energy","unit":"kWh","precision":3},"meter_role":"main","rollup_policy":"include"}]}`
+	payload := `{"bindings":[{"id":"` + bindingID.String() + `","boundary_asset_id":"` + destination.ID.String() + `","source":{"kind":"tag","tag_id":"` + tagID.String() + `"},"semantic":{"resource":"electricity","quantity":"energy","unit":"kWh","precision":3},"meter_role":"main","rollup_policy":"include"}]}`
 	response = request(t, app, http.MethodPut, "/api/assets/"+meter.ID.String()+"/bindings", payload)
 	assertStatus(t, response, fiber.StatusOK)
 	var bindings struct {
@@ -165,7 +175,7 @@ func TestAssetProtectedAPI_EndToEnd(t *testing.T) {
 		t.Fatalf("Tag Asset connectivity = %#v", tagLinks)
 	}
 
-	response = request(t, app, http.MethodGet, "/api/assets/"+site.ID.String()+"/tree", "")
+	response = request(t, app, http.MethodGet, "/api/assets/"+destination.ID.String()+"/tree", "")
 	assertStatus(t, response, fiber.StatusOK)
 	var tree asset.TreeNode
 	decodeResponse(t, response, &tree)
@@ -183,6 +193,38 @@ func TestAssetProtectedAPI_EndToEnd(t *testing.T) {
 		t.Fatalf("list = %#v", list)
 	}
 
+	// Recompose every Asset-facing layer against the same database to model a
+	// process restart and prove hierarchy/binding persistence is not in memory.
+	restartedRepository := assetpostgres.NewRepository(database)
+	restartedService, err := asset.NewService(restartedRepository, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedMeasurements, err := asset.NewMeasurementProjector(restartedRepository, liveReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedConnectivity, err := assetconnectivity.NewResolver(restartedRepository, &integrationTagReader{values: map[uuid.UUID]tag.Tag{tagID: {ID: tagID, Name: "Asset API tag", Type: tag.TypeConstant, DataType: tag.DataTypeFloat64, Enabled: true}}}, &integrationDeviceReader{}, &integrationGatewayReader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedApp := fiber.New()
+	RegisterRoutes(restartedApp.Group("/api"), NewHandler(restartedService, WithMeasurements(restartedMeasurements), WithConnectivity(restartedConnectivity)))
+	t.Cleanup(func() { _ = restartedApp.Shutdown() })
+	response = request(t, restartedApp, http.MethodGet, "/api/assets/"+meter.ID.String(), "")
+	assertStatus(t, response, fiber.StatusOK)
+	var persisted asset.Asset
+	decodeResponse(t, response, &persisted)
+	if persisted.ParentID == nil || *persisted.ParentID != destination.ID || persisted.Position != 4 {
+		t.Fatalf("persisted meter after restart = %#v", persisted)
+	}
+	response = request(t, restartedApp, http.MethodGet, "/api/assets/"+meter.ID.String()+"/bindings", "")
+	assertStatus(t, response, fiber.StatusOK)
+	decodeResponse(t, response, &bindings)
+	if len(bindings.Data) != 1 || bindings.Data[0].ID != bindingID {
+		t.Fatalf("persisted bindings after restart = %#v", bindings)
+	}
+
 	response = request(t, app, http.MethodDelete, "/api/assets/"+meter.ID.String(), "")
 	assertAPIError(t, response, fiber.StatusConflict, "ASSET_DEPENDENTS")
 	response = request(t, app, http.MethodPut, "/api/assets/"+meter.ID.String()+"/bindings", `{"bindings":[]}`)
@@ -192,6 +234,9 @@ func TestAssetProtectedAPI_EndToEnd(t *testing.T) {
 	assertStatus(t, response, fiber.StatusNoContent)
 	closeBody(t, response)
 	response = request(t, app, http.MethodDelete, "/api/assets/"+site.ID.String(), "")
+	assertStatus(t, response, fiber.StatusNoContent)
+	closeBody(t, response)
+	response = request(t, app, http.MethodDelete, "/api/assets/"+destination.ID.String(), "")
 	assertStatus(t, response, fiber.StatusNoContent)
 	closeBody(t, response)
 }
