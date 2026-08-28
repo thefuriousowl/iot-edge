@@ -24,6 +24,7 @@ import type { Tag, TagRuntimeValue } from "../../../types/tag";
 import type { VGatewayListItem } from "../../../types/vgateway";
 import { useTagLiveStore } from "../../tag/stores/tagLive.store";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
+import UtilitiesOverview from "../components/UtilitiesOverview";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./DashboardPage.css";
 
@@ -212,6 +213,8 @@ function DashboardPage() {
           <article><Tags aria-hidden="true" /><div><span>Enabled Tags</span><strong>{data.enabledTagTotal}</strong><small>{goodTagCount} good · {errorTagCount} error shown</small></div></article>
           <article><DatabaseZap aria-hidden="true" /><div><span>Data Loggers</span><strong>{data.loggerTotal}</strong><small>{enabledLoggerCount} enabled</small></div></article>
         </section>
+
+        <UtilitiesOverview />
 
         <div className="dashboard-main-grid">
           <section className="dashboard-live-panel" aria-labelledby="dashboard-live-heading">

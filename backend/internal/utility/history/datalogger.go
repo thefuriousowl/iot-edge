@@ -55,7 +55,10 @@ func (reader *DataLogger) Read(ctx context.Context, loggerID uuid.UUID, mapping 
 			}
 			value, ok := number(sample.Value)
 			if !ok {
-				return nil, fmt.Errorf("%w: nonnumeric Tag sample", utility.ErrHistoryUnavailable)
+				if sample.Quality != datalogger.RawQualityBad {
+					return nil, fmt.Errorf("%w: nonnumeric Tag sample", utility.ErrHistoryUnavailable)
+				}
+				value = 0
 			}
 			quality := analytics.QualityBad
 			if sample.Quality == datalogger.RawQualityGood && sample.Error == "" {
@@ -69,7 +72,9 @@ func (reader *DataLogger) Read(ctx context.Context, loggerID uuid.UUID, mapping 
 					return nil, utility.ErrHistoryUnavailable
 				}
 			}
-			result = append(result, analytics.Sample{At: sample.ObservedAt.UTC(), Value: value, Quality: quality})
+			// BatchAt is the persisted synchronization boundary. ObservedAt remains
+			// acquisition provenance and may differ across Datasource cadences.
+			result = append(result, analytics.Sample{At: batch.BatchAt.UTC(), Value: value, Quality: quality})
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].At.Before(result[j].At) })

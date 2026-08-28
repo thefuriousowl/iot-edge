@@ -22,6 +22,7 @@ vi.mock("../../../services/health.service", () => ({ getHealth: vi.fn() }));
 vi.mock("../../../services/tag.service", () => ({ listTags: vi.fn() }));
 vi.mock("../../../services/vgateway.service", () => ({ listVGateways: vi.fn() }));
 vi.mock("../../system/components/InternetStatus", () => ({ default: () => <span>Internet Online</span> }));
+vi.mock("../components/UtilitiesOverview", () => ({ default: () => <section>Energy &amp; Utilities</section> }));
 
 const mockedListDataLoggers = vi.mocked(listDataLoggers);
 const mockedListDeviceInventory = vi.mocked(listDeviceInventory);

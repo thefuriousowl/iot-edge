@@ -6,13 +6,16 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { exportEnergyCSV, getEnergyHistory } from "../../../services/energy.service";
+import { getAssetBindings, listAssets } from "../../../services/asset.service";
 import { getPlugin } from "../../../services/plugin.service";
 import type { EnergyHistoryResponse, EnergyPeriodSummary, PluginInstance } from "../../../types/plugin";
 import EnergyHistoryPage from "./EnergyHistoryPage";
 
 vi.mock("../../../services/energy.service", () => ({ exportEnergyCSV: vi.fn(), getEnergyHistory: vi.fn() }));
+vi.mock("../../../services/asset.service", () => ({ getAssetBindings: vi.fn(), listAssets: vi.fn() }));
 vi.mock("../../../services/plugin.service", () => ({ getPlugin: vi.fn() }));
 vi.mock("../../system/components/InternetStatus", () => ({ default: () => <span>Internet</span> }));
+vi.mock("../components/ProductionLineChart", () => ({ default: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} /> }));
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const Empty = () => null;
@@ -21,11 +24,13 @@ vi.mock("recharts", () => {
     AreaChart: Container,
     BarChart: Container,
     LineChart: Container,
+    PieChart: Container,
     Area: Empty,
     Bar: Empty,
     CartesianGrid: Empty,
     Legend: Empty,
     Line: Empty,
+    Pie: Empty,
     Tooltip: Empty,
     XAxis: Empty,
     YAxis: Empty,
@@ -33,6 +38,8 @@ vi.mock("recharts", () => {
 });
 
 const mockedExport = vi.mocked(exportEnergyCSV);
+const mockedAssetBindings = vi.mocked(getAssetBindings);
+const mockedAssets = vi.mocked(listAssets);
 const mockedHistory = vi.mocked(getEnergyHistory);
 const mockedPlugin = vi.mocked(getPlugin);
 
@@ -67,7 +74,10 @@ function renderPage(path = "/plugins/plugin-1/energy/history?from=2026-08-23T01%
 describe("EnergyHistoryPage", () => {
   beforeEach(() => {
     mockedExport.mockReset(); mockedHistory.mockReset(); mockedPlugin.mockReset();
+    mockedAssets.mockReset(); mockedAssetBindings.mockReset();
     mockedPlugin.mockResolvedValue(plugin); mockedHistory.mockResolvedValue(history); mockedExport.mockResolvedValue(new Blob(["csv"]));
+    mockedAssets.mockResolvedValue({ data: [{ id: "asset-1", parent_id: null, name: "Chiller Plant", kind: "system", description: null, enabled: true, timezone: null, position: 0, metadata: {}, created_at: "", updated_at: "" }], pagination: { page: 1, per_page: 100, total: 1, total_pages: 1 } });
+    mockedAssetBindings.mockResolvedValue({ data: [{ id: "binding-1", owner_asset_id: "asset-1", boundary_asset_id: "asset-1", source_key: "plugin_output:plugin-1:thermal_output_kw", source: { kind: "plugin_output", plugin_instance_id: "plugin-1", output_key: "thermal_output_kw" }, semantic: { resource: "thermal", quantity: "power", unit: "kW", precision: 2 }, meter_role: "direct", rollup_policy: "include" }] });
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:energy") });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
@@ -87,7 +97,17 @@ describe("EnergyHistoryPage", () => {
     expect(screen.getByRole("img", { name: /comparing electrical and thermal/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /coefficient of performance/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /estimated cost/i })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /average electrical demand/i })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /donut chart of cost contribution/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /data coverage/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Electricity source period" })).toHaveTextContent("Logger logger-1");
+    const thermal = screen.getByRole("region", { name: "Thermal performance summary" });
+    expect(within(thermal).getByText("90.00 kWh")).toBeInTheDocument();
+    expect(within(thermal).getByText("45.00 kW")).toBeInTheDocument();
+    expect(within(thermal).getByText("15.00 kW")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /average thermal output and electrical input/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Thermal circuit history availability" })).toHaveTextContent("does not persist these circuit inputs");
+    expect(screen.getByRole("link", { name: "Open live thermal circuit" })).toHaveAttribute("href", "/plugins/plugin-1/energy");
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/plugins/plugin-1/energy");
     expect(screen.getByRole("link", { name: "History & charts" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("2 buckets")).toBeInTheDocument();
@@ -118,6 +138,32 @@ describe("EnergyHistoryPage", () => {
     expect(URL.createObjectURL).toHaveBeenCalled();
   });
 
+  it("compares the previous equal period and persists comparison in the URL", async () => {
+    renderPage();
+    await screen.findByRole("heading", { name: "Plant Energy" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Compare previous equal period" }));
+    await waitFor(() => expect(mockedHistory).toHaveBeenCalledTimes(3));
+    expect(mockedHistory).toHaveBeenLastCalledWith("plugin-1", { from: "2026-08-22T23:00:00.000Z", to: "2026-08-23T01:00:00.000Z", bucket: "1h", page: 1, per_page: 500 }, expect.any(AbortSignal));
+    expect(screen.getByTestId("search")).toHaveTextContent("compare=previous");
+    expect(screen.getByRole("region", { name: "Electricity source period" })).toHaveTextContent("30.00 kWh previous period");
+  });
+
+  it("persists display timezone and mapped Asset hierarchy filters in the URL", async () => {
+    renderPage(); await screen.findByRole("heading", { name: "Plant Energy" });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Dashboard hierarchy" })).not.toBeDisabled());
+    fireEvent.change(screen.getByRole("combobox", { name: "Display timezone" }), { target: { value: "UTC" } });
+    await waitFor(() => expect(screen.getByTestId("search")).toHaveTextContent("timezone=UTC"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Dashboard hierarchy" }), { target: { value: "asset-1" } });
+    await waitFor(() => expect(screen.getByTestId("search")).toHaveTextContent("asset=asset-1"));
+    expect(screen.getByRole("region", { name: "Selected range summary" })).toBeInTheDocument();
+  });
+
+  it("fails hierarchy closed when the selected Asset does not own this Plugin output", async () => {
+    renderPage("/plugins/plugin-1/energy/history?from=2026-08-23T01%3A00%3A00.000Z&to=2026-08-23T03%3A00%3A00.000Z&bucket=1h&asset=other");
+    expect(await screen.findByText("No Energy data for this hierarchy")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Selected range summary" })).not.toBeInTheDocument();
+  });
+
   it("fails cost closed while preserving Energy and explicit quality", async () => {
     mockedHistory.mockResolvedValue({ ...history, data: [{ ...history.data[0], cost: { value: 0, valid: false, error: "tariff Tag coverage is incomplete" } }, history.data[1]] });
     renderPage();
@@ -126,6 +172,16 @@ describe("EnergyHistoryPage", () => {
     expect(within(summary).getByText("30.00 kWh")).toBeInTheDocument();
     expect(within(summary).getByText("1", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText("Unavailable", { selector: ".energy-history-table .is-unavailable" })).toBeInTheDocument();
+  });
+
+  it("does not fabricate thermal output when the selected period has no coverage", async () => {
+    mockedHistory.mockResolvedValue({ ...history, data: [{ ...history.data[0], thermal: { ...history.data[0].thermal, kilowatt_hours: 0, covered_seconds: 0, skipped_seconds: 3_600, coverage_percent: 0, skipped_segments: 60 } }] });
+    renderPage();
+    const thermal = await screen.findByRole("region", { name: "Thermal performance summary" });
+    const average = within(thermal).getByText("Average thermal output").closest("article");
+    expect(average).not.toBeNull();
+    expect(within(average!).getByText("Unavailable")).toBeInTheDocument();
+    expect(within(thermal).getByText("0.0% coverage")).toBeInTheDocument();
   });
 
   it("retries sanitized Plugin API failures", async () => {

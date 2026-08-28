@@ -2,7 +2,7 @@ export type SourceKind = "tag" | "plugin_output";
 export type Resource = "electricity" | "thermal" | "compressed_air" | "water";
 export const utilityUnits: Record<Resource, string[]> = { electricity: ["kW", "kWh"], thermal: ["kW", "kWh", "degC"], compressed_air: ["kW", "Nm3/h", "Nm3", "bar", "degC", "bool"], water: ["m3/h", "m3"] };
 export const utilityQuantities: Record<Resource, string[]> = { electricity: ["power", "energy"], thermal: ["power", "energy", "temperature"], compressed_air: ["power", "flow rate", "volume", "pressure", "temperature", "state"], water: ["flow rate", "volume"] };
-export interface UtilityDraft { assetID: string; loggerID: string; resource: Resource; sourceKind: SourceKind; sourceID: string; quantity: string; unit: string; tariffMode: "none" | "fixed" | "source"; currency: string; rate: number }
+export interface UtilityDraft { assetID: string; loggerID: string; resource: Resource; sourceKind: SourceKind; sourceID: string; quantity: string; unit: string; tariffMode: "none" | "fixed" | "source"; currency: string; rate: number; flowBasis?: "actual" | "normalized"; referenceTemperatureKelvin?: number; referencePressurePascal?: number; pressureBasis?: "gauge" | "absolute"; compressorPowerSource?: string; operatingStateSource?: string; productionStateSource?: string; baselineBasis?: "idle" | "no_production" }
 export function validateUtilityDraft(value: UtilityDraft): string[] {
   const errors: string[] = [];
   if (!value.assetID) errors.push("Choose the Asset that owns this utility boundary.");
@@ -12,5 +12,24 @@ export function validateUtilityDraft(value: UtilityDraft): string[] {
   if (!utilityUnits[value.resource].includes(value.unit)) errors.push("Choose a unit supported by this resource.");
   if (value.tariffMode !== "none" && !/^[A-Z]{3}$/.test(value.currency)) errors.push("Currency must be a three-letter code such as THB.");
   if (value.tariffMode === "fixed" && (!Number.isFinite(value.rate) || value.rate < 0)) errors.push("Fixed tariff cannot be negative.");
+  if (value.resource === "compressed_air") {
+    if (!value.compressorPowerSource) errors.push("Choose the compressor power Tag.");
+    if (!value.flowBasis) errors.push("Choose whether air volume is actual or normalized.");
+    if (value.flowBasis === "normalized" && (!(value.referenceTemperatureKelvin && value.referenceTemperatureKelvin > 0) || !(value.referencePressurePascal && value.referencePressurePascal > 0))) errors.push("Enter positive reference temperature and pressure for normalized air.");
+    if (!value.pressureBasis) errors.push("Choose whether pressure is gauge or absolute.");
+    if (!value.baselineBasis) errors.push("Choose an explicit idle or no-production baseline.");
+  }
   return errors;
+}
+
+export interface CalculationPreview { formula: string; sourcePeriod: string; coverage: string; unitConversion: string; missingInputs: string[]; failClosedReason: string | null }
+export function buildCalculationPreview(value: UtilityDraft): CalculationPreview {
+  const missingInputs = validateUtilityDraft(value);
+  const formula = value.resource === "compressed_air" ? "Compressor kWh ÷ normalized air Nm³ = kWh/Nm³"
+    : value.resource === "thermal" ? "Thermal kWh ÷ electrical kWh = period COP"
+      : value.resource === "electricity" ? "∫ electrical power over time = electrical energy"
+        : "∫ flow rate over time = utility volume";
+  const canonical = value.resource === "compressed_air" ? (value.quantity === "power" ? "kW" : value.quantity === "pressure" ? "bar" : value.quantity === "state" ? "bool" : value.quantity === "volume" ? "Nm3" : "Nm3/h")
+    : value.resource === "water" ? (value.quantity === "volume" ? "m3" : "m3/h") : value.quantity === "temperature" ? "degC" : value.quantity === "energy" ? "kWh" : "kW";
+  return { formula, sourcePeriod: "Selected period from committed Data Logger batches; no live-value fallback", coverage: "Only synchronized, good-quality persisted segments count toward coverage", unitConversion: value.unit === canonical ? `${value.unit} already matches the calculation unit` : `${value.unit} → ${canonical} before calculation`, missingInputs, failClosedReason: missingInputs[0] ?? null };
 }
