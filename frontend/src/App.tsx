@@ -37,6 +37,7 @@ import VGatewayFormPage from "./features/vgateway/pages/VGatewayFormPage";
 import VGatewayListPage from "./features/vgateway/pages/VGatewayListPage";
 import AccountSettingsPage from "./features/settings/pages/AccountSettingsPage";
 import DataManagementSettingsPage from "./features/settings/pages/DataManagementSettingsPage";
+import AssetExplorerPage from "./features/asset/pages/AssetExplorerPage";
 
 const EnergyHistoryPage = lazy(() => import("./features/plugin/pages/EnergyHistoryPage"));
 
@@ -117,6 +118,14 @@ function App() {
           element={
             <ProtectedRoute>
               <TagWizardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/assets"
+          element={
+            <ProtectedRoute>
+              <AssetExplorerPage />
             </ProtectedRoute>
           }
         />

@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   KeyRound,
   Menu,
+  Network,
   Puzzle,
   RadioTower,
   Settings,
@@ -108,6 +109,10 @@ function VGatewayShell({ breadcrumb, children }: VGatewayShellProps) {
           <NavLink to="/tags">
             <Tags aria-hidden="true" size={21} />
             Tags
+          </NavLink>
+          <NavLink to="/assets">
+            <Network aria-hidden="true" size={21} />
+            Assets
           </NavLink>
           <NavLink to="/data-loggers">
             <DatabaseZap aria-hidden="true" size={21} />

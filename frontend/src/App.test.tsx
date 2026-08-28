@@ -54,6 +54,10 @@ vi.mock("./features/device/pages/DeviceListPage", () => ({
   default: () => <h1>Global Device Inventory</h1>,
 }));
 
+vi.mock("./features/asset/pages/AssetExplorerPage", () => ({
+  default: () => <h1>Asset Explorer</h1>,
+}));
+
 vi.mock("./features/datalogger/pages/DataLoggerListPage", () => ({
   default: () => <h1>Data Logger Inventory</h1>,
 }));
@@ -341,6 +345,13 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "Global Device Inventory" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/devices");
+  });
+
+  it("protects and renders the Asset Explorer route", () => {
+    renderAuthenticatedApp("/assets");
+
+    expect(screen.getByRole("heading", { name: "Asset Explorer" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/assets");
   });
 
   it("protects and renders the Data Logger inventory route", () => {

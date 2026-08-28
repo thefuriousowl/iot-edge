@@ -52,7 +52,8 @@ describe("VGatewayShell", () => {
     expect(within(navigation).getByRole("link", { name: "vGateways" })).toHaveClass(
       "active",
     );
-    expect(within(navigation).getAllByRole("link")).toHaveLength(10);
+    expect(within(navigation).getAllByRole("link")).toHaveLength(11);
+    expect(within(navigation).getByRole("link", { name: "Assets" })).toHaveAttribute("href", "/assets");
     expect(screen.getByText("Gateway inventory")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Workspace content" })).toBeInTheDocument();
     expect(screen.getByText("iot-admin")).toBeInTheDocument();

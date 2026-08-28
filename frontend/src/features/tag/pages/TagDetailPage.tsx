@@ -1,9 +1,11 @@
 import axios from "axios";
-import { ArrowLeft, CircleAlert, Clock3, DatabaseZap, LoaderCircle, RadioTower, RefreshCw } from "lucide-react";
+import { ArrowLeft, CircleAlert, Clock3, DatabaseZap, Link2, LoaderCircle, RadioTower, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getTag, getTagValues } from "../../../services/tag.service";
+import { getTagAssets } from "../../../services/asset.service";
+import type { TagAssetLink } from "../../../types/asset";
 import type { Tag, TagRuntimeValue } from "../../../types/tag";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import { useTagLiveHistory, useTagLiveStore } from "../stores/tagLive.store";
@@ -68,6 +70,7 @@ function TagDetailPage() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
+  const [assetLinks, setAssetLinks] = useState<TagAssetLink[]>([]);
   const liveHistory = useTagLiveHistory(id);
   const connectionState = useTagLiveStore((state) => state.connectionState);
   const requestReconnect = useTagLiveStore((state) => state.requestReconnect);
@@ -90,6 +93,16 @@ function TagDetailPage() {
       });
     return () => controller.abort();
   }, [id, loadVersion]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getTagAssets(id, controller.signal).then((result) => {
+      if (!controller.signal.aborted) setAssetLinks(result.assets);
+    }).catch(() => {
+      if (!controller.signal.aborted) setAssetLinks([]);
+    });
+    return () => controller.abort();
+  }, [id]);
 
   const currentHistory = useMemo(
     () => mergeHistory(history, liveHistory),
@@ -126,6 +139,7 @@ function TagDetailPage() {
             {newestFirst.length === 0 ? <p className="tag-history-empty">No runtime samples yet.</p> : <div className="tag-history-scroll"><table><thead><tr><th>Value</th><th>Quality</th><th>Observed</th><th>Seq.</th></tr></thead><tbody>{newestFirst.map((value) => <tr key={value.sequence}><td>{formatValue(value.value)}</td><td><span className={`tag-history-quality is-${value.quality}`}>{value.quality}</span>{value.error && <small>{value.error}</small>}</td><td>{formatTime(value.observed_at)}</td><td>{value.sequence}</td></tr>)}</tbody></table></div>}
           </section>
         </div>
+        {assetLinks.length > 0 && <section className="tag-asset-links" aria-label="Operational Assets"><header><Link2 /><div><h2>Operational Assets</h2><p>This Tag is bound to the operational hierarchy without owning it.</p></div></header><ul>{assetLinks.map((item) => <li key={item.binding_id}><div><span>{item.asset.kind}</span><strong>{item.asset.name}</strong><small>{item.semantic.resource} / {item.semantic.quantity} · {item.semantic.unit}</small></div><Link to={`/assets?asset=${encodeURIComponent(item.asset.id)}&view=connectivity`}>Open Asset <ArrowLeft size={15} /></Link></li>)}</ul></section>}
 
         <footer className="tag-detail-note"><DatabaseZap /><span>The latest value survives server restarts. This 10-sample memory window restarts from that persisted value; persistent history remains owned by Data Logger.</span>{streamState === "disconnected" && <button type="button" onClick={requestReconnect}><RefreshCw size={15} /> Reconnect</button>}</footer>
       </>}
