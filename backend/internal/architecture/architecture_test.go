@@ -24,6 +24,10 @@ func TestFeatureCoreImportBoundaries(t *testing.T) {
 			directory: filepath.Join(backendRoot, "internal", "auth"),
 		},
 		{
+			name:      "asset core",
+			directory: filepath.Join(backendRoot, "internal", "asset"),
+		},
+		{
 			name:      "vGateway core",
 			directory: filepath.Join(backendRoot, "internal", "vgateway"),
 			allowedInternal: map[string]bool{
