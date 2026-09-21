@@ -1,0 +1,10 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="IoT Edge" Manufacturer="thefuriousowl" Version="$(var.ProductVersion)" UpgradeCode="47F870B0-CB80-4A09-BC4F-92A77034A7AB">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="rtfLicense" LicenseFile="$(var.LicenseRtf)" SuppressOptionsUI="no" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiPath)" Vital="yes" Visible="no" />
+    </Chain>
+  </Bundle>
+</Wix>

@@ -2,6 +2,7 @@ package energyhttp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,81 @@ type Service interface {
 	ValidateHistory(context.Context, uuid.UUID, energy.HistoryInput) error
 	ExportCSV(context.Context, uuid.UUID, energy.HistoryInput, io.Writer) error
 	SubscribeLive(context.Context, uuid.UUID, string) (*energy.LiveSubscription, error)
+	CurrentRun(context.Context, uuid.UUID) (*energy.MeasurementRun, error)
+	ResetRun(context.Context, uuid.UUID, energy.ResetRunInput) (*energy.MeasurementRun, error)
+	ListArchivedRuns(context.Context, uuid.UUID) ([]energy.MeasurementRun, error)
+	ExportArchivedRunCSV(context.Context, uuid.UUID, uuid.UUID, io.Writer) error
+}
+
+type resetRunRequest struct {
+	ExpectedRunID uuid.UUID `json:"expected_run_id"`
+	Name          string    `json:"name"`
+	Reason        string    `json:"reason"`
+}
+
+func (handler *Handler) CurrentRun(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Energy Plugin instance ID")
+	}
+	run, err := handler.service.CurrentRun(c.UserContext(), id)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(run)
+}
+
+func (handler *Handler) ResetRun(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Energy Plugin instance ID")
+	}
+	var request resetRunRequest
+	decoder := json.NewDecoder(bytes.NewReader(c.Body()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return validation(c, "Invalid Energy reset request")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return validation(c, "Invalid Energy reset request")
+	}
+	run, err := handler.service.ResetRun(c.UserContext(), id, energy.ResetRunInput{
+		ExpectedRunID: request.ExpectedRunID, Name: request.Name, Reason: request.Reason,
+	})
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(run)
+}
+
+func (handler *Handler) ListArchivedRuns(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Energy Plugin instance ID")
+	}
+	runs, err := handler.service.ListArchivedRuns(c.UserContext(), id)
+	if err != nil {
+		return handleError(c, err)
+	}
+	return c.JSON(fiber.Map{"data": runs})
+}
+
+func (handler *Handler) ExportArchivedRunCSV(c *fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return validation(c, "Invalid Energy Plugin instance ID")
+	}
+	runID, err := parseID(c.Params("run_id"))
+	if err != nil {
+		return validation(c, "Invalid Energy archive ID")
+	}
+	reader, writer := io.Pipe()
+	go func() {
+		writer.CloseWithError(handler.service.ExportArchivedRunCSV(c.UserContext(), id, runID, writer))
+	}()
+	c.Set(fiber.HeaderContentType, "text/csv; charset=utf-8")
+	c.Set(fiber.HeaderContentDisposition, `attachment; filename="energy-run-`+runID.String()+`.csv"`)
+	return c.SendStream(reader)
 }
 
 type Handler struct {
@@ -61,7 +137,8 @@ func (handler *Handler) History(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{
 		"instance_id": result.InstanceID, "logger_id": result.LoggerID, "timezone": result.Timezone,
-		"bucket": result.Bucket, "currency": result.Currency, "tariff_mode": result.TariffMode, "tariff_tag_id": result.TariffTagID, "rate_per_kwh": result.RatePerKWh, "data": result.Data,
+		"bucket": result.Bucket, "requested_bucket": result.RequestedBucket, "downsampled": result.Downsampled, "point_limit": result.PointLimit,
+		"currency": result.Currency, "tariff_mode": result.TariffMode, "tariff_tag_id": result.TariffTagID, "rate_per_kwh": result.RatePerKWh, "data": result.Data,
 		"pagination": fiber.Map{"page": result.Page, "per_page": result.PerPage, "total": result.Total, "total_pages": result.TotalPages},
 	})
 }
@@ -206,6 +283,14 @@ func handleError(c *fiber.Ctx, err error) error {
 		return apiError(c, fiber.StatusServiceUnavailable, "ENG004", "Energy real-time monitoring is unavailable")
 	case errors.Is(err, energy.ErrInvalidConfiguration):
 		return apiError(c, fiber.StatusConflict, "ENG003", "Energy Plugin configuration is invalid")
+	case errors.Is(err, energy.ErrMeasurementRunNotFound):
+		return apiError(c, fiber.StatusConflict, "ENG005", "Energy measurement is waiting for the first committed Logger batch")
+	case errors.Is(err, energy.ErrMeasurementRunConflict):
+		return apiError(c, fiber.StatusConflict, "ENG006", "Energy measurement run changed; refresh and retry")
+	case errors.Is(err, energy.ErrInvalidMeasurementRun):
+		return validation(c, "Invalid Energy measurement run")
+	case errors.Is(err, energy.ErrMeasurementRunsRequired):
+		return apiError(c, fiber.StatusServiceUnavailable, "ENG007", "Energy measurement reset is unavailable")
 	default:
 		return apiError(c, fiber.StatusInternalServerError, "ENG500", "Energy data is temporarily unavailable")
 	}

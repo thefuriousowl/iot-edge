@@ -2,7 +2,10 @@ package energy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,13 +26,15 @@ const (
 	exportHistoryPerPage  = 500
 	maxHistoryRange       = 366 * 24 * time.Hour
 	maxRawHistoryReadSpan = 31 * 24 * time.Hour
+	MaxHistoryPoints      = 500
 )
 
 var (
-	ErrInstanceReaderRequired = errors.New("Energy Plugin instance reader is required")
-	ErrHistoryReaderRequired  = errors.New("Energy history reader is required")
-	ErrEnergyInstanceRequired = errors.New("Plugin instance is not Energy Management")
-	ErrInvalidHistoryQuery    = errors.New("invalid Energy history query")
+	ErrInstanceReaderRequired  = errors.New("Energy Plugin instance reader is required")
+	ErrHistoryReaderRequired   = errors.New("Energy history reader is required")
+	ErrEnergyInstanceRequired  = errors.New("Plugin instance is not Energy Management")
+	ErrInvalidHistoryQuery     = errors.New("invalid Energy history query")
+	ErrMeasurementRunsRequired = errors.New("Energy measurement-run repository is required")
 )
 
 type InstanceReader interface {
@@ -63,11 +68,22 @@ func WithLiveHub(hub *LiveHub) ServiceOption {
 	}
 }
 
+func WithMeasurementRuns(repository MeasurementRunRepository) ServiceOption {
+	return func(service *Service) error {
+		if isNil(repository) {
+			return ErrMeasurementRunsRequired
+		}
+		service.runs = repository
+		return nil
+	}
+}
+
 type Service struct {
 	instances InstanceReader
 	history   HistoryReader
 	now       func() time.Time
 	live      *LiveHub
+	runs      MeasurementRunRepository
 }
 
 type HistoryInput struct {
@@ -102,33 +118,43 @@ type HistoryRow struct {
 }
 
 type HistoryResult struct {
-	InstanceID  uuid.UUID              `json:"instance_id"`
-	LoggerID    uuid.UUID              `json:"logger_id"`
-	Timezone    string                 `json:"timezone"`
-	Bucket      datalogger.QueryBucket `json:"bucket"`
-	Currency    string                 `json:"currency"`
-	TariffMode  TariffMode             `json:"tariff_mode"`
-	TariffTagID uuid.UUID              `json:"tariff_tag_id,omitempty"`
-	RatePerKWh  float64                `json:"rate_per_kwh"`
-	Data        []HistoryRow           `json:"data"`
-	Page        int                    `json:"page"`
-	PerPage     int                    `json:"per_page"`
-	Total       int                    `json:"total"`
-	TotalPages  int                    `json:"total_pages"`
+	InstanceID      uuid.UUID              `json:"instance_id"`
+	LoggerID        uuid.UUID              `json:"logger_id"`
+	Timezone        string                 `json:"timezone"`
+	Bucket          datalogger.QueryBucket `json:"bucket"`
+	RequestedBucket datalogger.QueryBucket `json:"requested_bucket"`
+	Downsampled     bool                   `json:"downsampled"`
+	PointLimit      int                    `json:"point_limit"`
+	Currency        string                 `json:"currency"`
+	TariffMode      TariffMode             `json:"tariff_mode"`
+	TariffTagID     uuid.UUID              `json:"tariff_tag_id,omitempty"`
+	RatePerKWh      float64                `json:"rate_per_kwh"`
+	Data            []HistoryRow           `json:"data"`
+	Page            int                    `json:"page"`
+	PerPage         int                    `json:"per_page"`
+	Total           int                    `json:"total"`
+	TotalPages      int                    `json:"total_pages"`
 }
 
 type OverviewResult struct {
-	InstanceID  uuid.UUID     `json:"instance_id"`
-	LoggerID    uuid.UUID     `json:"logger_id"`
-	Timezone    string        `json:"timezone"`
-	Currency    string        `json:"currency"`
-	TariffMode  TariffMode    `json:"tariff_mode"`
-	TariffTagID uuid.UUID     `json:"tariff_tag_id,omitempty"`
-	RatePerKWh  float64       `json:"rate_per_kwh"`
-	AsOf        time.Time     `json:"as_of"`
-	Latest      *BatchMetrics `json:"latest"`
-	Today       PeriodSummary `json:"today"`
-	Month       PeriodSummary `json:"month"`
+	InstanceID  uuid.UUID       `json:"instance_id"`
+	LoggerID    uuid.UUID       `json:"logger_id"`
+	Timezone    string          `json:"timezone"`
+	Currency    string          `json:"currency"`
+	TariffMode  TariffMode      `json:"tariff_mode"`
+	TariffTagID uuid.UUID       `json:"tariff_tag_id,omitempty"`
+	RatePerKWh  float64         `json:"rate_per_kwh"`
+	AsOf        time.Time       `json:"as_of"`
+	Latest      *BatchMetrics   `json:"latest"`
+	Today       PeriodSummary   `json:"today"`
+	Month       PeriodSummary   `json:"month"`
+	Run         *MeasurementRun `json:"run,omitempty"`
+}
+
+type ResetRunInput struct {
+	ExpectedRunID uuid.UUID
+	Name          string
+	Reason        string
 }
 
 type bucketWindow struct {
@@ -159,8 +185,12 @@ func (service *Service) Overview(ctx context.Context, instanceID uuid.UUID) (*Ov
 	if ctx == nil || instanceID == uuid.Nil {
 		return nil, ErrInvalidHistoryQuery
 	}
-	config, calculator, err := service.loadCalculator(ctx, instanceID)
+	instance, config, calculator, err := service.loadEnergyInstance(ctx, instanceID)
 	if err != nil {
+		return nil, err
+	}
+	run, err := service.ensureActiveRun(ctx, instance, config)
+	if err != nil && !errors.Is(err, ErrMeasurementRunNotFound) {
 		return nil, err
 	}
 	now := service.now().UTC()
@@ -171,6 +201,14 @@ func (service *Service) Overview(ctx context.Context, instanceID uuid.UUID) (*Ov
 	localNow := now.In(location)
 	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, location)
+	if run != nil {
+		if run.StartedAt.After(todayStart.UTC()) {
+			todayStart = run.StartedAt.In(location)
+		}
+		if run.StartedAt.After(monthStart.UTC()) {
+			monthStart = run.StartedAt.In(location)
+		}
+	}
 	batches, err := service.history.ListBatches(ctx, datalogger.RawBatchListInput{
 		LoggerID: config.LoggerID, TagIDs: powerTagIDs(config), From: monthStart.UTC(), To: now, IncludeNeighbors: true,
 	})
@@ -193,6 +231,7 @@ func (service *Service) Overview(ctx context.Context, instanceID uuid.UUID) (*Ov
 		InstanceID: instanceID, LoggerID: config.LoggerID, Timezone: config.Timezone,
 		Currency: config.Tariff.Currency, TariffMode: config.Tariff.effectiveMode(), TariffTagID: config.Tariff.TagID, RatePerKWh: config.Tariff.RatePerKWh, AsOf: now,
 		Today: summarizePeriod(today), Month: summarizePeriod(month),
+		Run: run,
 	}
 	latest, latestErr := service.history.LatestBatch(ctx, config.LoggerID)
 	if latestErr == nil {
@@ -208,6 +247,10 @@ func (service *Service) Overview(ctx context.Context, instanceID uuid.UUID) (*Ov
 }
 
 func (service *Service) History(ctx context.Context, instanceID uuid.UUID, input HistoryInput) (*HistoryResult, error) {
+	return service.historyResult(ctx, instanceID, input, true)
+}
+
+func (service *Service) historyResult(ctx context.Context, instanceID uuid.UUID, input HistoryInput, boundChart bool) (*HistoryResult, error) {
 	if ctx == nil || instanceID == uuid.Nil {
 		return nil, ErrInvalidHistoryQuery
 	}
@@ -215,14 +258,31 @@ func (service *Service) History(ctx context.Context, instanceID uuid.UUID, input
 	if err != nil {
 		return nil, err
 	}
-	config, calculator, err := service.loadCalculator(ctx, instanceID)
+	instance, config, calculator, err := service.loadEnergyInstance(ctx, instanceID)
 	if err != nil {
 		return nil, err
 	}
+	if service.runs != nil {
+		run, runErr := service.ensureActiveRun(ctx, instance, config)
+		if runErr != nil {
+			return nil, runErr
+		}
+		if input.From.Before(run.StartedAt) {
+			input.From = run.StartedAt
+		}
+		if !input.To.After(input.From) {
+			input.To = input.From
+		}
+	}
 	location, _ := time.LoadLocation(config.Timezone)
+	requestedBucket := input.Bucket
+	if boundChart {
+		input.Bucket = boundedHistoryBucket(input.From, input.To, input.Bucket, location)
+	}
 	windows, total := pagedBucketWindows(input.From, input.To, input.Bucket, location, input.Page, input.PerPage)
 	result := &HistoryResult{
 		InstanceID: instanceID, LoggerID: config.LoggerID, Timezone: config.Timezone, Bucket: input.Bucket,
+		RequestedBucket: requestedBucket, Downsampled: input.Bucket != requestedBucket, PointLimit: MaxHistoryPoints,
 		Currency: config.Tariff.Currency, TariffMode: config.Tariff.effectiveMode(), TariffTagID: config.Tariff.TagID, RatePerKWh: config.Tariff.RatePerKWh,
 		Data: []HistoryRow{}, Page: input.Page, PerPage: input.PerPage, Total: total, TotalPages: totalPages(total, input.PerPage),
 	}
@@ -304,7 +364,7 @@ func (service *Service) ExportCSV(ctx context.Context, instanceID uuid.UUID, inp
 		return err
 	}
 	for {
-		result, err := service.History(ctx, instanceID, input)
+		result, err := service.historyResult(ctx, instanceID, input, false)
 		if err != nil {
 			return err
 		}
@@ -330,19 +390,188 @@ func (service *Service) ExportCSV(ctx context.Context, instanceID uuid.UUID, inp
 }
 
 func (service *Service) loadCalculator(ctx context.Context, instanceID uuid.UUID) (Config, *Calculator, error) {
+	_, config, calculator, err := service.loadEnergyInstance(ctx, instanceID)
+	return config, calculator, err
+}
+
+func (service *Service) loadEnergyInstance(ctx context.Context, instanceID uuid.UUID) (*plugin.Instance, Config, *Calculator, error) {
 	instance, err := service.instances.Find(ctx, instanceID)
 	if err != nil {
-		return Config{}, nil, err
+		return nil, Config{}, nil, err
 	}
 	if instance.Type != PluginType {
-		return Config{}, nil, ErrEnergyInstanceRequired
+		return nil, Config{}, nil, ErrEnergyInstanceRequired
 	}
 	config, err := DecodeConfig(instance.Config)
 	if err != nil {
-		return Config{}, nil, err
+		return nil, Config{}, nil, err
 	}
 	calculator, err := NewCalculator(config)
-	return config, calculator, err
+	return instance, config, calculator, err
+}
+
+func (service *Service) ensureActiveRun(ctx context.Context, instance *plugin.Instance, config Config) (*MeasurementRun, error) {
+	if service.runs == nil {
+		return nil, nil
+	}
+	run, err := service.runs.FindActive(ctx, instance.ID)
+	if err == nil {
+		return run, nil
+	}
+	if !errors.Is(err, ErrMeasurementRunNotFound) {
+		return nil, err
+	}
+	latest, latestErr := service.history.LatestBatch(ctx, config.LoggerID)
+	if latestErr != nil {
+		if errors.Is(latestErr, datalogger.ErrRawBatchNotFound) {
+			return nil, ErrMeasurementRunNotFound
+		}
+		return nil, latestErr
+	}
+	snapshot, marshalErr := json.Marshal(instance.Config)
+	if marshalErr != nil {
+		return nil, marshalErr
+	}
+	return service.runs.Start(ctx, StartMeasurementRunInput{
+		PluginInstanceID: instance.ID, Name: instance.Name, StartedAt: latest.BatchAt,
+		ConfigVersion: instance.ConfigVersion, ConfigSnapshot: snapshot,
+	})
+}
+
+func (service *Service) CurrentRun(ctx context.Context, instanceID uuid.UUID) (*MeasurementRun, error) {
+	if service.runs == nil {
+		return nil, ErrMeasurementRunsRequired
+	}
+	instance, config, _, err := service.loadEnergyInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	return service.ensureActiveRun(ctx, instance, config)
+}
+
+func (service *Service) ResetRun(ctx context.Context, instanceID uuid.UUID, input ResetRunInput) (*MeasurementRun, error) {
+	if service.runs == nil {
+		return nil, ErrMeasurementRunsRequired
+	}
+	instance, config, _, err := service.loadEnergyInstance(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := service.ensureActiveRun(ctx, instance, config)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := service.history.LatestBatch(ctx, config.LoggerID)
+	if err != nil {
+		return nil, err
+	}
+	if input.ExpectedRunID == uuid.Nil || input.ExpectedRunID != current.ID || strings.TrimSpace(input.Name) == "" {
+		return nil, ErrMeasurementRunConflict
+	}
+	archivePayload, err := service.buildRunArchive(ctx, current, config, latest.BatchAt)
+	if err != nil {
+		return nil, err
+	}
+	archive, err := json.Marshal(archivePayload)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(archive)
+	snapshot, err := json.Marshal(instance.Config)
+	if err != nil {
+		return nil, err
+	}
+	return service.runs.ArchiveAndStart(ctx, ResetMeasurementRunInput{
+		PluginInstanceID: instanceID, ExpectedRunID: input.ExpectedRunID, Name: strings.TrimSpace(input.Name), Reason: strings.TrimSpace(input.Reason),
+		Cutoff: latest.BatchAt, ConfigVersion: instance.ConfigVersion, ConfigSnapshot: snapshot,
+		ArchivePayload: archive, ArchiveSHA256: hex.EncodeToString(digest[:]),
+	})
+}
+
+func (service *Service) ListArchivedRuns(ctx context.Context, instanceID uuid.UUID) ([]MeasurementRun, error) {
+	if service.runs == nil {
+		return nil, ErrMeasurementRunsRequired
+	}
+	if _, _, _, err := service.loadEnergyInstance(ctx, instanceID); err != nil {
+		return nil, err
+	}
+	return service.runs.ListArchived(ctx, instanceID)
+}
+
+func (service *Service) ExportArchivedRunCSV(ctx context.Context, instanceID, runID uuid.UUID, writer io.Writer) error {
+	if service.runs == nil {
+		return ErrMeasurementRunsRequired
+	}
+	if writer == nil {
+		return ErrInvalidMeasurementRun
+	}
+	if _, _, _, err := service.loadEnergyInstance(ctx, instanceID); err != nil {
+		return err
+	}
+	run, err := service.runs.FindArchived(ctx, instanceID, runID)
+	if err != nil {
+		return err
+	}
+	var archive MeasurementRunArchive
+	if err := json.Unmarshal(run.ArchivePayload, &archive); err != nil || archive.SchemaVersion != 1 || archive.RunID != run.ID {
+		return ErrInvalidMeasurementRun
+	}
+	digest := sha256.Sum256(run.ArchivePayload)
+	if run.ArchiveSHA256 == nil || hex.EncodeToString(digest[:]) != *run.ArchiveSHA256 {
+		return ErrInvalidMeasurementRun
+	}
+	csvWriter := csv.NewWriter(writer)
+	if err := csvWriter.Write([]string{"run_id", "run_name", "from", "to", "electrical_kwh", "thermal_kwh", "cost", "currency", "cop", "electrical_coverage_percent", "thermal_coverage_percent"}); err != nil {
+		return err
+	}
+	location, _ := time.LoadLocation(archive.Timezone)
+	for _, row := range archive.Series {
+		record := []string{run.ID.String(), run.Name, row.From.In(location).Format(time.RFC3339), row.To.In(location).Format(time.RFC3339), formatFloat(row.Electrical.KilowattHours), formatFloat(row.Thermal.KilowattHours), optionalRatio(row.Cost), archive.Currency, optionalRatio(row.COP), formatFloat(row.Electrical.CoveragePercent), formatFloat(row.Thermal.CoveragePercent)}
+		if err := csvWriter.Write(record); err != nil {
+			return err
+		}
+	}
+	csvWriter.Flush()
+	return csvWriter.Error()
+}
+
+func (service *Service) buildRunArchive(ctx context.Context, run *MeasurementRun, config Config, cutoff time.Time) (MeasurementRunArchive, error) {
+	if run == nil || cutoff.Before(run.StartedAt) {
+		return MeasurementRunArchive{}, ErrInvalidMeasurementRun
+	}
+	archivedConfig, err := DecodeCompatibleConfig(run.ConfigVersion, plugin.Config(run.ConfigSnapshot))
+	if err != nil {
+		return MeasurementRunArchive{}, err
+	}
+	config = archivedConfig
+	calculator, err := NewCalculator(config)
+	if err != nil {
+		return MeasurementRunArchive{}, err
+	}
+	batches, err := service.history.ListBatches(ctx, datalogger.RawBatchListInput{LoggerID: config.LoggerID, TagIDs: powerTagIDs(config), From: run.StartedAt, To: cutoff, IncludeNeighbors: true})
+	if err != nil {
+		return MeasurementRunArchive{}, err
+	}
+	metrics, err := evaluateBatches(calculator, batches)
+	if err != nil {
+		return MeasurementRunArchive{}, err
+	}
+	overall, err := calculatePeriod(calculator, metrics, run.StartedAt, cutoff)
+	if err != nil {
+		return MeasurementRunArchive{}, err
+	}
+	location, _ := time.LoadLocation(config.Timezone)
+	_, total := pagedBucketWindows(run.StartedAt, cutoff, datalogger.QueryBucket1Minute, location, 1, 1)
+	windows, _ := pagedBucketWindows(run.StartedAt, cutoff, datalogger.QueryBucket1Minute, location, 1, max(1, total))
+	series := make([]HistoryRow, 0, len(windows))
+	for index := len(windows) - 1; index >= 0; index-- {
+		period, calculateErr := calculatePeriod(calculator, metrics, windows[index].From, windows[index].To)
+		if calculateErr != nil {
+			return MeasurementRunArchive{}, calculateErr
+		}
+		series = append(series, HistoryRow{PeriodSummary: summarizePeriod(period)})
+	}
+	return MeasurementRunArchive{SchemaVersion: 1, RunID: run.ID, PluginInstanceID: run.PluginInstanceID, LoggerID: config.LoggerID, Timezone: config.Timezone, Currency: config.Tariff.Currency, Bucket: string(datalogger.QueryBucket1Minute), From: run.StartedAt, To: cutoff, ConfigVersion: run.ConfigVersion, ConfigSnapshot: run.ConfigSnapshot, Summary: summarizePeriod(overall), Series: series}, nil
 }
 
 func normalizeHistoryInput(input HistoryInput) (HistoryInput, error) {
@@ -370,6 +599,27 @@ func validEnergyBucket(bucket datalogger.QueryBucket) bool {
 	default:
 		return false
 	}
+}
+
+func boundedHistoryBucket(from, to time.Time, requested datalogger.QueryBucket, location *time.Location) datalogger.QueryBucket {
+	buckets := [...]datalogger.QueryBucket{
+		datalogger.QueryBucket1Minute, datalogger.QueryBucket5Minutes, datalogger.QueryBucket15Minutes,
+		datalogger.QueryBucket1Hour, datalogger.QueryBucket6Hours, datalogger.QueryBucket1Day, datalogger.QueryBucket1Week,
+	}
+	eligible := false
+	for _, bucket := range buckets {
+		if bucket == requested {
+			eligible = true
+		}
+		if !eligible {
+			continue
+		}
+		_, total := pagedBucketWindows(from, to, bucket, location, 1, 1)
+		if total <= MaxHistoryPoints {
+			return bucket
+		}
+	}
+	return datalogger.QueryBucket1Week
 }
 
 func pagedBucketWindows(from, to time.Time, bucket datalogger.QueryBucket, location *time.Location, page, perPage int) ([]bucketWindow, int) {

@@ -8,7 +8,7 @@ import ProductionLineChart, { maximumProductionLinePoints } from "./ProductionLi
 const lineSpy = vi.fn(); const chartSpy = vi.fn(); const referenceSpy = vi.fn();
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
-  return { ResponsiveContainer: Container, LineChart: ({ children, data }: { children?: React.ReactNode; data: unknown[] }) => { chartSpy(data); return <div>{children}</div>; }, Line: (props: { dataKey: string; connectNulls: boolean }) => { lineSpy(props); return <span data-testid={`line-${props.dataKey}`} />; }, ReferenceLine: (props: { y: number; label: string }) => { referenceSpy(props); return <span data-testid="target" />; }, Brush: () => <span data-testid="brush" />, CartesianGrid: () => null, Tooltip: () => <span data-testid="tooltip" />, XAxis: () => null, YAxis: () => null };
+  return { ResponsiveContainer: Container, LineChart: ({ children, data }: { children?: React.ReactNode; data: unknown[] }) => { chartSpy(data); return <div>{children}</div>; }, Line: (props: { dataKey: string; connectNulls: boolean }) => { lineSpy(props); return <span data-testid={`line-${props.dataKey}`} />; }, ReferenceLine: (props: { y: number; label: string }) => { referenceSpy(props); return <span data-testid="target" />; }, Brush: ({ ariaLabel }: { ariaLabel: string }) => <span data-testid="brush" aria-label={ariaLabel} />, CartesianGrid: () => null, Tooltip: () => <span data-testid="tooltip" />, XAxis: () => null, YAxis: () => null };
 });
 
 describe("ProductionLineChart", () => {
@@ -16,8 +16,9 @@ describe("ProductionLineChart", () => {
   it("bounds points and renders multi-series, crosshair tooltip, navigator and target", () => {
     const data = Array.from({ length: 550 }, (_, index) => ({ at: String(index), power: index, previous: index === 549 ? null : index - 1 }));
     render(<ProductionLineChart data={data} xKey="at" unit="kW" ariaLabel="Power trend" series={[{ key: "power", label: "Power", color: "cyan" }, { key: "previous", label: "Previous", color: "gray", dashed: true }]} targets={[{ value: 100, label: "Target" }]} />);
-    expect(screen.getByRole("img", { name: "Power trend" })).toHaveTextContent(`${maximumProductionLinePoints} points`);
-    expect(chartSpy).toHaveBeenLastCalledWith(data.slice(-maximumProductionLinePoints)); expect(screen.getByTestId("brush")).toBeInTheDocument(); expect(screen.getByTestId("tooltip")).toBeInTheDocument(); expect(referenceSpy).toHaveBeenCalledWith(expect.objectContaining({ y: 100, label: "Target" })); expect(lineSpy).toHaveBeenCalledWith(expect.objectContaining({ connectNulls: false }));
+    expect(screen.getByRole("img", { name: "Power trend" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Power trend controls and chart" })).toHaveTextContent(`${maximumProductionLinePoints} points`);
+    expect(chartSpy).toHaveBeenLastCalledWith(data.slice(-maximumProductionLinePoints)); expect(screen.getByTestId("brush")).toHaveAttribute("aria-label", "Chart range boundary"); expect(screen.getByTestId("tooltip")).toBeInTheDocument(); expect(referenceSpy).toHaveBeenCalledWith(expect.objectContaining({ y: 100, label: "Target" })); expect(lineSpy).toHaveBeenCalledWith(expect.objectContaining({ connectNulls: false }));
   });
   it("toggles a series without mutating the input", () => {
     const data = [{ at: "one", power: 1, previous: 2 }];

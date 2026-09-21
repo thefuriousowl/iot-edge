@@ -19,6 +19,11 @@ func TestCompressedAirPluginDescriptorsAndLiveOutputs(t *testing.T) {
 	if err != nil || len(batch.Values) != 3 || batch.Values[0].Attributes["source"] == "" || batch.Values[0].PeriodStart != batch.Values[0].PeriodEnd {
 		t.Fatalf("batch=%#v err=%v", batch, err)
 	}
+	for _, value := range batch.Values {
+		if value.Key == OutputSEC {
+			t.Fatal("live snapshot must not publish historical SEC")
+		}
+	}
 }
 
 func TestCompressedAirPeriodOutputsCarryCoverageQualityAndProvenance(t *testing.T) {
@@ -35,6 +40,12 @@ func TestCompressedAirPeriodOutputsCarryCoverageQualityAndProvenance(t *testing.
 	for _, value := range batch.Values {
 		if value.Quality != plugin.OutputQualityPartial || value.CoveragePercent == nil || *value.CoveragePercent != 50 || value.Attributes["asset_id"] == "" || value.Attributes["boundary_asset_id"] == "" || value.Attributes["source"] == "" {
 			t.Fatalf("value=%#v", value)
+		}
+		if value.Key == OutputSEC {
+			sec, ok := value.Value.(float64)
+			if value.PeriodStart != from || value.PeriodEnd != to || !ok || sec != .2 {
+				t.Fatalf("SEC is not a windowed persisted-history result: %#v", value)
+			}
 		}
 	}
 }

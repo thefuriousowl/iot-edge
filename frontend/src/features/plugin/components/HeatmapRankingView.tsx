@@ -1,0 +1,17 @@
+import { type CSSProperties, useMemo } from "react";
+
+import { buildHeatmapCells, type HeatmapPoint, weekdayLabels } from "./heatmapData";
+
+export interface RankingRow { label: string; value: number; previous: number | null; unit: string; coverage: number }
+
+function HeatmapRankingView({ points, ranking, timezone, unit }: { points: HeatmapPoint[]; ranking: RankingRow[]; timezone: string; unit: string }) {
+  const cells = useMemo(() => buildHeatmapCells(points, timezone), [points, timezone]);
+  const byKey = new Map(cells.map((cell) => [`${cell.weekday}-${cell.hour}`, cell]));
+  const maximum = Math.max(0, ...cells.map((cell) => cell.value));
+  return <div className="heatmap-ranking-grid">
+    <section className="utility-heatmap" aria-labelledby="utility-heatmap-heading"><header><h2 id="utility-heatmap-heading">Hour × weekday load profile</h2><p>Average covered-bucket {unit}; gaps stay empty.</p></header>{cells.length === 0 ? <div className="heatmap-empty" role="status">No covered heatmap data in this range.</div> : <><div className="heatmap-scroll"><div className="heatmap-axis" aria-hidden="true"><span />{Array.from({ length: 24 }, (_, hour) => <b key={hour}>{String(hour).padStart(2, "0")}</b>)}</div>{weekdayLabels.map((day, weekday) => <div className="heatmap-row" key={day}><strong>{day}</strong>{Array.from({ length: 24 }, (_, hour) => { const cell = byKey.get(`${weekday}-${hour}`); const intensity = cell && maximum > 0 ? Math.max(.08, cell.value / maximum) : 0; return <i key={hour} className={cell ? "has-value" : ""} style={{ "--heat": intensity } as CSSProperties} title={cell ? `${day} ${String(hour).padStart(2, "0")}:00 · ${cell.value.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit} · ${cell.coverage.toLocaleString(undefined, { maximumFractionDigits: 1 })}% coverage` : `${day} ${String(hour).padStart(2, "0")}:00 · no data`} />; })}</div>)}</div><details><summary>Accessible heatmap table</summary><table><thead><tr><th>Weekday</th><th>Hour</th><th>Average</th><th>Coverage</th><th>Samples</th></tr></thead><tbody>{cells.map((cell) => <tr key={`${cell.weekday}-${cell.hour}`}><td>{weekdayLabels[cell.weekday]}</td><td>{String(cell.hour).padStart(2, "0")}:00</td><td>{cell.value.toLocaleString(undefined, { maximumFractionDigits: 2 })} {unit}</td><td>{cell.coverage.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</td><td>{cell.samples}</td></tr>)}</tbody></table></details></>}</section>
+    <section className="utility-ranking" aria-labelledby="utility-ranking-heading"><header><h2 id="utility-ranking-heading">Top consumption buckets</h2><p>Ranked within the selected range; comparison stays aligned by bucket position.</p></header>{ranking.length === 0 ? <div className="heatmap-empty" role="status">No ranked values in this range.</div> : <ol>{ranking.map((row, index) => { const delta = row.previous !== null && row.previous !== 0 ? (row.value - row.previous) / Math.abs(row.previous) * 100 : null; return <li key={`${row.label}-${index}`}><b>{index + 1}</b><div><strong>{row.label}</strong><span>{row.coverage.toLocaleString(undefined, { maximumFractionDigits: 1 })}% coverage</span></div><p>{row.value.toLocaleString(undefined, { maximumFractionDigits: 2 })} <small>{row.unit}</small>{delta !== null && <em className={delta > 0 ? "is-up" : delta < 0 ? "is-down" : ""}>{delta > 0 ? "+" : ""}{delta.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</em>}</p></li>; })}</ol>}</section>
+  </div>;
+}
+
+export default HeatmapRankingView;

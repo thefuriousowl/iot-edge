@@ -65,6 +65,8 @@ func TestHTTPDefinitionRejectsUnsafeAndUnboundedConfig(t *testing.T) {
 	definition, _ := registry.Find(TypeHTTPServer)
 	for _, config := range []Config{
 		Config(`{"http":{"bind_address":"localhost"}}`),
+		Config(`{"http":{"bind_address":"169.254.169.254"}}`),
+		Config(`{"http":{"bind_address":"192.0.2.10"}}`),
 		Config(`{"http":{"port":0}}`),
 		Config(`{"http":{"path":"snapshot"}}`),
 		Config(`{"http":{"path":"/a/../snapshot"}}`),

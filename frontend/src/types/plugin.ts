@@ -182,6 +182,20 @@ export interface EnergyOverviewResponse {
   latest: EnergyBatchMetrics | null;
   today: EnergyPeriodSummary;
   month: EnergyPeriodSummary;
+  run?: EnergyMeasurementRun;
+}
+
+export interface EnergyMeasurementRun {
+  id: string;
+  plugin_instance_id: string;
+  name: string;
+  reason: string;
+  status: "active" | "archived";
+  started_at: string;
+  ended_at?: string;
+  config_version: number;
+  created_at: string;
+  archived_at?: string;
 }
 
 export interface EnergyHistoryParams {
@@ -197,6 +211,9 @@ export interface EnergyHistoryResponse {
   logger_id: string;
   timezone: string;
   bucket: DataLoggerQueryBucket;
+  requested_bucket: DataLoggerQueryBucket;
+  downsampled: boolean;
+  point_limit: number;
   currency: string;
   tariff_mode: "flat" | "tag";
   tariff_tag_id?: string;

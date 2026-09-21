@@ -4,6 +4,7 @@ import type { EnergyPeriodSummary } from "../../../types/plugin";
 import {
   automaticEnergyBucket,
   availableEnergyBuckets,
+  boundedEnergyHistoryRows,
   defaultEnergyRange,
   energyLocalDate,
   energyLocalInput,
@@ -45,6 +46,7 @@ describe("Energy history utilities", () => {
     expect(automaticEnergyBucket(from, to)).toBe("6h");
     expect(validEnergyRange(from, to)).toBe(true);
     expect(validEnergyRange(from, "2027-09-01T00:00:00Z")).toBe(false);
+    expect(boundedEnergyHistoryRows(Array.from({ length: 501 }, (_, index) => index))).toEqual(Array.from({ length: 500 }, (_, index) => index));
   });
 
   it("sums Energy instead of averaging bucket COP and fails cost closed", () => {

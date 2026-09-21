@@ -4,18 +4,22 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectNoAxeViolations } from "../../../test/axe";
 
-import { exportEnergyCSV, getEnergyHistory } from "../../../services/energy.service";
+import { getEnergyHistory } from "../../../services/energy.service";
 import { getAssetBindings, listAssets } from "../../../services/asset.service";
 import { getPlugin } from "../../../services/plugin.service";
 import type { EnergyHistoryResponse, EnergyPeriodSummary, PluginInstance } from "../../../types/plugin";
 import EnergyHistoryPage from "./EnergyHistoryPage";
 
-vi.mock("../../../services/energy.service", () => ({ exportEnergyCSV: vi.fn(), getEnergyHistory: vi.fn() }));
+vi.mock("../../../services/energy.service", () => ({ getEnergyHistory: vi.fn() }));
 vi.mock("../../../services/asset.service", () => ({ getAssetBindings: vi.fn(), listAssets: vi.fn() }));
 vi.mock("../../../services/plugin.service", () => ({ getPlugin: vi.fn() }));
 vi.mock("../../system/components/InternetStatus", () => ({ default: () => <span>Internet</span> }));
 vi.mock("../components/ProductionLineChart", () => ({ default: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} /> }));
+vi.mock("../components/ProductionBarChart", () => ({ default: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} /> }));
+vi.mock("../components/ProductionDonutChart", () => ({ default: ({ ariaLabel }: { ariaLabel: string }) => <div role="img" aria-label={ariaLabel} /> }));
+vi.mock("../components/HeatmapRankingView", () => ({ default: () => <div data-testid="heatmap-ranking">Heatmap ranking</div> }));
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const Empty = () => null;
@@ -37,7 +41,6 @@ vi.mock("recharts", () => {
   };
 });
 
-const mockedExport = vi.mocked(exportEnergyCSV);
 const mockedAssetBindings = vi.mocked(getAssetBindings);
 const mockedAssets = vi.mocked(listAssets);
 const mockedHistory = vi.mocked(getEnergyHistory);
@@ -61,7 +64,7 @@ function period(from: string, electrical: number, thermal: number): EnergyPeriod
 }
 
 const history: EnergyHistoryResponse = {
-  instance_id: plugin.id, logger_id: "logger-1", timezone: "Asia/Bangkok", bucket: "1h", currency: "THB", tariff_mode: "tag", tariff_tag_id: "tariff", rate_per_kwh: 0,
+  instance_id: plugin.id, logger_id: "logger-1", timezone: "Asia/Bangkok", bucket: "1h", requested_bucket: "1h", downsampled: false, point_limit: 500, currency: "THB", tariff_mode: "tag", tariff_tag_id: "tariff", rate_per_kwh: 0,
   data: [period("2026-08-23T02:00:00Z", 20, 60), period("2026-08-23T01:00:00Z", 10, 30)],
   pagination: { page: 1, per_page: 500, total: 2, total_pages: 1 },
 };
@@ -73,9 +76,9 @@ function renderPage(path = "/plugins/plugin-1/energy/history?from=2026-08-23T01%
 
 describe("EnergyHistoryPage", () => {
   beforeEach(() => {
-    mockedExport.mockReset(); mockedHistory.mockReset(); mockedPlugin.mockReset();
+    mockedHistory.mockReset(); mockedPlugin.mockReset();
     mockedAssets.mockReset(); mockedAssetBindings.mockReset();
-    mockedPlugin.mockResolvedValue(plugin); mockedHistory.mockResolvedValue(history); mockedExport.mockResolvedValue(new Blob(["csv"]));
+    mockedPlugin.mockResolvedValue(plugin); mockedHistory.mockResolvedValue(history);
     mockedAssets.mockResolvedValue({ data: [{ id: "asset-1", parent_id: null, name: "Chiller Plant", kind: "system", description: null, enabled: true, timezone: null, position: 0, metadata: {}, created_at: "", updated_at: "" }], pagination: { page: 1, per_page: 100, total: 1, total_pages: 1 } });
     mockedAssetBindings.mockResolvedValue({ data: [{ id: "binding-1", owner_asset_id: "asset-1", boundary_asset_id: "asset-1", source_key: "plugin_output:plugin-1:thermal_output_kw", source: { kind: "plugin_output", plugin_instance_id: "plugin-1", output_key: "thermal_output_kw" }, semantic: { resource: "thermal", quantity: "power", unit: "kW", precision: 2 }, meter_role: "direct", rollup_policy: "include" }] });
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:energy") });
@@ -100,6 +103,7 @@ describe("EnergyHistoryPage", () => {
     expect(screen.getByRole("img", { name: /average electrical demand/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /donut chart of cost contribution/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /data coverage/i })).toBeInTheDocument();
+    expect(screen.getByTestId("heatmap-ranking")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Electricity source period" })).toHaveTextContent("Logger logger-1");
     const thermal = screen.getByRole("region", { name: "Thermal performance summary" });
     expect(within(thermal).getByText("90.00 kWh")).toBeInTheDocument();
@@ -111,6 +115,13 @@ describe("EnergyHistoryPage", () => {
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/plugins/plugin-1/energy");
     expect(screen.getByRole("link", { name: "History & charts" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("2 buckets")).toBeInTheDocument();
+  });
+
+  it("has no automated accessibility violations in the populated dashboard", async () => {
+    const { container } = renderPage();
+    await screen.findByRole("heading", { name: "Plant Energy" });
+    await waitFor(() => expect(screen.getByText("2 buckets")).toBeInTheDocument());
+    await expectNoAxeViolations(container);
   });
 
   it("applies an exact Plugin-timezone range and automatically selects a safe bucket", async () => {
@@ -131,11 +142,11 @@ describe("EnergyHistoryPage", () => {
     expect(mockedHistory).toHaveBeenCalledWith("plugin-1", expect.objectContaining({ bucket: "6h", per_page: 500 }), expect.any(AbortSignal));
   });
 
-  it("exports the exact range through the Energy Plugin endpoint", async () => {
+  it("exports the visible dashboard data with active filter provenance", async () => {
     renderPage(); await screen.findByRole("heading", { name: "Plant Energy" });
     fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
-    await waitFor(() => expect(mockedExport).toHaveBeenCalledWith("plugin-1", { from: "2026-08-23T01:00:00.000Z", to: "2026-08-23T03:00:00.000Z", bucket: "1h" }));
-    expect(URL.createObjectURL).toHaveBeenCalled();
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: "text/csv;charset=utf-8" })));
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
 
   it("compares the previous equal period and persists comparison in the URL", async () => {

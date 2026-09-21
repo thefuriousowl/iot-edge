@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleAlert,
   Download,
+  FileImage,
   Gauge,
   LoaderCircle,
   RefreshCw,
@@ -15,18 +16,14 @@ import {
   WalletCards,
   Zap,
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Legend,
   Line,
   LineChart,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -34,7 +31,7 @@ import {
 } from "recharts";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
-import { exportEnergyCSV, getEnergyHistory } from "../../../services/energy.service";
+import { getEnergyHistory } from "../../../services/energy.service";
 import { getAssetBindings, listAssets } from "../../../services/asset.service";
 import { getPlugin } from "../../../services/plugin.service";
 import type { Asset } from "../../../types/asset";
@@ -42,10 +39,15 @@ import type { DataLoggerQueryBucket } from "../../../types/datalogger";
 import type { EnergyHistoryResponse, EnergyPeriodSummary, PluginInstance } from "../../../types/plugin";
 import EnergyPluginTabs from "../components/EnergyPluginTabs";
 import ProductionLineChart from "../components/ProductionLineChart";
+import ProductionBarChart from "../components/ProductionBarChart";
+import ProductionDonutChart from "../components/ProductionDonutChart";
+import HeatmapRankingView from "../components/HeatmapRankingView";
 import { previousEqualRange, updateUtilityFilters, validDashboardTimezone } from "../../utility/utils/dashboardFilters";
+import { buildEnergyDashboardCSV, downloadBlob, exportDashboardPNG } from "../utils/dashboardExport";
 import {
   automaticEnergyBucket,
   availableEnergyBuckets,
+  boundedEnergyHistoryRows,
   defaultEnergyRange,
   energyLocalDate,
   energyLocalInput,
@@ -58,6 +60,10 @@ import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./EnergyHistoryPage.css";
 import "../components/ProductionLineChart.css";
+import "../components/ProductionCharts.css";
+import "../components/HeatmapRankingView.css";
+import "../components/DashboardAccessibility.css";
+import "../components/DashboardExport.css";
 
 const tablePageSize = 10;
 const bucketLabels: Record<DataLoggerQueryBucket, string> = {
@@ -134,7 +140,8 @@ function EnergyHistoryPage() {
   const [message, setMessage] = useState("");
   const [filterError, setFilterError] = useState("");
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<"csv" | "png" | null>(null);
+  const dashboardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -168,10 +175,13 @@ function EnergyHistoryPage() {
     return () => controller.abort();
   }, [id]);
 
-  const summary = summarizeEnergyHistory(history?.data ?? []);
-  const previousRows = [...(comparison?.data ?? [])].reverse();
-  const chartData = [...(history?.data ?? [])].reverse().map((row, index) => ({
+  const historyRows = boundedEnergyHistoryRows(history?.data ?? []);
+  const comparisonRows = boundedEnergyHistoryRows(comparison?.data ?? []);
+  const summary = summarizeEnergyHistory(historyRows);
+  const previousRows = [...comparisonRows].reverse();
+  const chartData = [...historyRows].reverse().map((row, index) => ({
     at: formatPeriod(row.from, history?.timezone ?? "UTC", bucket),
+    sourceAt: row.from,
     electrical: row.electrical.kilowatt_hours,
     thermal: row.thermal.kilowatt_hours,
     cost: row.cost.valid ? row.cost.value : null,
@@ -183,19 +193,26 @@ function EnergyHistoryPage() {
     previousElectricalDemand: previousRows[index]?.electrical.covered_seconds ? previousRows[index].electrical.kilowatt_hours / (previousRows[index].electrical.covered_seconds / 3_600) : null,
     thermalDemand: row.thermal.covered_seconds > 0 ? row.thermal.kilowatt_hours / (row.thermal.covered_seconds / 3_600) : null,
   }));
-  const comparisonSummary = comparison ? summarizeEnergyHistory(comparison.data) : null;
-  const costDistribution = chartData.filter((row) => row.cost !== null && row.cost > 0).map((row) => ({ name: row.at, value: row.cost }));
+  const comparisonSummary = comparison ? summarizeEnergyHistory(comparisonRows) : null;
+  const costDistribution = chartData.filter((row) => row.cost !== null && row.cost > 0).map((row) => ({ name: row.at, value: row.cost! }));
+  const heatmapPoints = chartData.map((row) => ({ at: row.sourceAt, value: row.electrical, coverage: row.electricalCoverage }));
+  const consumptionRanking = [...chartData]
+    .filter((row) => row.electrical > 0)
+    .sort((a, b) => b.electrical - a.electrical)
+    .slice(0, 5)
+    .map((row) => ({ label: row.at, value: row.electrical, previous: row.previousElectrical, unit: "kWh", coverage: row.electricalCoverage }));
   const coveredAverage = (kilowattHours: number, coveredSeconds: number) => coveredSeconds > 0 ? kilowattHours / (coveredSeconds / 3_600) : null;
-  const electricalCoveredSeconds = history?.data.reduce((sum, row) => sum + row.electrical.covered_seconds, 0) ?? 0;
-  const thermalCoveredSeconds = history?.data.reduce((sum, row) => sum + row.thermal.covered_seconds, 0) ?? 0;
+  const electricalCoveredSeconds = historyRows.reduce((sum, row) => sum + row.electrical.covered_seconds, 0);
+  const thermalCoveredSeconds = historyRows.reduce((sum, row) => sum + row.thermal.covered_seconds, 0);
   const electricalAverage = coveredAverage(summary.electricalKWh, electricalCoveredSeconds);
   const thermalAverage = coveredAverage(summary.thermalKWh, thermalCoveredSeconds);
-  const totalTablePages = Math.max(1, Math.ceil((history?.data.length ?? 0) / tablePageSize));
+  const totalTablePages = Math.max(1, Math.ceil(historyRows.length / tablePageSize));
   const safePage = Math.min(page, totalTablePages);
-  const tableRows = history?.data.slice((safePage - 1) * tablePageSize, safePage * tablePageSize) ?? [];
+  const tableRows = historyRows.slice((safePage - 1) * tablePageSize, safePage * tablePageSize);
   const sourceTimezone = history?.timezone ?? (plugin?.config as { timezone?: string } | undefined)?.timezone ?? "UTC";
   const timezone = validDashboardTimezone(searchParams.get("timezone"), sourceTimezone);
   const assetID = searchParams.get("asset") ?? "all";
+  const assetName = assetID === "all" ? "All mapped output" : ownerAssets.find((asset) => asset.id === assetID)?.name ?? "Unavailable hierarchy";
   const hierarchyUnavailable = assetID !== "all" && !ownerAssets.some((asset) => asset.id === assetID);
 
   function setRange(nextRange: { from: string; to: string }, nextBucket?: DataLoggerQueryBucket) {
@@ -245,30 +262,40 @@ function EnergyHistoryPage() {
   }
 
   async function exportCSV() {
-    setExporting(true);
+    if (!history) return;
+    setExporting("csv");
     setMessage("");
     try {
-      const blob = await exportEnergyCSV(id, { from: range.from, to: range.to, bucket });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
       const slug = (plugin?.name ?? "energy").replaceAll(/[^a-z0-9]+/gi, "-").replaceAll(/^-|-$/g, "").toLowerCase() || "energy";
-      anchor.download = `${slug}-${bucket}-history.csv`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      const csv = buildEnergyDashboardCSV({ ...history, data: historyRows }, comparison ? { ...comparison, data: comparisonRows } : null, { pluginName: plugin?.name ?? "Energy", assetID, assetName, displayTimezone: timezone, comparePrevious: comparison !== null });
+      downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${slug}-${bucket}-history.csv`);
     } catch (error) {
       setMessage(readableError(error));
     } finally {
-      setExporting(false);
+      setExporting(null);
+    }
+  }
+
+  async function exportPNG() {
+    if (!dashboardRef.current) return;
+    setExporting("png");
+    setMessage("");
+    try {
+      const slug = (plugin?.name ?? "energy").replaceAll(/[^a-z0-9]+/gi, "-").replaceAll(/^-|-$/g, "").toLowerCase() || "energy";
+      await exportDashboardPNG(dashboardRef.current, `${slug}-${bucket}-dashboard.png`);
+    } catch (error) {
+      setMessage(readableError(error));
+    } finally {
+      setExporting(null);
     }
   }
 
   return (
     <VGatewayShell breadcrumb={<>Plugins <span>/</span> <strong>{plugin?.name ?? "Energy history"}</strong></>}>
-      <div className="energy-history-content" aria-busy={state === "loading"}>
+      <div ref={dashboardRef} className="energy-history-content" aria-busy={state === "loading"}>
         <header className="energy-history-heading">
           <div><p>Energy Management Plugin</p><h1>{plugin?.name ?? "Energy history"}</h1><span>Explore Plugin-calculated kWh, cost, COP, coverage, and quality over an exact time range.</span></div>
-          <div><Link to={`/plugins/${encodeURIComponent(id)}/energy`}><Gauge size={17} />Live overview</Link><button type="button" disabled={exporting || state === "loading" || !history?.data.length} onClick={() => void exportCSV()}>{exporting ? <LoaderCircle className="is-spinning" /> : <Download />} {exporting ? "Exporting…" : "Export CSV"}</button></div>
+          <div><Link to={`/plugins/${encodeURIComponent(id)}/energy`}><Gauge size={17} />Live overview</Link><button type="button" disabled={exporting !== null || state === "loading" || !history?.data.length} onClick={() => void exportCSV()}>{exporting === "csv" ? <LoaderCircle className="is-spinning" /> : <Download />} {exporting === "csv" ? "Exporting…" : "Export CSV"}</button><button type="button" disabled={exporting !== null || state === "loading" || !history?.data.length} onClick={() => void exportPNG()}>{exporting === "png" ? <LoaderCircle className="is-spinning" /> : <FileImage />} {exporting === "png" ? "Rendering components…" : "Export PNG bundle"}</button></div>
         </header>
 
         <EnergyPluginTabs instanceID={id} />
@@ -315,18 +342,20 @@ function EnergyHistoryPage() {
             <div className="thermal-source-boundary" role="region" aria-label="Thermal circuit history availability"><span>Supply temperature <strong>Live circuit only</strong></span><span>Return temperature / ΔT <strong>Live circuit only</strong></span><span>Flow rate <strong>Live circuit only</strong></span><p>The Energy history schema does not persist these circuit inputs yet, so this dashboard does not reconstruct or interpolate them.</p></div>
           </section>
 
-          {history.data.length === 0 ? <div className="energy-history-state"><BarChart3 /><strong>No Energy history in this range</strong><span>Choose another window or wait for synchronized Logger batches.</span></div> : <>
+          {historyRows.length === 0 ? <div className="energy-history-state"><BarChart3 /><strong>No Energy history in this range</strong><span>Choose another window or wait for synchronized Logger batches.</span></div> : <>
             <section className="energy-history-chart is-wide" aria-label="Electrical and thermal Energy chart">
               <header><div><BarChart3 /><span><h2>Energy by {bucketLabels[bucket]}</h2><small>Electrical and thermal integration per Plugin bucket</small></span></div><code>kWh</code></header>
-              <div role="img" aria-label="Grouped bars comparing electrical and thermal kilowatt-hours over time"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartData}><CartesianGrid stroke="rgba(92,118,136,.18)" vertical={false} /><XAxis dataKey="at" minTickGap={28} tick={{ fill: "#8295a4", fontSize: 11 }} /><YAxis tick={{ fill: "#8295a4", fontSize: 11 }} /><Tooltip /><Legend /><Bar dataKey="electrical" name="Electrical kWh" fill="#34c3ff" radius={[3, 3, 0, 0]} />{comparison && <Bar dataKey="previousElectrical" name="Previous electrical kWh" fill="#567082" radius={[3, 3, 0, 0]} />}<Bar dataKey="thermal" name="Thermal kWh" fill="#8d7cf6" radius={[3, 3, 0, 0]} /></BarChart></ResponsiveContainer></div>
+              <ProductionBarChart data={chartData} xKey="at" unit="kWh" ariaLabel="Grouped bars comparing electrical and thermal kilowatt-hours over time" series={[{ key: "electrical", label: "Electrical kWh", color: "#34c3ff" }, ...(comparison ? [{ key: "previousElectrical", label: "Previous electrical kWh", color: "#567082" }] : []), { key: "thermal", label: "Thermal kWh", color: "#8d7cf6" }]} />
             </section>
 
             <div className="energy-history-chart-grid electricity-cost-grid">
               <section className="energy-history-chart" aria-label="Electrical demand profile"><header><div><Gauge /><span><h2>Demand profile</h2><small>Covered-period average demand; gaps are not interpolated</small></span></div><code>kW</code></header><div role="img" aria-label="Line chart of average electrical demand over time"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData}><CartesianGrid stroke="rgba(92,118,136,.18)" vertical={false} /><XAxis dataKey="at" minTickGap={28} tick={{ fill: "#8295a4", fontSize: 10 }} /><YAxis tick={{ fill: "#8295a4", fontSize: 10 }} /><Tooltip /><Line type="monotone" dataKey="demand" name="Average demand (kW)" stroke="#34c3ff" strokeWidth={2} dot={false} connectNulls={false} /></LineChart></ResponsiveContainer></div></section>
-              <section className="energy-history-chart" aria-label="Cost distribution"><header><div><WalletCards /><span><h2>Cost distribution</h2><small>Valid tariff cost contribution by source bucket</small></span></div><code>{history.currency}</code></header><div role="img" aria-label={`Donut chart of cost contribution in ${history.currency}`}><ResponsiveContainer width="100%" height="100%"><PieChart><Tooltip /><Pie data={costDistribution} dataKey="value" nameKey="name" innerRadius="48%" outerRadius="78%" fill="#34c3ff" /></PieChart></ResponsiveContainer></div></section>
+              <section className="energy-history-chart" aria-label="Cost distribution"><header><div><WalletCards /><span><h2>Cost distribution</h2><small>Valid tariff cost contribution by source bucket</small></span></div><code>{history.currency}</code></header><ProductionDonutChart data={costDistribution} unit={history.currency} ariaLabel={`Donut chart of cost contribution in ${history.currency}`} /></section>
             </div>
 
             <section className="energy-history-chart is-wide production-chart-panel" aria-label="Thermal and electrical input trend"><header><div><Thermometer /><span><h2>Thermal output and electrical input</h2><small>Covered-bucket averages preserve unavailable periods as gaps</small></span></div><code>kW</code></header><ProductionLineChart data={chartData} xKey="at" unit="kW" ariaLabel="Interactive line chart comparing average thermal output and electrical input" series={[{ key: "thermalDemand", label: "Average thermal output", color: "#8d7cf6" }, { key: "demand", label: "Average electrical input", color: "#34c3ff" }, ...(comparison ? [{ key: "previousElectricalDemand", label: "Previous electrical input", color: "#8295a4", dashed: true }] : [])]} /></section>
+
+            <HeatmapRankingView points={heatmapPoints} ranking={consumptionRanking} timezone={timezone} unit="kWh" />
 
             <div className="energy-history-chart-grid">
               <section className="energy-history-chart" aria-label="COP chart"><header><div><Sigma /><span><h2>Coefficient of performance</h2><small>Unavailable buckets remain visible as gaps</small></span></div><code>COP</code></header><div role="img" aria-label="Line chart of coefficient of performance over time"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData}><CartesianGrid stroke="rgba(92,118,136,.18)" vertical={false} /><XAxis dataKey="at" minTickGap={28} tick={{ fill: "#8295a4", fontSize: 10 }} /><YAxis tick={{ fill: "#8295a4", fontSize: 10 }} /><Tooltip /><Line type="monotone" dataKey="cop" name="COP" stroke="#8d7cf6" strokeWidth={2} dot={false} connectNulls={false} /></LineChart></ResponsiveContainer></div></section>
@@ -338,7 +367,7 @@ function EnergyHistoryPage() {
             <section className="energy-history-table" aria-labelledby="energy-history-table-heading">
               <header><div><h2 id="energy-history-table-heading">Bucket details</h2><p>Plugin-calculated values for the exact selected window.</p></div><span>{history.pagination.total} buckets</span></header>
               <div><table><thead><tr><th>Period</th><th>Electrical</th><th>Thermal</th><th>Cost</th><th>COP</th><th>Coverage</th><th>Issues</th></tr></thead><tbody>{tableRows.map((row) => <tr key={`${row.from}-${row.to}`}><td data-label="Period"><strong>{formatPeriod(row.from, history.timezone, bucket)}</strong><small>to {formatPeriod(row.to, history.timezone, bucket)}</small></td><td data-label="Electrical">{formatNumber(row.electrical.kilowatt_hours)} kWh</td><td data-label="Thermal">{formatNumber(row.thermal.kilowatt_hours)} kWh</td><td data-label="Cost">{row.cost.valid ? `${formatNumber(row.cost.value)} ${history.currency}` : <span className="is-unavailable">Unavailable</span>}</td><td data-label="COP">{row.cop.valid ? formatNumber(row.cop.value) : <span className="is-unavailable">Unavailable</span>}</td><td data-label="Coverage"><strong>{formatNumber(row.electrical.coverage_percent, 1)}%</strong><small>thermal {formatNumber(row.thermal.coverage_percent, 1)}%</small></td><td data-label="Issues"><span className={issueCount(row) > 0 ? "has-issues" : ""}>{issueCount(row)}</span></td></tr>)}</tbody></table></div>
-              <footer><p>Showing {tableRows.length} of {history.data.length} loaded Plugin buckets</p><div><button aria-label="Previous history page" disabled={safePage <= 1} onClick={() => changePage(safePage - 1)}><ChevronLeft /></button><span>{safePage} / {totalTablePages}</span><button aria-label="Next history page" disabled={safePage >= totalTablePages} onClick={() => changePage(safePage + 1)}><ChevronRight /></button></div></footer>
+              <footer><p>Showing {tableRows.length} of {historyRows.length} loaded Plugin buckets</p><div><button aria-label="Previous history page" disabled={safePage <= 1} onClick={() => changePage(safePage - 1)}><ChevronLeft /></button><span>{safePage} / {totalTablePages}</span><button aria-label="Next history page" disabled={safePage >= totalTablePages} onClick={() => changePage(safePage + 1)}><ChevronRight /></button></div></footer>
             </section>
           </>}
         </>}

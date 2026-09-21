@@ -69,8 +69,8 @@ func TestHealthCheck_ReturnsOKWithVersion(t *testing.T) {
 	if body.Status != "ok" {
 		t.Errorf("status = %q, want %q", body.Status, "ok")
 	}
-	if body.Version != "0.1.0" {
-		t.Errorf("version = %q, want %q", body.Version, "0.1.0")
+	if body.Version != "0.2.0-rc.1" {
+		t.Errorf("version = %q, want %q", body.Version, "0.2.0-rc.1")
 	}
 }
 

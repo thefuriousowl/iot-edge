@@ -23,7 +23,7 @@ describe("Energy service", () => {
   it("loads overview/history and exports exact-range CSV through encoded paths", async () => {
     const controller = new AbortController();
     const params = { from: period.from, to: period.to, bucket: "1h" as const, page: 2, per_page: 100 };
-    const history: EnergyHistoryResponse = { instance_id: overview.instance_id, logger_id: overview.logger_id, timezone: "UTC", bucket: "1h", currency: "THB", tariff_mode: "flat", rate_per_kwh: 4.5, data: [period], pagination: { page: 2, per_page: 100, total: 101, total_pages: 2 } };
+    const history: EnergyHistoryResponse = { instance_id: overview.instance_id, logger_id: overview.logger_id, timezone: "UTC", bucket: "1h", requested_bucket: "1h", downsampled: false, point_limit: 500, currency: "THB", tariff_mode: "flat", rate_per_kwh: 4.5, data: [period], pagination: { page: 2, per_page: 100, total: 101, total_pages: 2 } };
     const blob = new Blob(["from,to,electrical_kwh"]);
     mockedGet.mockResolvedValueOnce(responseWith(overview)).mockResolvedValueOnce(responseWith(history)).mockResolvedValueOnce(responseWith(blob));
     await expect(getEnergyOverview("plugin / one", controller.signal)).resolves.toEqual(overview);

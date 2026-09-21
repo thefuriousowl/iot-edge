@@ -1,0 +1,71 @@
+.dashboard-png-frame {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 2147483647;
+  display: grid;
+  grid-template-rows: 108px minmax(0, 1fr);
+  box-sizing: border-box;
+  width: 1920px;
+  height: 1080px;
+  padding: 40px 52px 52px;
+  overflow: hidden;
+  color: #eef7fc;
+  background: #071019;
+}
+
+.dashboard-png-frame > header {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-bottom: 1px solid rgba(92, 118, 136, .35);
+}
+
+.dashboard-png-frame > header span {
+  color: #34c3ff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.dashboard-png-frame > header h1 {
+  margin: 8px 0 14px;
+  color: #eef7fc;
+  font-size: 32px;
+}
+
+.dashboard-png-component {
+  display: flex;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding-top: 28px;
+}
+
+.dashboard-png-component > * {
+  max-width: none;
+}
+
+.dashboard-png-component .thermal-dashboard,
+.dashboard-png-component .energy-history-summary,
+.dashboard-png-component .energy-history-provenance,
+.dashboard-png-component .utility-heatmap,
+.dashboard-png-component .utility-ranking,
+.dashboard-png-component .energy-history-table {
+  align-self: center;
+  font-size: 18px;
+}
+
+.dashboard-png-component .energy-history-summary strong,
+.dashboard-png-component .thermal-dashboard-kpis strong {
+  font-size: 28px;
+}
+
+.dashboard-png-component .heatmap-axis,
+.dashboard-png-component .heatmap-row {
+  min-width: 0;
+  grid-template-columns: 54px repeat(24, minmax(0, 1fr));
+}
+
+.dashboard-png-component .heatmap-scroll { overflow: hidden; }
+.dashboard-png-component .utility-ranking li { padding: 1.4rem 1.6rem; }
+.dashboard-png-component .energy-history-table > div { max-height: 720px; }

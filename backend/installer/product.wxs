@@ -1,0 +1,57 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="IoT Edge" Manufacturer="thefuriousowl" Version="$(var.ProductVersion)" UpgradeCode="7E6F4444-E27E-48F6-9B4E-63663D2D6115" Language="1033" Scope="perMachine">
+    <SummaryInformation Description="IoT Edge native Windows runtime" Manufacturer="thefuriousowl" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of IoT Edge is already installed." Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Property Id="WINDOWSBUILD">
+      <RegistrySearch Id="WindowsBuildSearch" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion" Name="CurrentBuildNumber" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR (VersionNT64 AND WINDOWSBUILD &gt;= 22000)" Message="IoT Edge requires 64-bit Windows 11 or newer." />
+
+    <Feature Id="MainFeature" Title="IoT Edge" Level="1">
+      <ComponentGroupRef Id="ProductPayload" />
+      <ComponentGroupRef Id="PersistentDataLayout" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="IoT Edge" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAROOT" Name="IoT Edge">
+        <Directory Id="CONFIGDIR" Name="config" />
+        <Directory Id="RUNTIMEDATADIR" Name="data" />
+        <Directory Id="LOGDIR" Name="logs" />
+        <Directory Id="BACKUPDIR" Name="backups" />
+      </Directory>
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductPayload" Directory="INSTALLFOLDER">
+      <Component><File Id="ServerExe" Source="$(var.SourceDir)\iot-edge-server.exe" KeyPath="yes" /></Component>
+      <Component><File Id="ServiceExe" Source="$(var.SourceDir)\iot-edge-service.exe" KeyPath="yes" /></Component>
+      <Component><File Id="ConfigExe" Source="$(var.SourceDir)\iot-edge-config.exe" KeyPath="yes" /></Component>
+      <Component><File Id="MigrateExe" Source="$(var.SourceDir)\iot-edge-migrate.exe" KeyPath="yes" /></Component>
+      <Component><File Id="ResetPasswordExe" Source="$(var.SourceDir)\iot-edge-reset-password.exe" KeyPath="yes" /></Component>
+      <Component><File Id="BackupExe" Source="$(var.SourceDir)\iot-edge-backup.exe" KeyPath="yes" /></Component>
+      <Component><File Id="RestoreExe" Source="$(var.SourceDir)\iot-edge-restore.exe" KeyPath="yes" /></Component>
+      <Component><File Id="ReadmeFile" Source="$(var.SourceDir)\README.md" KeyPath="yes" /></Component>
+      <Component><File Id="LicenseFile" Source="$(var.SourceDir)\LICENSE" KeyPath="yes" /></Component>
+      <Component><File Id="VersionFile" Source="$(var.SourceDir)\VERSION" KeyPath="yes" /></Component>
+      <Component><File Id="ManifestFile" Source="$(var.SourceDir)\release-manifest.json" KeyPath="yes" /></Component>
+      <Component><File Id="ChecksumsFile" Source="$(var.SourceDir)\SHA256SUMS" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="PersistentDataLayout">
+      <Component Id="PersistentConfigDir" Guid="A28A1746-5156-43C5-8BCF-FEF074273E35" Directory="CONFIGDIR" Permanent="yes"><CreateFolder /></Component>
+      <Component Id="PersistentRuntimeDataDir" Guid="4535ECF7-D2F3-4B62-B4A4-DC6DF8D5E96F" Directory="RUNTIMEDATADIR" Permanent="yes"><CreateFolder /></Component>
+      <Component Id="PersistentLogDir" Guid="C1F3D258-ED23-4305-AB23-5CD7223BD616" Directory="LOGDIR" Permanent="yes"><CreateFolder /></Component>
+      <Component Id="PersistentBackupDir" Guid="7DFEBA73-6E4C-4134-8D3C-18A64024B267" Directory="BACKUPDIR" Permanent="yes"><CreateFolder /></Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

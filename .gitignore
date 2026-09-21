@@ -34,6 +34,8 @@ node_modules/
 vendor/
 bin/
 *.exe
+backend/internal/webui/assets/*
+!backend/internal/webui/assets/_placeholder.txt
 
 # Database
 *.db

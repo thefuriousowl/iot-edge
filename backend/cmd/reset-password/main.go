@@ -16,6 +16,7 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/auth"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/config"
+	"github.com/thefuriousowl/iot-edge/internal/dbmaintenance"
 )
 
 const retainedPreviousPasswords = 2
@@ -28,6 +29,7 @@ type passwordService interface {
 
 func main() {
 	username := flag.String("username", "", "username whose password will be reset")
+	native := flag.Bool("native", false, "load the installed Windows DPAPI-protected configuration")
 	flag.Parse()
 	if strings.TrimSpace(*username) == "" {
 		log.Fatal("--username is required")
@@ -38,7 +40,12 @@ func main() {
 	}
 	defer clear(password)
 
-	cfg, err := config.Load()
+	var cfg *config.Config
+	if *native {
+		cfg, err = config.LoadWindowsNative()
+	} else {
+		cfg, err = config.Load()
+	}
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
 	}
@@ -51,6 +58,9 @@ func main() {
 		log.Fatalf("access database connection: %v", err)
 	}
 	defer sqlDatabase.Close()
+	if _, err := dbmaintenance.ValidateDedicated(context.Background(), sqlDatabase); err != nil {
+		log.Fatalf("validate dedicated database: %v", err)
+	}
 
 	repository := authpostgres.NewUserRepository(database)
 	service, err := auth.NewAuthService(repository, &auth.ServiceConfig{

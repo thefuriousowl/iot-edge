@@ -146,7 +146,8 @@ func normalizeHTTPServerConfig(config *HTTPServerConfig) error {
 		return ErrInvalidPublisherConfig
 	}
 	config.BindAddress = strings.TrimSpace(config.BindAddress)
-	if net.ParseIP(config.BindAddress) == nil || config.Port == 0 {
+	bindIP := net.ParseIP(config.BindAddress)
+	if bindIP == nil || (!bindIP.IsLoopback() && !bindIP.IsUnspecified()) || config.Port == 0 {
 		return ErrInvalidPublisherConfig
 	}
 	config.Path = strings.TrimSpace(config.Path)

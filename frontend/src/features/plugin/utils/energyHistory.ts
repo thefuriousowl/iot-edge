@@ -4,6 +4,7 @@ import type { EnergyPeriodSummary } from "../../../types/plugin";
 export type EnergyRangePreset = "today" | "24h" | "7d" | "30d" | "month";
 
 export const energyBuckets: DataLoggerQueryBucket[] = ["1m", "5m", "15m", "1h", "6h", "1d", "1w"];
+export const maximumEnergyChartPoints = 500;
 
 const bucketMilliseconds: Record<DataLoggerQueryBucket, number> = {
   "1m": 60_000,
@@ -128,7 +129,11 @@ export function validEnergyRange(from: string, to: string): boolean {
 export function availableEnergyBuckets(from: string, to: string): DataLoggerQueryBucket[] {
   const span = new Date(to).getTime() - new Date(from).getTime();
   if (!Number.isFinite(span) || span <= 0) return ["1h"];
-  return energyBuckets.filter((bucket) => Math.ceil(span / bucketMilliseconds[bucket]) + 1 <= 500);
+  return energyBuckets.filter((bucket) => Math.ceil(span / bucketMilliseconds[bucket]) + 1 <= maximumEnergyChartPoints);
+}
+
+export function boundedEnergyHistoryRows<T>(rows: T[]): T[] {
+  return rows.slice(0, maximumEnergyChartPoints);
 }
 
 export function automaticEnergyBucket(from: string, to: string): DataLoggerQueryBucket {

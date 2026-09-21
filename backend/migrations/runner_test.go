@@ -10,10 +10,10 @@ func TestLoadMigrationsReturnsEveryVersionInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(migrations) != 19 {
-		t.Fatalf("loadMigrations() count = %d, want 19", len(migrations))
+	if len(migrations) != 20 {
+		t.Fatalf("loadMigrations() count = %d, want 20", len(migrations))
 	}
-	if migrations[0].name != "000001_create_users.up.sql" || migrations[len(migrations)-1].name != "000019_create_assets_measurement_bindings.up.sql" {
+	if migrations[0].name != "000001_create_users.up.sql" || migrations[len(migrations)-1].name != "000020_create_energy_measurement_runs.up.sql" {
 		t.Fatalf("migration bounds = %q..%q", migrations[0].name, migrations[len(migrations)-1].name)
 	}
 	for _, migration := range migrations {

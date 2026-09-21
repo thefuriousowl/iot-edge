@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   RadioTower,
   RefreshCw,
+  RotateCcw,
   Settings2,
   Thermometer,
   Zap,
@@ -19,13 +20,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getDataLogger } from "../../../services/datalogger.service";
-import { getEnergyOverview, monitorEnergy } from "../../../services/energy.service";
+import { exportEnergyArchiveCSV, getEnergyArchives, getEnergyOverview, monitorEnergy, resetEnergyMeasurement } from "../../../services/energy.service";
 import { getPlugin } from "../../../services/plugin.service";
 import type { DataLogger, DataLoggerTagReference } from "../../../types/datalogger";
 import type {
   EnergyBatchMetrics,
   EnergyConfig,
   EnergyOverviewResponse,
+  EnergyMeasurementRun,
   EnergyPeriodSummary,
   PluginInstance,
 } from "../../../types/plugin";
@@ -33,6 +35,7 @@ import type { TagRuntimeValue } from "../../../types/tag";
 import { useTagLiveStore } from "../../tag/stores/tagLive.store";
 import VGatewayShell from "../../vgateway/components/VGatewayShell";
 import EnergyPluginTabs from "../components/EnergyPluginTabs";
+import { downloadBlob } from "../utils/dashboardExport";
 import "../../vgateway/pages/VGatewayListPage.css";
 import "./EnergyOverviewPage.css";
 import "./EnergyOverviewThermal.css";
@@ -213,9 +216,9 @@ function PeriodPanel({ label, period, timezone, currency }: {
 }) {
   const issueCount = (period.electrical.issues?.length ?? 0) + (period.thermal.issues?.length ?? 0);
   return (
-    <article className="energy-period-panel">
+    <article className="energy-period-panel" data-source="persisted-logger-history">
       <header>
-        <h2>{label}</h2>
+        <h2>{label}<small>Persisted Logger history</small></h2>
         <span><CalendarDays aria-hidden="true" size={15} />{formatPeriodDate(period.from, timezone)}</span>
       </header>
       <div className="energy-period-metrics">
@@ -270,6 +273,12 @@ function EnergyOverviewPage() {
   const [streamState, setStreamState] = useState<EnergyStreamState>("connecting");
   const [streamMessage, setStreamMessage] = useState("Connecting to synchronized Energy metrics…");
   const [streamVersion, setStreamVersion] = useState(0);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetName, setResetName] = useState("");
+  const [resetReason, setResetReason] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [archives, setArchives] = useState<EnergyMeasurementRun[]>([]);
+  const [exportingArchive, setExportingArchive] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -291,6 +300,12 @@ function EnergyOverviewPage() {
       setMessage(readableError(error));
       setLoadState("error");
     });
+    return () => controller.abort();
+  }, [id, refreshVersion]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getEnergyArchives(id, controller.signal).then((runs) => { if (!controller.signal.aborted) setArchives(runs); }).catch(() => { if (!controller.signal.aborted) setArchives([]); });
     return () => controller.abort();
   }, [id, refreshVersion]);
 
@@ -367,6 +382,36 @@ function EnergyOverviewPage() {
     setStreamVersion((current) => current + 1);
   };
 
+  const requestReset = async () => {
+    if (!loaded?.overview.run || !resetName.trim()) return;
+    setResetting(true);
+    setMessage("");
+    try {
+      await resetEnergyMeasurement(id, { expected_run_id: loaded.overview.run.id, name: resetName.trim(), reason: resetReason.trim() });
+      setResetOpen(false);
+      setResetName("");
+      setResetReason("");
+      requestRefresh();
+    } catch (error) {
+      setMessage(readableError(error));
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const requestArchiveExport = async (run: EnergyMeasurementRun) => {
+    setExportingArchive(run.id);
+    setMessage("");
+    try {
+      const blob = await exportEnergyArchiveCSV(id, run.id);
+      downloadBlob(blob, `energy-${run.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || run.id}.csv`);
+    } catch (error) {
+      setMessage(readableError(error));
+    } finally {
+      setExportingArchive("");
+    }
+  };
+
   return (
     <VGatewayShell breadcrumb={<>Plugins <span>/</span> <strong>{loaded?.plugin.name ?? "Energy"}</strong></>}>
       <div className="energy-overview-content">
@@ -374,13 +419,21 @@ function EnergyOverviewPage() {
         {loadState === "error" && !loaded && <div className="energy-overview-state is-error" role="alert"><CircleAlert /><strong>Couldn’t load Energy overview</strong><span>{message}</span><button type="button" onClick={requestRefresh}>Try again</button></div>}
         {loaded && config && <>
           <section className="energy-overview-heading">
-            <div><h1>{loaded.plugin.name}</h1><p>Synchronized Logger history powers live demand, kWh, cost, and COP—no kWh Tag required.</p></div>
-            <div><Link to={`/plugins/${encodeURIComponent(id)}/configure`}><Settings2 aria-hidden="true" size={17} />Configure</Link><button type="button" disabled={loadState === "loading"} onClick={requestRefresh}><RefreshCw className={loadState === "loading" ? "is-spinning" : ""} aria-hidden="true" size={17} />Refresh</button></div>
+            <div><h1>{loaded.plugin.name}</h1><p>Committed-batch SSE powers live demand; persisted Logger history powers kWh, cost, and period COP.</p></div>
+            <div><Link to={`/plugins/${encodeURIComponent(id)}/configure`}><Settings2 aria-hidden="true" size={17} />Configure</Link><button type="button" className="is-reset" disabled={!loaded.overview.run || resetting} onClick={() => { setResetName(""); setResetReason(""); setResetOpen(true); }}><RotateCcw aria-hidden="true" size={17} />Reset measurement</button><button type="button" disabled={loadState === "loading"} onClick={requestRefresh}><RefreshCw className={loadState === "loading" ? "is-spinning" : ""} aria-hidden="true" size={17} />Refresh</button></div>
           </section>
 
           <EnergyPluginTabs instanceID={id} />
 
           {message && <div className="energy-overview-alert" role="alert"><CircleAlert aria-hidden="true" />{message}</div>}
+
+          {resetOpen && <section className="energy-reset-panel" role="dialog" aria-modal="true" aria-labelledby="energy-reset-title">
+            <h2 id="energy-reset-title">Start measurement at a new point</h2>
+            <p>This archives the current run and starts totals from the latest committed Logger batch. It does not reset the power meter or delete Logger data.</p>
+            <label>New measurement point<input autoFocus maxLength={100} value={resetName} onChange={(event) => setResetName(event.target.value)} placeholder="e.g. Chiller 2 inlet" /></label>
+            <label>Operator note (optional)<textarea maxLength={500} value={resetReason} onChange={(event) => setResetReason(event.target.value)} /></label>
+            <div><button type="button" onClick={() => setResetOpen(false)} disabled={resetting}>Cancel</button><button type="button" onClick={() => void requestReset()} disabled={resetting || !resetName.trim()}>{resetting ? "Archiving…" : "Archive and start new run"}</button></div>
+          </section>}
 
           <section className="energy-runtime-band" aria-label="Energy runtime">
             <div><span className={`energy-runtime-state is-${loaded.plugin.runtime.state}`}><i />{loaded.plugin.runtime.state}</span><small>{loaded.plugin.enabled ? "Desired enabled" : "Saved disabled"}</small></div>
@@ -390,8 +443,8 @@ function EnergyOverviewPage() {
 
           {streamState !== "live" && <div className="energy-stream-notice" role="status" aria-live="polite"><RadioTower aria-hidden="true" /><span><strong>Energy stream {streamState}</strong><small>Showing the last synchronized Logger batch while the Plugin stream reconnects. No live Tag value is substituted into Energy calculations.</small></span></div>}
 
-          <section className={`energy-live-band ${streamState !== "live" ? "is-stale" : ""}`} aria-label="Live operational metrics" aria-busy={streamState === "connecting" || streamState === "retrying"}>
-            <header><h2>Live operational</h2><span>{displayedMetrics ? "Synchronized batch" : "Waiting for first batch"}</span></header>
+          <section className={`energy-live-band ${streamState !== "live" ? "is-stale" : ""}`} data-source="energy-sse" aria-label="Live operational metrics" aria-busy={streamState === "connecting" || streamState === "retrying"}>
+            <header><h2>Live operational</h2><span>{displayedMetrics ? "Energy SSE · synchronized batch" : "Energy SSE · waiting for first batch"}</span></header>
             <div>
               <article><Zap aria-hidden="true" /><span>Electrical demand</span><strong>{displayedMetrics?.electrical.valid ? `${formatNumber(displayedMetrics.electrical.kilowatts)} kW` : "Unavailable"}</strong></article>
               <article><Thermometer aria-hidden="true" /><span>Thermal output</span><strong>{displayedMetrics?.thermal.valid ? `${formatNumber(displayedMetrics.thermal.kilowatts)} kW` : "Unavailable"}</strong></article>
@@ -406,6 +459,11 @@ function EnergyOverviewPage() {
             <PeriodPanel label="Today" period={loaded.overview.today} timezone={loaded.overview.timezone} currency={loaded.overview.currency} />
             <PeriodPanel label="This month" period={loaded.overview.month} timezone={loaded.overview.timezone} currency={loaded.overview.currency} />
           </div>
+
+          <section className="energy-archive-panel" aria-labelledby="energy-archive-title">
+            <header><div><h2 id="energy-archive-title">Measurement archives</h2><p>Completed measurement points remain exportable independently of Logger retention.</p></div><strong>{archives.length}</strong></header>
+            {archives.length === 0 ? <p className="energy-archive-empty">No archived measurement runs yet.</p> : <ul>{archives.map((run) => <li key={run.id}><span><strong>{run.name}</strong><small>{formatDateTime(run.started_at, loaded.overview.timezone)} – {formatDateTime(run.ended_at, loaded.overview.timezone)}{run.reason ? ` · ${run.reason}` : ""}</small></span><button type="button" disabled={exportingArchive === run.id} onClick={() => void requestArchiveExport(run)}>{exportingArchive === run.id ? "Exporting…" : "Export CSV"}</button></li>)}</ul>}
+          </section>
 
           <section className={`energy-quality-band ${qualityIssues.length > 0 || skippedSegments > 0 ? "has-issues" : ""}`} aria-labelledby="energy-quality-heading">
             <div>{qualityIssues.length > 0 || skippedSegments > 0 ? <CircleAlert aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}<span><h2 id="energy-quality-heading">Data quality</h2><strong>{qualityIssues.length > 0 || skippedSegments > 0 ? "Coverage needs attention" : "All available sources healthy"}</strong><small>{qualityIssues.length > 0 ? qualityIssues[0].message : skippedSegments > 0 ? "One or more integration segments were skipped." : "No source errors in the current synchronized view."}</small></span></div>

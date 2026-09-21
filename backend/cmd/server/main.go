@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/google/uuid"
 
 	"github.com/thefuriousowl/iot-edge/internal/asset"
 	assetconnectivity "github.com/thefuriousowl/iot-edge/internal/asset/connectivity"
@@ -21,6 +23,7 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/auth"
 	authhttp "github.com/thefuriousowl/iot-edge/internal/auth/http"
 	authpostgres "github.com/thefuriousowl/iot-edge/internal/auth/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/buildinfo"
 	"github.com/thefuriousowl/iot-edge/internal/config"
 	"github.com/thefuriousowl/iot-edge/internal/credential"
 	credentialhttp "github.com/thefuriousowl/iot-edge/internal/credential/http"
@@ -35,6 +38,7 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/plugin"
 	pluginenergy "github.com/thefuriousowl/iot-edge/internal/plugin/energy"
 	energyhttp "github.com/thefuriousowl/iot-edge/internal/plugin/energy/http"
+	energypostgres "github.com/thefuriousowl/iot-edge/internal/plugin/energy/postgres"
 	pluginhttp "github.com/thefuriousowl/iot-edge/internal/plugin/http"
 	pluginpostgres "github.com/thefuriousowl/iot-edge/internal/plugin/postgres"
 	"github.com/thefuriousowl/iot-edge/internal/protocol/modbus"
@@ -44,6 +48,7 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/report"
 	reporthttp "github.com/thefuriousowl/iot-edge/internal/report/http"
 	reportpostgres "github.com/thefuriousowl/iot-edge/internal/report/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/rotatinglog"
 	"github.com/thefuriousowl/iot-edge/internal/system"
 	systemhttp "github.com/thefuriousowl/iot-edge/internal/system/http"
 	"github.com/thefuriousowl/iot-edge/internal/tag"
@@ -52,15 +57,52 @@ import (
 	"github.com/thefuriousowl/iot-edge/internal/vgateway"
 	vgatewayhttp "github.com/thefuriousowl/iot-edge/internal/vgateway/http"
 	vgatewaypostgres "github.com/thefuriousowl/iot-edge/internal/vgateway/postgres"
+	"github.com/thefuriousowl/iot-edge/internal/webui"
+	"github.com/thefuriousowl/iot-edge/internal/winruntime"
+	"github.com/thefuriousowl/iot-edge/internal/winservice"
 )
 
 const maxAPIRequestBodyBytes = 1 << 20
+const windowsServiceName = "IoTEdge"
 
 func main() {
+	handled, err := winservice.Run(windowsServiceName, run)
+	if err != nil {
+		log.Fatalf("Windows Service host failed: %v", err)
+	}
+	if handled {
+		return
+	}
+	runtimeContext, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignal()
+	if err := run(runtimeContext); err != nil {
+		log.Printf("server stopped with error: %v", err)
+	}
+}
+
+func run(runtimeContext context.Context) error {
 	// Load application configuration
-	cfg, err := config.Load()
+	var cfg *config.Config
+	var err error
+	if winservice.IsServiceContext(runtimeContext) {
+		paths, pathErr := winruntime.DefaultPaths()
+		if pathErr != nil {
+			log.Fatalf("failed to resolve native paths: %v", pathErr)
+		}
+		cfg, err = config.LoadNative(paths)
+	} else {
+		cfg, err = config.Load()
+	}
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
+	}
+	if cfg.LogFile != "" {
+		writer, logErr := rotatinglog.Open(cfg.LogFile, 10*1024*1024, 5)
+		if logErr != nil {
+			log.Fatalf("failed to open native rotating log: %v", logErr)
+		}
+		defer writer.Close()
+		log.SetOutput(writer)
 	}
 
 	// Connect to PostgreSQL
@@ -133,8 +175,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize persistent Tag value store: %v", err)
 	}
-	runtimeContext, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignal()
 	if err := tagValues.Start(runtimeContext); err != nil {
 		log.Fatalf("failed to hydrate persistent Tag values: %v", err)
 	}
@@ -398,7 +438,8 @@ func main() {
 	}()
 	dataLoggerHandler := dataloggerhttp.NewHandler(dataLoggerService)
 	pluginHandler := pluginhttp.NewHandler(pluginService, pluginManager)
-	energyService, err := pluginenergy.NewService(pluginRepository, dataLoggerHistory, pluginenergy.WithLiveHub(energyLiveHub))
+	energyRunRepository := energypostgres.NewMeasurementRunRepository(db)
+	energyService, err := pluginenergy.NewService(pluginRepository, dataLoggerHistory, pluginenergy.WithLiveHub(energyLiveHub), pluginenergy.WithMeasurementRuns(energyRunRepository))
 	if err != nil {
 		log.Fatalf("failed to initialize Energy service: %v", err)
 	}
@@ -438,6 +479,18 @@ func main() {
 		credential: credentialHandler,
 		publisher:  publisherHandler,
 	})
+	if cfg.HMIEnergyPluginID != "" {
+		hmiPluginID, parseErr := uuid.Parse(cfg.HMIEnergyPluginID)
+		if parseErr != nil {
+			log.Fatalf("failed to initialize HMI Energy API: invalid Plugin instance ID")
+		}
+		if registerErr := energyhttp.RegisterHMIRoutes(app, energyHandler, energyhttp.HMIConfig{PluginInstanceID: hmiPluginID, APIKey: cfg.HMIAPIKey}); registerErr != nil {
+			log.Fatalf("failed to initialize HMI Energy API: %v", registerErr)
+		}
+	}
+	if err := webui.RegisterEmbedded(app); err != nil {
+		log.Fatalf("failed to register embedded frontend: %v", err)
+	}
 
 	// Start HTTP server
 	address := ":" + cfg.Port
@@ -450,9 +503,9 @@ func main() {
 	}()
 
 	if err := app.Listen(address); err != nil {
-		log.Printf("failed to start server: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
-	stopSignal()
+	return nil
 }
 
 type protectedAPIHandlers struct {
@@ -503,7 +556,7 @@ func newApp(corsAllowOrigins string) *fiber.App {
 	app.Get("/api/health", func(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"status":  "ok",
-			"version": "0.1.0",
+			"version": buildinfo.Version,
 		})
 	})
 

@@ -28,6 +28,7 @@ func TestEnergyHandlerOverviewHistoryAndExportContracts(t *testing.T) {
 		overview: &energy.OverviewResult{InstanceID: instanceID, LoggerID: loggerID, Timezone: "Asia/Bangkok", Currency: "THB", AsOf: to},
 		history: &energy.HistoryResult{
 			InstanceID: instanceID, LoggerID: loggerID, Timezone: "Asia/Bangkok", Bucket: datalogger.QueryBucket15Minutes,
+			RequestedBucket: datalogger.QueryBucket1Minute, Downsampled: true, PointLimit: energy.MaxHistoryPoints,
 			Currency: "THB", RatePerKWh: 4.5, Data: []energy.HistoryRow{{PeriodSummary: energy.PeriodSummary{From: from, To: to}}},
 			Page: 2, PerPage: 5, Total: 6, TotalPages: 2,
 		},
@@ -58,12 +59,15 @@ func TestEnergyHandlerOverviewHistoryAndExportContracts(t *testing.T) {
 			Total      int `json:"total"`
 			TotalPages int `json:"total_pages"`
 		} `json:"pagination"`
+		RequestedBucket datalogger.QueryBucket `json:"requested_bucket"`
+		Downsampled     bool                   `json:"downsampled"`
+		PointLimit      int                    `json:"point_limit"`
 	}
 	decodeEnergyResponse(t, response, &history)
 	if service.historyID != instanceID || service.input.From != from || service.input.To != to || service.input.Bucket != datalogger.QueryBucket15Minutes || service.input.Page != 2 || service.input.PerPage != 5 {
 		t.Errorf("History() input = %s, %#v", service.historyID, service.input)
 	}
-	if history.InstanceID != instanceID || len(history.Data) != 1 || history.Pagination.Page != 2 || history.Pagination.Total != 6 || history.Pagination.TotalPages != 2 {
+	if history.InstanceID != instanceID || len(history.Data) != 1 || history.Pagination.Page != 2 || history.Pagination.Total != 6 || history.Pagination.TotalPages != 2 || history.RequestedBucket != datalogger.QueryBucket1Minute || !history.Downsampled || history.PointLimit != energy.MaxHistoryPoints {
 		t.Errorf("History response = %#v", history)
 	}
 
@@ -210,6 +214,8 @@ type energyHandlerService struct {
 	input       energy.HistoryInput
 	live        *energy.LiveSubscription
 	cursor      string
+	run         *energy.MeasurementRun
+	resetInput  energy.ResetRunInput
 }
 
 func (service *energyHandlerService) Overview(_ context.Context, id uuid.UUID) (*energy.OverviewResult, error) {
@@ -242,6 +248,31 @@ func (service *energyHandlerService) ExportCSV(_ context.Context, id uuid.UUID, 
 func (service *energyHandlerService) SubscribeLive(_ context.Context, id uuid.UUID, cursor string) (*energy.LiveSubscription, error) {
 	service.historyID, service.cursor = id, cursor
 	return service.live, service.err
+}
+
+func (service *energyHandlerService) CurrentRun(_ context.Context, id uuid.UUID) (*energy.MeasurementRun, error) {
+	service.historyID = id
+	return service.run, service.err
+}
+
+func (service *energyHandlerService) ResetRun(_ context.Context, id uuid.UUID, input energy.ResetRunInput) (*energy.MeasurementRun, error) {
+	service.historyID = id
+	service.resetInput = input
+	return service.run, service.err
+}
+
+func (service *energyHandlerService) ListArchivedRuns(_ context.Context, id uuid.UUID) ([]energy.MeasurementRun, error) {
+	service.historyID = id
+	return nil, service.err
+}
+
+func (service *energyHandlerService) ExportArchivedRunCSV(_ context.Context, id, _ uuid.UUID, writer io.Writer) error {
+	service.exportID = id
+	if service.err != nil {
+		return service.err
+	}
+	_, err := io.WriteString(writer, service.export)
+	return err
 }
 
 func energyRequest(t *testing.T, app *fiber.App, path string) *http.Response {

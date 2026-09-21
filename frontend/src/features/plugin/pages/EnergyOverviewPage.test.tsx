@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDataLogger } from "../../../services/datalogger.service";
-import { getEnergyOverview, monitorEnergy } from "../../../services/energy.service";
+import { exportEnergyArchiveCSV, getEnergyArchives, getEnergyOverview, monitorEnergy, resetEnergyMeasurement } from "../../../services/energy.service";
 import { getPlugin } from "../../../services/plugin.service";
 import { expectNoAxeViolations } from "../../../test/axe";
 import type { DataLogger, DataLoggerTagReference } from "../../../types/datalogger";
@@ -15,13 +15,16 @@ import { useTagLiveStore } from "../../tag/stores/tagLive.store";
 import EnergyOverviewPage from "./EnergyOverviewPage";
 
 vi.mock("../../../services/datalogger.service", () => ({ getDataLogger: vi.fn() }));
-vi.mock("../../../services/energy.service", () => ({ getEnergyOverview: vi.fn(), monitorEnergy: vi.fn() }));
+vi.mock("../../../services/energy.service", () => ({ getEnergyOverview: vi.fn(), monitorEnergy: vi.fn(), getEnergyArchives: vi.fn(), resetEnergyMeasurement: vi.fn(), exportEnergyArchiveCSV: vi.fn() }));
 vi.mock("../../../services/plugin.service", () => ({ getPlugin: vi.fn() }));
 vi.mock("../../system/components/InternetStatus", () => ({ default: () => <span>Internet status</span> }));
 
 const mockedGetDataLogger = vi.mocked(getDataLogger);
 const mockedGetOverview = vi.mocked(getEnergyOverview);
 const mockedMonitorEnergy = vi.mocked(monitorEnergy);
+const mockedGetArchives = vi.mocked(getEnergyArchives);
+const mockedResetMeasurement = vi.mocked(resetEnergyMeasurement);
+const mockedExportArchive = vi.mocked(exportEnergyArchiveCSV);
 const mockedGetPlugin = vi.mocked(getPlugin);
 
 const tags: DataLoggerTagReference[] = [
@@ -83,9 +86,13 @@ describe("EnergyOverviewPage", () => {
     mockedGetOverview.mockReset();
     mockedGetDataLogger.mockReset();
     mockedMonitorEnergy.mockReset();
+    mockedGetArchives.mockReset();
+    mockedResetMeasurement.mockReset();
+    mockedExportArchive.mockReset();
     mockedGetPlugin.mockResolvedValue(plugin);
     mockedGetOverview.mockResolvedValue(overview);
     mockedGetDataLogger.mockResolvedValue(logger);
+    mockedGetArchives.mockResolvedValue([]);
     mockedMonitorEnergy.mockImplementation((_id, context) => {
       streamContext = context;
       context.onOpen();
@@ -105,6 +112,7 @@ describe("EnergyOverviewPage", () => {
     useTagLiveStore.getState().ingest({ tag_id: "tag-temp-return", sequence: 3, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 12.5 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-flow", sequence: 4, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float32", value: 12.8 });
     useTagLiveStore.getState().ingest({ tag_id: "tag-tariff", sequence: 5, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float64", value: 4.5 });
+    useTagLiveStore.getState().ingest({ tag_id: "tag-power", sequence: 6, observed_at: latest.batch_at, stored_at: latest.batch_at, quality: "good", data_type: "float64", value: 999 });
     const { container } = renderPage();
 
     expect(await screen.findByRole("heading", { name: "Plant Energy" })).toBeInTheDocument();
@@ -112,6 +120,9 @@ describe("EnergyOverviewPage", () => {
     expect(within(liveRegion).getByText("12.50 kW")).toBeInTheDocument();
     expect(within(liveRegion).getByText("37.50 kW")).toBeInTheDocument();
     expect(within(liveRegion).getByText("4.50 THB/kWh")).toBeInTheDocument();
+    expect(liveRegion).toHaveAttribute("data-source", "energy-sse");
+    expect(within(liveRegion).queryByText("999.00 kW")).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-source="persisted-logger-history"]')).toHaveLength(2);
     const thermalRegion = screen.getByRole("region", { name: "Thermal circuit" });
     expect(within(thermalRegion).getByText("7.20 °C")).toBeInTheDocument();
     expect(within(thermalRegion).getByText("12.50 °C")).toBeInTheDocument();
@@ -144,6 +155,8 @@ describe("EnergyOverviewPage", () => {
     expect(within(liveRegion).getByText("42.00 kW")).toBeInTheDocument();
     expect(within(liveRegion).getByText("5.25 THB/kWh")).toBeInTheDocument();
     expect(within(liveRegion).getByText("3.10")).toBeInTheDocument();
+    expect(screen.getByText("300.00 kWh")).toBeInTheDocument();
+    expect(screen.getByText("1,350.00 THB")).toBeInTheDocument();
   });
 
   it("preserves the last Logger batch and labels a disconnected Energy stream", async () => {

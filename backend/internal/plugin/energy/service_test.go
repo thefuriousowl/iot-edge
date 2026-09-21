@@ -3,6 +3,9 @@ package energy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -87,12 +90,37 @@ func TestEnergyServiceHistoryPaginatesNewestTimezoneAlignedBuckets(t *testing.T)
 	if history.input.LoggerID != loggerID || !history.input.From.Equal(start.Add(time.Hour)) || !history.input.To.Equal(start.Add(3*time.Hour)) || !history.input.IncludeNeighbors || len(history.input.TagIDs) != 2 {
 		t.Errorf("ListBatches() input = %#v", history.input)
 	}
+	if history.latestCalls != 0 {
+		t.Errorf("History() read latest/live seed %d times", history.latestCalls)
+	}
 
 	result, err = service.History(context.Background(), instanceID, HistoryInput{
 		From: start, To: start.Add(3 * time.Hour), Bucket: datalogger.QueryBucket1Hour, Page: 2, PerPage: 2,
 	})
 	if err != nil || len(result.Data) != 1 || !result.Data[0].From.Equal(start) || result.Data[0].Electrical.KilowattHours != 5 {
 		t.Errorf("History(page 2) = %#v, %v", result, err)
+	}
+}
+
+func TestEnergyServiceHistoryDownsamplesLongChartRangesButExportKeepsRequestedBucket(t *testing.T) {
+	t.Parallel()
+	instanceID := uuid.New()
+	service := newEnergyTestServiceWithID(t, instanceID, Config{}, &energyHistoryReader{}, nil)
+	from := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	input := HistoryInput{From: from, To: from.Add(30 * 24 * time.Hour), Bucket: datalogger.QueryBucket1Minute, Page: 1, PerPage: MaxHistoryPoints}
+	result, err := service.History(context.Background(), instanceID, input)
+	if err != nil {
+		t.Fatalf("History() error = %v", err)
+	}
+	if result.RequestedBucket != datalogger.QueryBucket1Minute || result.Bucket != datalogger.QueryBucket6Hours || !result.Downsampled || result.PointLimit != MaxHistoryPoints || result.Total != 120 || len(result.Data) != 120 {
+		t.Fatalf("bounded History() = %#v", result)
+	}
+	raw, err := service.historyResult(context.Background(), instanceID, input, false)
+	if err != nil {
+		t.Fatalf("unbounded export history error = %v", err)
+	}
+	if raw.Bucket != datalogger.QueryBucket1Minute || raw.Downsampled || raw.Total != 30*24*60 || len(raw.Data) != MaxHistoryPoints {
+		t.Fatalf("unbounded export history = %#v", raw)
 	}
 }
 
@@ -309,7 +337,7 @@ func TestEnergyServiceSeedsAndResumesLiveMetricsFromPersistedLatest(t *testing.T
 	if err != nil {
 		t.Fatalf("SubscribeLive() error = %v", err)
 	}
-	if len(subscription.Replay) != 1 || subscription.Replay[0].Metrics.Electrical.Kilowatts != 2 || subscription.Replay[0].Metrics.COP.Value != 3 || history.latestCalls != 1 {
+	if len(subscription.Replay) != 1 || subscription.Replay[0].Metrics.Electrical.Kilowatts != 2 || subscription.Replay[0].Metrics.COP.Value != 3 || history.latestCalls != 1 || history.calls != 0 {
 		t.Fatalf("persisted replay = %#v, latest calls %d", subscription.Replay, history.latestCalls)
 	}
 	cursor := subscription.Replay[0].ID
@@ -333,6 +361,53 @@ func TestEnergyServiceSeedsAndResumesLiveMetricsFromPersistedLatest(t *testing.T
 	}
 }
 
+func TestEnergyServiceResetBuildsRetentionIndependentArchive(t *testing.T) {
+	loggerID, electricalID, thermalID, instanceID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	config := testEnergyConfig(loggerID, electricalID, thermalID, 120)
+	start := time.Date(2026, time.September, 21, 1, 0, 0, 0, time.UTC)
+	batches := []datalogger.RawBatch{
+		energyRawBatch(loggerID, electricalID, thermalID, start, 6, 18),
+		energyRawBatch(loggerID, electricalID, thermalID, start.Add(time.Minute), 6, 18),
+		energyRawBatch(loggerID, electricalID, thermalID, start.Add(2*time.Minute), 6, 18),
+	}
+	history := &energyHistoryReader{batches: batches, latest: &batches[2]}
+	run := &MeasurementRun{ID: uuid.New(), PluginInstanceID: instanceID, Name: "Point A", Status: MeasurementRunActive, StartedAt: start, ConfigVersion: 1, ConfigSnapshot: encodeEnergyConfig(t, config)}
+	runs := &energyRunRepository{active: run}
+	instance := &plugin.Instance{ID: instanceID, Type: PluginType, Name: "Portable Energy", ConfigVersion: 1, Config: encodeEnergyConfig(t, config)}
+	service, err := NewService(&energyInstanceReader{instance: instance}, history, WithMeasurementRuns(runs))
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	next, err := service.ResetRun(context.Background(), instanceID, ResetRunInput{ExpectedRunID: run.ID, Name: "Point B", Reason: "moved"})
+	if err != nil {
+		t.Fatalf("ResetRun() error = %v", err)
+	}
+	if next.Name != "Point B" || runs.reset.ArchiveSHA256 == "" {
+		t.Fatalf("next/reset = %+v / %+v", next, runs.reset)
+	}
+	var archive MeasurementRunArchive
+	if err := json.Unmarshal(runs.reset.ArchivePayload, &archive); err != nil {
+		t.Fatalf("decoding archive: %v", err)
+	}
+	if archive.RunID != run.ID || archive.Bucket != "1m" || len(archive.Series) != 2 || archive.Summary.Electrical.KilowattHours != 0.2 {
+		t.Errorf("archive = %+v", archive)
+	}
+	digest := sha256.Sum256(runs.reset.ArchivePayload)
+	if hex.EncodeToString(digest[:]) != runs.reset.ArchiveSHA256 {
+		t.Error("archive checksum does not match canonical payload")
+	}
+
+	endedAt, archivedAt, checksum := batches[2].BatchAt, batches[2].BatchAt, runs.reset.ArchiveSHA256
+	runs.archived = &MeasurementRun{ID: run.ID, PluginInstanceID: instanceID, Name: run.Name, Status: MeasurementRunArchived, StartedAt: start, EndedAt: &endedAt, ConfigVersion: 1, ConfigSnapshot: run.ConfigSnapshot, ArchivePayload: runs.reset.ArchivePayload, ArchiveSHA256: &checksum, ArchivedAt: &archivedAt}
+	var output bytes.Buffer
+	if err := service.ExportArchivedRunCSV(context.Background(), instanceID, run.ID, &output); err != nil {
+		t.Fatalf("ExportArchivedRunCSV() error = %v", err)
+	}
+	if lines := strings.Split(strings.TrimSpace(output.String()), "\n"); len(lines) != 3 || !strings.Contains(lines[0], "run_id") {
+		t.Errorf("archive CSV = %q", output.String())
+	}
+}
+
 type energyInstanceReader struct {
 	instance *plugin.Instance
 	err      error
@@ -350,6 +425,38 @@ type energyHistoryReader struct {
 	latestCalls int
 	err         error
 	calls       int
+}
+
+type energyRunRepository struct {
+	active   *MeasurementRun
+	archived *MeasurementRun
+	reset    ResetMeasurementRunInput
+}
+
+func (repository *energyRunRepository) FindActive(context.Context, uuid.UUID) (*MeasurementRun, error) {
+	if repository.active == nil {
+		return nil, ErrMeasurementRunNotFound
+	}
+	return repository.active, nil
+}
+func (repository *energyRunRepository) FindArchived(context.Context, uuid.UUID, uuid.UUID) (*MeasurementRun, error) {
+	if repository.archived == nil {
+		return nil, ErrMeasurementRunNotFound
+	}
+	return repository.archived, nil
+}
+func (repository *energyRunRepository) ListArchived(context.Context, uuid.UUID) ([]MeasurementRun, error) {
+	if repository.archived == nil {
+		return []MeasurementRun{}, nil
+	}
+	return []MeasurementRun{*repository.archived}, nil
+}
+func (repository *energyRunRepository) Start(_ context.Context, input StartMeasurementRunInput) (*MeasurementRun, error) {
+	return &MeasurementRun{ID: uuid.New(), PluginInstanceID: input.PluginInstanceID, Name: input.Name, Status: MeasurementRunActive, StartedAt: input.StartedAt, ConfigVersion: input.ConfigVersion, ConfigSnapshot: input.ConfigSnapshot}, nil
+}
+func (repository *energyRunRepository) ArchiveAndStart(_ context.Context, input ResetMeasurementRunInput) (*MeasurementRun, error) {
+	repository.reset = input
+	return &MeasurementRun{ID: uuid.New(), PluginInstanceID: input.PluginInstanceID, Name: input.Name, Reason: input.Reason, Status: MeasurementRunActive, StartedAt: input.Cutoff, ConfigVersion: input.ConfigVersion, ConfigSnapshot: input.ConfigSnapshot}, nil
 }
 
 func (reader *energyHistoryReader) LatestBatch(context.Context, uuid.UUID) (*datalogger.RawBatch, error) {

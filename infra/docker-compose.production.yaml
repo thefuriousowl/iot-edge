@@ -56,6 +56,8 @@ services:
       INTERNET_CHECK_TIMEOUT: ${INTERNET_CHECK_TIMEOUT:-2s}
       PUBLISHER_MASTER_KEY_ID: ${PUBLISHER_MASTER_KEY_ID:-}
       PUBLISHER_MASTER_KEY_BASE64: ${PUBLISHER_MASTER_KEY_BASE64:-}
+      HMI_ENERGY_PLUGIN_ID: ${HMI_ENERGY_PLUGIN_ID:-}
+      HMI_API_KEY: ${HMI_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

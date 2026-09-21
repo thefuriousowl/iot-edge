@@ -28,6 +28,8 @@ func setupEnv(t *testing.T, envs map[string]string) {
 		"INTERNET_CHECK_TIMEOUT",
 		"PUBLISHER_MASTER_KEY_ID",
 		"PUBLISHER_MASTER_KEY_BASE64",
+		"HMI_ENERGY_PLUGIN_ID",
+		"HMI_API_KEY",
 	}
 	for _, key := range configKeys {
 		t.Setenv(key, "")
@@ -35,6 +37,40 @@ func setupEnv(t *testing.T, envs map[string]string) {
 
 	for k, v := range envs {
 		t.Setenv(k, v)
+	}
+}
+
+func TestLoad_HMIContractIsOptionalAndStrict(t *testing.T) {
+	setupEnv(t, validEnv())
+	cfg, err := Load()
+	if err != nil || cfg.HMIEnergyPluginID != "" || cfg.HMIAPIKey != "" {
+		t.Fatalf("optional HMI config = %#v, %v", cfg, err)
+	}
+
+	valid := validEnv()
+	valid["HMI_ENERGY_PLUGIN_ID"] = "11111111-1111-1111-1111-111111111111"
+	valid["HMI_API_KEY"] = strings.Repeat("k", 32)
+	setupEnv(t, valid)
+	cfg, err = Load()
+	if err != nil || cfg.HMIEnergyPluginID != valid["HMI_ENERGY_PLUGIN_ID"] || cfg.HMIAPIKey != valid["HMI_API_KEY"] {
+		t.Fatalf("configured HMI config = %#v, %v", cfg, err)
+	}
+
+	for name, overrides := range map[string]map[string]string{
+		"missing key":    {"HMI_ENERGY_PLUGIN_ID": valid["HMI_ENERGY_PLUGIN_ID"]},
+		"missing plugin": {"HMI_API_KEY": valid["HMI_API_KEY"]},
+		"short key":      {"HMI_ENERGY_PLUGIN_ID": valid["HMI_ENERGY_PLUGIN_ID"], "HMI_API_KEY": "short"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			envs := validEnv()
+			for key, value := range overrides {
+				envs[key] = value
+			}
+			setupEnv(t, envs)
+			if cfg, err := Load(); err == nil || cfg != nil {
+				t.Fatalf("Load() = %#v, %v", cfg, err)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,1 @@
+Production frontend assets are copied here by scripts/sync-frontend-windows.ps1 before native release builds.

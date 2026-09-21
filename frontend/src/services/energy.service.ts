@@ -2,6 +2,7 @@ import type {
   EnergyHistoryParams,
   EnergyHistoryResponse,
   EnergyLiveEvent,
+  EnergyMeasurementRun,
   EnergyOverviewResponse,
   EnergyStreamContext,
 } from "../types/plugin";
@@ -23,6 +24,21 @@ export async function getEnergyHistory(id: string, params: EnergyHistoryParams, 
 
 export async function exportEnergyCSV(id: string, params: EnergyHistoryParams): Promise<Blob> {
   const response = await api.get<Blob>(`${energyPath(id)}/export.csv`, { params, responseType: "blob" });
+  return response.data;
+}
+
+export async function resetEnergyMeasurement(id: string, input: { expected_run_id: string; name: string; reason: string }): Promise<EnergyMeasurementRun> {
+  const response = await api.post<EnergyMeasurementRun>(`${energyPath(id)}/reset`, input);
+  return response.data;
+}
+
+export async function getEnergyArchives(id: string, signal?: AbortSignal): Promise<EnergyMeasurementRun[]> {
+  const response = await api.get<{ data: EnergyMeasurementRun[] }>(`${energyPath(id)}/archives`, { signal });
+  return response.data.data;
+}
+
+export async function exportEnergyArchiveCSV(id: string, runId: string): Promise<Blob> {
+  const response = await api.get<Blob>(`${energyPath(id)}/archives/${encodeURIComponent(runId)}/export.csv`, { responseType: "blob" });
   return response.data;
 }
 
