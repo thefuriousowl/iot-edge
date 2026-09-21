@@ -3,7 +3,7 @@ module github.com/thefuriousowl/iot-edge
 go 1.26.6
 
 require (
-	github.com/aldas/go-modbus-client v0.5.0
+	github.com/aldas/go-modbus-client v0.6.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/gofiber/fiber/v2 v2.52.15
