@@ -19,6 +19,8 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; connect-sr
 //go:embed assets
 var embeddedAssets embed.FS
 
+var ErrFrontendUnavailable = errors.New("embedded frontend index.html is missing")
+
 type asset struct {
 	content []byte
 	etag    string
@@ -56,7 +58,7 @@ func Register(app *fiber.App, filesystem fs.FS) error {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
 	if _, exists := loaded["index.html"]; !exists {
-		return errors.New("embedded frontend index.html is missing; run the frontend sync script")
+		return fmt.Errorf("%w; run the frontend sync script", ErrFrontendUnavailable)
 	}
 
 	app.Use(func(c *fiber.Ctx) error {

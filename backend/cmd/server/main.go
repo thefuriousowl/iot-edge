@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -489,7 +490,11 @@ func run(runtimeContext context.Context) error {
 		}
 	}
 	if err := webui.RegisterEmbedded(app); err != nil {
-		log.Fatalf("failed to register embedded frontend: %v", err)
+		if errors.Is(err, webui.ErrFrontendUnavailable) {
+			log.Printf("embedded frontend unavailable; serving API only: %v", err)
+		} else {
+			log.Fatalf("failed to register embedded frontend: %v", err)
+		}
 	}
 
 	// Start HTTP server

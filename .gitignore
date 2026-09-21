@@ -35,6 +35,7 @@ vendor/
 bin/
 *.exe
 backend/internal/webui/assets/*
+!backend/internal/webui/assets/placeholder.txt
 !backend/internal/webui/assets/_placeholder.txt
 
 # Database

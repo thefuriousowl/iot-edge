@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,7 +54,11 @@ func TestRegisterServesSPAWithCacheAndSecurityBoundaries(t *testing.T) {
 }
 
 func TestRegisterRequiresProductionIndex(t *testing.T) {
-	if err := Register(fiber.New(), fstest.MapFS{"_placeholder.txt": {Data: []byte("placeholder")}}); err == nil {
+	err := Register(fiber.New(), fstest.MapFS{"placeholder.txt": {Data: []byte("placeholder")}})
+	if !errors.Is(err, ErrFrontendUnavailable) {
+		t.Fatalf("Register() error = %v, want ErrFrontendUnavailable", err)
+	}
+	if err == nil {
 		t.Fatal("Register() succeeded without index.html")
 	}
 }
